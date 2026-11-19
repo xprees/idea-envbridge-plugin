@@ -195,9 +195,13 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         val items = listOf<SecretConnection?>(null) + app.connections
         bindingConnection.removeAllItems()
         items.forEach(bindingConnection::addItem)
-        bindingConnection.renderer = SimpleListCellRenderer.create(SecretsBundle.message("settings.binding.auto")) { it?.name ?: SecretsBundle.message("settings.binding.auto") }
+        bindingConnection.renderer = SimpleListCellRenderer.create { label, connection, _ ->
+            label.text = connection?.name ?: SecretsBundle.message("settings.binding.auto")
+        }
         bindingConnection.selectedItem = items.firstOrNull { it?.id == state.connectionId }
-        bindingProject.renderer = SimpleListCellRenderer.create("") { id -> loadedProjects.firstOrNull { it.id == id }?.let { "${it.name}  ($id)" } ?: id }
+        bindingProject.renderer = SimpleListCellRenderer.create { label, id, _ ->
+            label.text = loadedProjects.firstOrNull { it.id == id }?.let { "${it.name}  ($id)" } ?: id.orEmpty()
+        }
         bindingProject.selectedItem = state.projectId.orEmpty()
         bindingEnvironment.selectedItem = state.environment.orEmpty()
         loadProjects()

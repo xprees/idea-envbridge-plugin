@@ -31,12 +31,12 @@ class ConnectionDialog(private val project: Project?, private val existing: Secr
     private val instanceCombo = ComboBox((provider.instancePresets.map { it.second }).toTypedArray()).apply {
         isEditable = true
         selectedItem = existing?.baseUrl ?: provider.instancePresets.first().second
-        renderer = SimpleListCellRenderer.create("") { url ->
-            provider.instancePresets.firstOrNull { it.second == url }?.let { "${it.first} — ${it.second}" } ?: url
+        renderer = SimpleListCellRenderer.create { label, url, _ ->
+            label.text = provider.instancePresets.firstOrNull { it.second == url }?.let { "${it.first} — ${it.second}" } ?: url.orEmpty()
         }
     }
     private val methodCombo = ComboBox(provider.authMethods.toTypedArray()).apply {
-        renderer = SimpleListCellRenderer.create("") { it.displayName }
+        renderer = SimpleListCellRenderer.create { label, method, _ -> label.text = method?.displayName.orEmpty() }
         selectedItem = existing?.let { provider.authMethod(it.authMethodId) } ?: provider.authMethods.first()
     }
 

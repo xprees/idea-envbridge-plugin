@@ -30,7 +30,7 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
     private val configurations: List<RunnerAndConfigurationSettings> =
         RunManager.getInstance(project).allSettings.filter { EnvPatcher.find(it.configuration) != null }
     private val combo = ComboBox(configurations.toTypedArray()).apply {
-        renderer = SimpleListCellRenderer.create("") { it.name }
+        renderer = SimpleListCellRenderer.create { label, settings, _ -> label.text = settings?.name.orEmpty() }
         configurations.firstOrNull { cfg -> EnvPatcher.find(cfg.configuration)?.second?.let(LaunchSecretResolver.getInstance(project)::hasReferences) == true }
             ?.let { selectedItem = it }
         addActionListener { refresh() }

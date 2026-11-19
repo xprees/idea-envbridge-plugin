@@ -51,8 +51,8 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
     fun connectionsOf(providerId: String): List<SecretConnection> = connections.filter { it.providerId == providerId }
 
     fun setConnections(connections: List<SecretConnection>) {
+        // Assigning a BaseState property counts as a modification, so the settings get saved
         state.connections = connections.map { it.toState() }.toMutableList()
-        state.intIncrementModificationCount()
         fireChanged()
     }
 

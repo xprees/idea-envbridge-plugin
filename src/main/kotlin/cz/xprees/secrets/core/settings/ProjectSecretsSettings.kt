@@ -30,9 +30,9 @@ class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSett
         var useProjectFile by property(true)
     }
 
+    /** Changes the state; BaseState property setters count the modification, so it gets saved. */
     fun update(block: ProjectState.() -> Unit) {
         state.block()
-        state.intIncrementModificationCount()
     }
 
     companion object {

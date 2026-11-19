@@ -54,9 +54,6 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
     override fun getStartActionText(executor: Executor, configuration: RunConfiguration): String? =
         delegate(executor.id, configuration)?.getStartActionText(executor, configuration) ?: super.getStartActionText(executor, configuration)
 
-    override fun getContentToolWindowId(environment: ExecutionEnvironment): String? =
-        delegate(environment.executor.id, environment.runProfile)?.getContentToolWindowId(environment)
-
     override fun execute(environment: ExecutionEnvironment) {
         val profile = environment.runProfile as RunConfiguration
         val (patcher, envs) = EnvPatcher.find(profile) ?: throw ExecutionException(SecretsBundle.message("run.unsupported"))
