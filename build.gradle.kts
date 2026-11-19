@@ -93,6 +93,7 @@ dependencies {
         bundledPlugins(
             "com.intellij.java", "com.intellij.gradle", "org.jetbrains.idea.maven",
             "NodeJS", "JavaScript", "Docker", "org.jetbrains.plugins.terminal",
+            "com.intellij.database", "com.intellij.modules.json",
         )
         // Not bundled with IntelliJ IDEA: the versions compatible with platformVersion are looked up on the Marketplace
         compatiblePlugins("PythonCore", "org.jetbrains.plugins.go")

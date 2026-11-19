@@ -142,7 +142,7 @@ configuration's variables:
 |---|---|
 | M1 | Platform `CommonProgramRunConfigurationParameters` (Application, JUnit, TestNG, Spring Boot, Kotlin, shell scripts, …), Gradle and other external-system run configurations, Maven |
 | M2 | Node.js / npm / Bun, Python (incl. FastAPI, Django, pytest), Go, Docker image / Dockerfile / Compose (the Docker run configuration's environment variables: the container's environment, or the `docker compose` process environment for `${VAR}` interpolation; no temporary env file was needed), `.env` files holding references, Terminal (opt-in per project, through the terminal's `ShellExecOptionsCustomizer`, which replaces the deprecated `LocalTerminalCustomizer` and is still marked experimental) |
-| M4 | Rider .NET (project, launchSettings profiles, ASP.NET Core) with appsettings awareness (`Section__Key` ⇄ `Section:Key`), Database data sources (DataGrip-style connection interceptor for user/password) |
+| M4 (done) | Rider `.NET Project` and `.NET Executable` configurations (ASP.NET Core included), patched through the platform's public XML form of environment variables, so no Rider API is needed; launch-profile configurations read `launchSettings.json` and can't be patched. `appsettings*.json` awareness (`Section__Key` ⇄ `Section:Key`): overridden settings marked, plaintext secrets reported. Database data sources: an "Infisical" authentication provider (`connectionInterceptor`) whose user and password are references resolved at connect time |
 
 ## Caching
 
@@ -203,4 +203,4 @@ Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`,
 - **M2** (done): Node.js / npm / Bun, Python, Go, Docker and Compose, `.env` files with references, terminal.
 - **M3** (done): editor integration, console masking, status bar, prod guard, *Run with environment…*, environment comparison,
   local overrides.
-- **M4**: Rider .NET and appsettings, database data sources.
+- **M4** (done): Rider .NET and appsettings, database data sources.

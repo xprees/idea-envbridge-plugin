@@ -30,6 +30,11 @@ handed to the process in memory. Nothing is written to disk.</p>
       production-like environments reach a process, and a key-by-key <b>comparison</b> of two environments</li>
   <li>Injected values are <b>masked in Run and Debug consoles</b>; <b>local overrides</b> (kept in the IDE's password storage)
       replace a secret for you only</li>
+  <li><b>Rider / .NET</b>: <i>.NET Project</i> and <i>.NET Executable</i> run configurations, ASP.NET Core included; in
+      <code>appsettings*.json</code> the settings an Infisical secret overrides (<code>ConnectionStrings:Default</code> ⇄
+      <code>ConnectionStrings__Default</code>) are marked, and plaintext secrets are reported</li>
+  <li><b>Database data sources</b> (DataGrip and the Database tools): an <i>Infisical</i> authentication option whose user and
+      password are <code>infisical://</code> references, resolved when the connection opens</li>
   <li><b>Fail closed</b>: if a secret can't be loaded, the launch stops with <i>Sign in</i>, <i>Retry</i> and <i>Run without secrets once</i></li>
   <li><b>Secrets tool window</b>: browse projects, environments, folders and secrets. Values stay masked; <i>Reveal</i> hides them
       again after a few seconds, and copied values are cleared from the clipboard after a while. Copy a ready-made
@@ -49,9 +54,7 @@ Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The
 supported IDE (`platformVersion` in `gradle.properties`) and verified against the latest IntelliJ IDEA, WebStorm, PyCharm, GoLand,
 Rider and DataGrip in CI. It declares no upper build limit.
 
-> **Status: M3.** Injection for JVM, Gradle, Maven, Node.js/npm/Bun, Python, Go and Docker/Compose, `.env` files with
-> references, the terminal, and the editor integration are done. Rider .NET and database data sources follow. See the
-> [design and roadmap](docs/DESIGN.md).
+> **Status: all milestones of the [design](docs/DESIGN.md) are implemented (M1–M4).** Feedback and issues welcome.
 
 ## Quick start
 
@@ -101,6 +104,8 @@ A reference is the value of an environment variable:
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
 | `.env` files | Any run configuration that loads env files: when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Values set on the configuration still win |
+| Rider: .NET Project, .NET Executable (ASP.NET Core included) | *Environment variables* of the configuration. *Launch profile* configurations take their variables from `launchSettings.json`, which the plugin can't intercept: use a .NET Project configuration with references instead |
+| Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
 | Terminal | *Settings › Tools › EnvBridge › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
 
 ## In the editor
@@ -117,6 +122,8 @@ A reference is the value of an environment variable:
 | Prod guard | Asks before a launch uses secrets from environments matching `prod*, production*, live*` (configurable) |
 | Console masking | Values handed to a running process are replaced by `••••••` in its Run / Debug console (values of at least 4 characters) |
 | Local overrides | Your own value for a secret, for this project on this computer, kept in the IDE's password storage |
+| `appsettings*.json` | Settings an Infisical secret overrides at run time get a key icon and tooltip; the inspection *Plaintext secret in appsettings* reports values Infisical provides (quick fix: clear the value) |
+| Bound project only | With a project bound (and *Only use the bound project*, default on), the tool window shows only that project and references to other projects or connections are refused |
 
 ## Signing in
 

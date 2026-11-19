@@ -56,7 +56,7 @@ class EditorPlatformTest : BasePlatformTestCase() {
 
     fun `test keys index knows every environment`() {
         val snapshot = KeysIndex.getInstance(project).current()!!
-        assertThat(snapshot.boundKeys.keys).containsExactlyInAnyOrder("DB_PASSWORD", "API_KEY")
+        assertThat(snapshot.boundKeys.keys).containsExactlyInAnyOrder("DB_PASSWORD", "API_KEY", "ConnectionStrings__Default")
         assertThat(snapshot.coverage("DB_PASSWORD")).containsExactlyInAnyOrder("dev", "prod")
         assertThat(snapshot.coverage("PROD_ONLY")).containsExactly("prod")
     }

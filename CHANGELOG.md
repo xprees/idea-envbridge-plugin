@@ -28,5 +28,8 @@
 - Status bar widget with the bound environment and a switcher; *Run with Infisical Environment…*; a prod guard that asks before
   production secrets reach a process; environment comparison
 - Injected values are masked in Run and Debug consoles; local overrides of secrets are kept in the IDE's password storage
+- Rider: injection for .NET Project and .NET Executable run configurations (ASP.NET Core included); `appsettings*.json`
+  marks settings an Infisical secret overrides and reports plaintext secrets
+- Database data sources: an "Infisical" authentication option with user and password as secret references
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview
