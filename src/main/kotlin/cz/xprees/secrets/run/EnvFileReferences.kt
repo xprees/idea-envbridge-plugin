@@ -3,6 +3,7 @@ package cz.xprees.secrets.run
 import com.intellij.execution.EnvFilesOptions
 import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.configurations.RunProfile
+import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.resolve.DotEnv
 import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import java.nio.file.Files
@@ -98,7 +99,7 @@ object EnvFileReferences {
         val size = runCatching { Files.size(file) }.getOrDefault(0L)
         if (size > MAX_BYTES) return emptyMap()
         cache[file]?.takeIf { it.modified == modified && it.size == size }?.let { return it.variables }
-        val variables = runCatching { DotEnv.parse(Files.readString(file)) }.getOrDefault(LinkedHashMap())
+        val variables = runCatching { DotEnv.parse(Files.readString(file), SecretProvider.all().map { it.referenceScheme }) }.getOrDefault(LinkedHashMap())
         cache[file] = Cached(modified, size, variables)
         return variables
     }

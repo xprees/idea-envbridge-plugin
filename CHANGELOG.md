@@ -38,8 +38,11 @@
   secrets with empty values are named there, warned about at launch and shown as "(empty)" in the run configuration preview
 - **New Terminal Tab with Infisical Secrets** (terminal toolbar, *Tools* menu): one terminal tab, in any shell, whose environment
   holds the secrets of the bound folder or the project's terminal references, without enabling the terminal integration
-- `.env` files: an inspection marks plaintext values of variables that are secrets in the bound folder; its quick fix (and
-  *Fix all*) replaces them with `infisical://` references
+- `.env` binding comments: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod/KEY`. Tools outside the IDE
+  read the plain value; launches from the IDE get the secret; the editor shows a masked shadow value (`dev ••••••`) and the
+  key icon (reveal, copy, override) on the binding
+- `.env` files: an inspection marks plaintext values of variables that are secrets in the bound folder; its quick fixes (and
+  *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with

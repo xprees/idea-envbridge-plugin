@@ -76,25 +76,38 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
         assertThat(DotEnvLines.isDotEnv("environment.ts")).isFalse()
     }
 
-    fun `test plaintext secrets in env files are reported and replaced by references`() {
+    fun `test plaintext secrets in env files are reported and bound with comments`() {
         myFixture.enableInspections(DotEnvPlaintextSecretInspection::class.java)
         myFixture.configureByText(
             ".env",
-            "DB_PASSWORD=dev-pass\nAPI_KEY=\"abc\" # comment\nPATH=/usr/bin\nREF=infisical://API_KEY\nPROD_ONLY=x\n",
+            "DB_PASSWORD=dev-pass\nAPI_KEY=\"abc\" # old comment\nPATH=/usr/bin\nREF=infisical://API_KEY\nPROD_ONLY=x\n" +
+                "ConnectionStrings__Default=fallback # infisical://ConnectionStrings__Default\n",
         )
         val problems = myFixture.doHighlighting(HighlightSeverity.WEAK_WARNING)
             .filter { it.description?.contains("Infisical") == true }.mapNotNull(HighlightInfo::getDescription)
-        // PROD_ONLY isn't in the bound environment (dev), PATH isn't a secret, REF is already a reference
+        // PROD_ONLY isn't in the bound environment (dev), PATH isn't a secret, REF and the bound line are taken care of
         assertThat(problems).hasSize(2)
         assertThat(problems).anySatisfy { assertThat(it).contains("DB_PASSWORD").contains("dev") }
 
-        while (true) {
-            val fix = myFixture.getAllQuickFixes().firstOrNull { it.familyName == "Replace with Infisical reference" } ?: break
-            myFixture.launchAction(fix)
-        }
+        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to Infisical and clear the value" && it.text.contains("DB_PASSWORD") })
+        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to Infisical, keep the value as local fallback" })
         assertThat(myFixture.editor.document.text).isEqualTo(
-            "DB_PASSWORD=infisical://DB_PASSWORD\nAPI_KEY=\"infisical://API_KEY\" # comment\nPATH=/usr/bin\nREF=infisical://API_KEY\nPROD_ONLY=x\n",
+            "DB_PASSWORD= # infisical://DB_PASSWORD\nAPI_KEY=\"abc\" # infisical://API_KEY\nPATH=/usr/bin\nREF=infisical://API_KEY\nPROD_ONLY=x\n" +
+                "ConnectionStrings__Default=fallback # infisical://ConnectionStrings__Default\n",
         )
+        assertThat(myFixture.doHighlighting(HighlightSeverity.WEAK_WARNING).filter { it.description?.contains("Infisical") == true }).isEmpty()
+        // The binding comment is a reference the editor knows (gutter icon, masked hint)
+        assertThat(cz.xprees.secrets.editor.EditorReferences.of(myFixture.file).map { it.name }).contains("DB_PASSWORD", "API_KEY")
+    }
+
+    fun `test empty variables can be bound with an intention`() {
+        myFixture.configureByText(".env.local", "API_KEY=<caret>\nOTHER=\n")
+        val intention = myFixture.getAvailableIntention("Bind to Infisical")
+        assertNotNull(intention)
+        myFixture.launchAction(intention!!)
+        assertThat(myFixture.editor.document.text).isEqualTo("API_KEY= # infisical://API_KEY\nOTHER=\n")
+        myFixture.editor.caretModel.moveToOffset(myFixture.editor.document.text.indexOf("OTHER=") + 6)
+        assertNull(myFixture.getAvailableIntention("Bind to Infisical"))
     }
 
     private fun npmConfiguration(): NpmRunConfiguration {
@@ -129,7 +142,7 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
     fun `test references in the dotenv file a node tool reads itself are resolved, its other lines are left to the tool`() {
         val dir = Files.createTempDirectory("nuxt-app")
         Files.writeString(dir.resolve("package.json"), "{}")
-        Files.writeString(dir.resolve(".env"), "NUXT_PUBLIC_URL=infisical://API_KEY\nPLAIN=1\nINTERPOLATED=\${PLAIN}\n")
+        Files.writeString(dir.resolve(".env"), "NUXT_PUBLIC_URL=infisical://API_KEY\nPLAIN=1\nINTERPOLATED=\${PLAIN}\nBOUND=http://localhost # infisical://DB_PASSWORD\n")
         val configuration = npmConfiguration()
         configuration.runSettings = configuration.runSettings.toBuilder().setPackageJsonPath(dir.resolve("package.json").toString()).build()
 
@@ -138,9 +151,10 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
         assertThat(ProgramRunner.getRunner(DefaultRunExecutor.EXECUTOR_ID, configuration)).isInstanceOf(SecretsProgramRunner::class.java)
         val (envs, useFiles) = EnvFileReferences.effective(configuration, mapOf("NUXT_PUBLIC_URL" to "configured-wins"), resolver)
         assertThat(useFiles).isFalse()
-        assertThat(envs).containsExactly(org.assertj.core.api.Assertions.entry("NUXT_PUBLIC_URL", "configured-wins"))
+        assertThat(envs).containsOnlyKeys("NUXT_PUBLIC_URL", "BOUND").containsEntry("NUXT_PUBLIC_URL", "configured-wins")
         assertThat(EnvFileReferences.effective(configuration, emptyMap(), resolver).first)
-            .containsExactly(org.assertj.core.api.Assertions.entry("NUXT_PUBLIC_URL", "infisical://API_KEY"))
+            .containsOnlyKeys("NUXT_PUBLIC_URL", "BOUND")
+            .containsEntry("NUXT_PUBLIC_URL", "infisical://API_KEY").containsEntry("BOUND", "infisical://DB_PASSWORD")
 
         // Without references the file is the tool's business only
         Files.writeString(dir.resolve(".env"), "PLAIN=1\n")

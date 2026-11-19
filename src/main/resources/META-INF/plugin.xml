@@ -72,6 +72,11 @@
         <localInspection shortName="InfisicalDotEnvPlaintextSecret" bundle="messages.SecretsBundle" key="inspection.dotenv.display.name"
                          groupKey="inspection.group.name" enabledByDefault="true" level="WEAK WARNING"
                          implementationClass="cz.xprees.secrets.editor.DotEnvPlaintextSecretInspection"/>
+        <intentionAction>
+            <className>cz.xprees.secrets.editor.DotEnvBindIntention</className>
+            <bundleName>messages.SecretsBundle</bundleName>
+            <categoryKey>inspection.group.name</categoryKey>
+        </intentionAction>
 
         <!-- Console masking of injected values -->
         <consoleInputFilterProvider implementation="cz.xprees.secrets.run.masking.SecretMaskingFilterProvider"/>
