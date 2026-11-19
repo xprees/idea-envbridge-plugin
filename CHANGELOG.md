@@ -36,6 +36,12 @@
   `NAME=infisical://…` lines to paste into any Environment Variables dialog
 - The Run console starts with a line naming the variables that came from secrets and their environment and folder (no values);
   secrets with empty values are named there, warned about at launch and shown as "(empty)" in the run configuration preview
+- **New Terminal Tab with Infisical Secrets** (terminal toolbar, *Tools* menu): one terminal tab, in any shell, whose environment
+  holds the secrets of the bound folder or the project's terminal references, without enabling the terminal integration
+- `.env` files: an inspection marks plaintext values of variables that are secrets in the bound folder; its quick fix (and
+  *Fix all*) replaces them with `infisical://` references
+- Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
+  read by themselves, are resolved at launch
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview
 

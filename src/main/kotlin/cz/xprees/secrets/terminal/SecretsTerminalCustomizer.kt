@@ -11,12 +11,17 @@ import org.jetbrains.plugins.terminal.startup.MutableShellExecOptions
 import org.jetbrains.plugins.terminal.startup.ShellExecOptionsCustomizer
 
 /**
- * Puts secrets into the environment of new terminal tabs, when enabled for the project (Settings › Tools › Secrets for
- * Infisical › Terminal). Fetched when the tab opens; a failure is reported and the tab opens without them.
+ * Puts secrets into the environment of new terminal tabs: a tab opened with *New Terminal Tab with Secrets* gets what that
+ * action fetched; other tabs get the project's terminal references when enabled for the project (Settings › Tools ›
+ * EnvBridge › This Project › Terminal). Fetched when the tab opens; a failure is reported and the tab opens without them.
  */
 class SecretsTerminalCustomizer : ShellExecOptionsCustomizer {
 
     override fun customizeExecOptions(project: Project, shellExecOptions: MutableShellExecOptions) {
+        TerminalSecretsHandoff.take()?.let { offered ->
+            offered.forEach(shellExecOptions::setEnvironmentVariable)
+            return
+        }
         val state = ProjectSecretsSettings.getInstance(project).state
         if (!state.terminalEnabled) return
         val references = parse(state.terminalReferences.orEmpty())

@@ -18,8 +18,10 @@ handed to the process in memory. Nothing is written to disk.</p>
       (pytest, Django, FastAPI, Flask), Go</b> and <b>Docker</b> (image, Dockerfile, <b>Docker Compose</b>) run configurations, for
       Run, Debug, Coverage and Profile</li>
   <li><b><code>.env</code> files with references</b>: keep a committed <code>.env</code> that holds <code>infisical://</code>
-      references instead of secrets and attach it to the run configuration as usual</li>
-  <li><b>Terminal</b> (opt-in): new terminal tabs of the project get the secrets too</li>
+      references instead of secrets: attach it to the run configuration, or let Nuxt, Vite and Next.js read it as usual. Plaintext
+      secrets in <code>.env</code> files are marked, and Alt+Enter replaces them with references</li>
+  <li><b>Terminal</b>: <i>New Terminal Tab with Infisical Secrets</i> opens a tab with the secrets in any shell (PowerShell,
+      bash, …); opt in to give every new tab of the project the secrets</li>
   <li><b>In the editor</b>, in every language: completion of secret keys where code reads environment variables
       (<code>System.getenv("…")</code>, <code>process.env.…</code>, <code>os.environ["…"]</code>, <code>os.Getenv("…")</code>,
       <code>${…}</code>, …) and after <code>infisical://</code>; a masked hint with the environment; a key icon in the gutter to
@@ -103,10 +105,10 @@ A reference is the value of an environment variable:
 | Python: scripts, modules, pytest, Django, FastAPI, Flask | *Environment variables* |
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
-| `.env` files | Any run configuration that loads env files: when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Values set on the configuration still win |
+| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. An inspection marks plaintext values of secrets in `.env` files, and Alt+Enter replaces them with references |
 | Rider: .NET Project, .NET Executable (ASP.NET Core included) | *Environment variables* of the configuration. *Launch profile* configurations take their variables from `launchSettings.json`, which the plugin can't intercept: use a .NET Project configuration with references instead |
 | Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
-| Terminal | *Settings › Tools › EnvBridge › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
+| Terminal | **New Terminal Tab with Infisical Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). A shell that is already running can't get secrets: typing a reference into it does nothing |
 
 ## In the editor
 
