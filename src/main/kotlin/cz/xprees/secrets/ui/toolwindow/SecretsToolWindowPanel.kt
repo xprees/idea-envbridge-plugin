@@ -380,9 +380,13 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 is SecretNode -> node.scope
                 is FolderNode -> node.scope
                 is EnvironmentNode -> node.scope
+                is ProjectNode -> node.project.environments.firstOrNull()?.let { SecretScope(node.project.id, it.slug) }
                 else -> null
             }
-            SecretProvider.byId(connection.providerId)?.dashboardUrl(connection, scope)?.let(BrowserUtil::browse)
+            // The project node above the selection knows the organization the dashboard URL needs
+            val organizationId = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)?.project?.organizationId
+            val key = (node as? SecretNode)?.entry?.key
+            SecretProvider.byId(connection.providerId)?.dashboardUrl(connection, scope, organizationId, key)?.let(BrowserUtil::browse)
         }
     }
 

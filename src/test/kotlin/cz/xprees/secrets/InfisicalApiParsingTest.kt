@@ -42,6 +42,18 @@ class InfisicalApiParsingTest {
     }
 
     @Test
+    fun `dashboard links follow the web app routes`() {
+        val connection = SecretConnection("c", "infisical", "EU", "https://eu.infisical.com", "browser")
+        val provider = cz.xprees.secrets.infisical.InfisicalProvider()
+        assertThat(provider.dashboardUrl(connection, SecretScope("p-1", "prod", "/backend api"), "org-1", "DB_PASSWORD"))
+            .isEqualTo("https://eu.infisical.com/organizations/org-1/projects/secret-management/p-1/secrets/prod?secretPath=%2Fbackend%20api&search=DB_PASSWORD")
+        assertThat(provider.dashboardUrl(connection, SecretScope("p-1", "dev"), "org-1"))
+            .isEqualTo("https://eu.infisical.com/organizations/org-1/projects/secret-management/p-1/secrets/dev")
+        // Without the organization the route can't be built: the start page instead of a 404
+        assertThat(provider.dashboardUrl(connection, SecretScope("p-1", "dev"), null)).isEqualTo("https://eu.infisical.com")
+    }
+
+    @Test
     fun `projects with environments`() {
         val project = InfisicalApi.parseProject(
             JsonParser.parseString("""{"id":"p1","name":"Shop","slug":"shop","orgId":"o","environments":[{"name":"Development","slug":"dev","id":"e1"}]}""").asJsonObject,

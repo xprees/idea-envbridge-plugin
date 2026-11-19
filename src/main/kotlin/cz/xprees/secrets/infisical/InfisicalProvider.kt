@@ -38,11 +38,17 @@ class InfisicalProvider : SecretProvider {
     override fun readProjectFile(projectDir: java.nio.file.Path): ProjectFileDefaults? =
         InfisicalProjectConfig.find(projectDir)?.toDefaults(GitHead.currentBranch(projectDir))
 
-    override fun dashboardUrl(connection: SecretConnection, scope: SecretScope?): String? {
-        if (scope == null) return connection.baseUrl
-        // The dashboard's route for a project's secrets: /projects/secret-management/<id>/secrets/<env>?secretPath=…
-        val path = java.net.URLEncoder.encode(scope.path, Charsets.UTF_8)
-        return "${connection.baseUrl}/projects/secret-management/${scope.projectId}/secrets/${scope.environment}?secretPath=$path"
+    override fun dashboardUrl(connection: SecretConnection, scope: SecretScope?, organizationId: String?, key: String?): String {
+        // The web app's route (frontend/src/routes): /organizations/<org>/projects/secret-management/<project>/secrets/<env>,
+        // with ?secretPath=<folder>&search=<key>. Without the organization only the instance's start page is reliable.
+        if (scope == null || organizationId.isNullOrBlank()) return connection.baseUrl
+        fun enc(value: String) = java.net.URLEncoder.encode(value, Charsets.UTF_8).replace("+", "%20")
+        val query = buildList {
+            if (scope.path != "/") add("secretPath=${enc(scope.path)}")
+            key?.let { add("search=${enc(it)}") }
+        }
+        return "${connection.baseUrl}/organizations/${enc(organizationId)}/projects/secret-management/${enc(scope.projectId)}/secrets/${enc(scope.environment)}" +
+            if (query.isEmpty()) "" else query.joinToString("&", prefix = "?")
     }
 
     companion object {

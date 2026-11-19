@@ -39,8 +39,11 @@ interface SecretProvider {
      */
     fun readProjectFile(projectDir: java.nio.file.Path): ProjectFileDefaults? = null
 
-    /** Dashboard address of a project/environment/folder, for "Open in dashboard", or null when unknown. */
-    fun dashboardUrl(connection: SecretConnection, scope: SecretScope?): String? = null
+    /**
+     * Dashboard address of a project / environment / folder (and secret [key], if given) for "Open in dashboard", or null when
+     * unknown. [organizationId] is the organization the project belongs to, when known.
+     */
+    fun dashboardUrl(connection: SecretConnection, scope: SecretScope?, organizationId: String? = null, key: String? = null): String? = null
 
     companion object {
         val EP_NAME: ExtensionPointName<SecretProvider> = ExtensionPointName.create("cz.xprees.secrets.provider")
