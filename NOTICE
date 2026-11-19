@@ -1,0 +1,13 @@
+Secrets for Infisical (Unofficial)
+Copyright 2026 xprees and contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc.
+"Infisical" and the Infisical logo are trademarks of Infisical Inc.; the name is used only to describe the service this
+plugin works with. The plugin contains no Infisical logos, other brand assets or source code. It uses the publicly
+documented Infisical REST API and reimplements documented behaviour of the Infisical CLI (MIT licensed,
+https://github.com/Infisical/cli): the browser sign-in callback and the .infisical.yaml / .infisical.json project files.
+
+The plugin bundles no third-party libraries. At run time it uses libraries that ship with the IntelliJ Platform (Gson,
+SnakeYAML, the JDK's HTTP server), under their own licenses.

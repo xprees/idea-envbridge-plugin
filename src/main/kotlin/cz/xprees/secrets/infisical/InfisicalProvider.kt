@@ -1,0 +1,115 @@
+package cz.xprees.secrets.infisical
+
+import cz.xprees.secrets.SecretsIcons
+import cz.xprees.secrets.core.model.ProviderProject
+import cz.xprees.secrets.core.model.SecretConnection
+import cz.xprees.secrets.core.model.SecretEntry
+import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.provider.AuthMethod
+import cz.xprees.secrets.core.provider.ProjectFileDefaults
+import cz.xprees.secrets.core.resolve.GitHead
+import cz.xprees.secrets.infisical.config.InfisicalProjectConfig
+import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.SecretProvider
+import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.SignInInteraction
+import cz.xprees.secrets.infisical.api.InfisicalApi
+import cz.xprees.secrets.infisical.api.InfisicalHttp
+import cz.xprees.secrets.infisical.auth.InfisicalAuth
+import javax.swing.Icon
+
+/** Infisical (US Cloud, EU Cloud, dedicated and self-hosted instances). */
+class InfisicalProvider : SecretProvider {
+    override val id: String = ID
+    override val displayName: String = "Infisical"
+    override val icon: Icon get() = SecretsIcons.PROVIDER
+    override val referenceScheme: String = "infisical"
+
+    override val instancePresets: List<Pair<String, String>> = listOf(
+        "Infisical Cloud (US)" to US_CLOUD,
+        "Infisical Cloud (EU)" to EU_CLOUD,
+    )
+
+    override val authMethods: List<AuthMethod> = InfisicalAuthMethods.ALL
+
+    override fun createClient(connection: SecretConnection): SecretsClient = InfisicalClient(connection)
+
+    override fun readProjectFile(projectDir: java.nio.file.Path): ProjectFileDefaults? =
+        InfisicalProjectConfig.find(projectDir)?.toDefaults(GitHead.currentBranch(projectDir))
+
+    override fun dashboardUrl(connection: SecretConnection, scope: SecretScope?): String? {
+        if (scope == null) return connection.baseUrl
+        // The dashboard's route for a project's secrets: /projects/secret-management/<id>/secrets/<env>?secretPath=…
+        val path = java.net.URLEncoder.encode(scope.path, Charsets.UTF_8)
+        return "${connection.baseUrl}/projects/secret-management/${scope.projectId}/secrets/${scope.environment}?secretPath=$path"
+    }
+
+    companion object {
+        const val ID = "infisical"
+        const val US_CLOUD = "https://app.infisical.com"
+        const val EU_CLOUD = "https://eu.infisical.com"
+    }
+}
+
+object InfisicalAuthMethods {
+    const val BROWSER = "browser"
+    const val OAUTH = "oauth"
+    const val MACHINE_IDENTITY = "machine-identity"
+
+    const val OPTION_CLIENT_ID = "clientId"
+    const val OPTION_CLIENT_SECRET = "clientSecret"
+    const val OPTION_CALLBACK_PORT = "callbackPort"
+    const val OPTION_ORGANIZATION_SLUG = "organizationSlug"
+
+    const val DEFAULT_CALLBACK_PORT = 51327
+    const val OAUTH_SCOPE = "secrets:read"
+
+    val ALL = listOf(
+        AuthMethod(
+            id = BROWSER,
+            displayName = "Browser sign-in",
+            description = "Sign in with your Infisical account in the system browser, as the Infisical CLI does. No setup needed; " +
+                "the session has your permissions.",
+        ),
+        AuthMethod(
+            id = OAUTH,
+            displayName = "OAuth application",
+            description = "Least privilege: a read-only (secrets:read) token from an OAuth application your organization registered, " +
+                "approved in the browser. Register the redirect URI http://127.0.0.1:<port>/callback.",
+            options = listOf(
+                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
+                AuthOption(OPTION_CALLBACK_PORT, "Redirect port:", required = false, hint = DEFAULT_CALLBACK_PORT.toString()),
+            ),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+        ),
+        AuthMethod(
+            id = MACHINE_IDENTITY,
+            displayName = "Machine identity (Universal Auth)",
+            description = "A machine identity's client ID and secret, for setups without a browser or with dedicated identities.",
+            options = listOf(
+                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
+                AuthOption(OPTION_ORGANIZATION_SLUG, "Organization slug:", required = false, hint = "optional"),
+            ),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+        ),
+    )
+}
+
+/** [SecretsClient] for one Infisical connection. */
+class InfisicalClient(connection: SecretConnection) : SecretsClient {
+    private val api = InfisicalApi(InfisicalHttp(connection.baseUrl))
+    private val auth = InfisicalAuth(connection, api)
+
+    override fun signIn(interaction: SignInInteraction): String = auth.signIn(interaction)
+
+    override fun signOut() = auth.signOut()
+
+    override fun hasCredentials(): Boolean = auth.hasCredentials()
+
+    override fun listProjects(): List<ProviderProject> = auth.withToken(api::listProjects).sortedBy { it.name.lowercase() }
+
+    override fun listFolders(scope: SecretScope): List<SecretFolder> = auth.withToken { api.listFolders(it, scope) }
+
+    override fun listSecrets(scope: SecretScope): List<SecretEntry> = auth.withToken { api.listSecrets(it, scope) }
+}
