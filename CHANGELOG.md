@@ -15,5 +15,10 @@
 - Fail closed: a launch whose secrets can't be loaded stops, with Sign in, Retry and Run without secrets once
 - Project binding from the Infisical CLI's `.infisical.yaml` / `.infisical.json` (project, environment, Git branch mapping, folder)
   or from the settings, with `INFISICAL_ENVIRONMENT` per run configuration
+- Injection for Node.js, npm / pnpm / Yarn / Bun scripts, Python (pytest, Django, FastAPI, Flask), Go and Docker (image,
+  Dockerfile, Docker Compose) run configurations. Docker gets the values as container / `docker compose` environment, without
+  writing files
+- `.env` files attached to a run configuration may hold `infisical://` references instead of secrets
+- Terminal (opt-in per project in the plugin's settings): new tabs get the referenced secrets
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview

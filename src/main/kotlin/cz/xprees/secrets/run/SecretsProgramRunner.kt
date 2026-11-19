@@ -40,7 +40,8 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
     override fun canRun(executorId: String, profile: RunProfile): Boolean {
         if (profile !is RunConfiguration || isResolvedCopy(profile)) return false
         val (_, envs) = EnvPatcher.find(profile) ?: return false
-        if (!LaunchSecretResolver.getInstance(profile.project).hasReferences(envs)) return false
+        val resolver = LaunchSecretResolver.getInstance(profile.project)
+        if (!resolver.hasReferences(envs) && !EnvFileReferences.hasReferences(profile, resolver)) return false
         return delegate(executorId, profile) != null
     }
 
@@ -56,9 +57,13 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
     override fun execute(environment: ExecutionEnvironment) {
         val profile = environment.runProfile as RunConfiguration
-        val (patcher, envs) = EnvPatcher.find(profile) ?: throw ExecutionException(SecretsBundle.message("run.unsupported"))
+        val (patcher, configured) = EnvPatcher.find(profile) ?: throw ExecutionException(SecretsBundle.message("run.unsupported"))
         val resolver = LaunchSecretResolver.getInstance(environment.project)
+        // Env files with references are read here and detached from the copy; values set on the configuration win
+        val (envs, useFiles) = EnvFileReferences.effective(profile, configured, resolver)
         val plan = resolver.plan(envs)
+        fun copyWith(values: Map<String, String>): RunProfile =
+            patcher.copyWith(profile, values).also { if (useFiles) EnvFileReferences.detach(it) }
 
         object : Task.Backgroundable(environment.project, SecretsBundle.message("run.fetching", profile.name), true) {
             private var result: EnvResolution.Result? = null
@@ -71,7 +76,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
             override fun onSuccess() {
                 val resolved = result ?: return
                 if (resolved.warnings.isNotEmpty()) SecretsNotifications.launchWarnings(environment.project, profile.name, resolved.warnings)
-                launch(environment, patcher.copyWith(profile, resolved.environment), resolved.secretValues)
+                launch(environment, copyWith(resolved.environment), resolved.secretValues)
             }
 
             override fun onThrowable(error: Throwable) {
@@ -84,7 +89,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                     configurationName = profile.name,
                     failure = failure,
                     retry = { execute(environment) },
-                    runWithoutSecrets = { launch(environment, patcher.copyWith(profile, plan.explicit), emptySet()) },
+                    runWithoutSecrets = { launch(environment, copyWith(plan.explicit), emptySet()) },
                 )
             }
 

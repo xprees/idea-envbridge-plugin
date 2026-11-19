@@ -12,8 +12,12 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>Reference secrets in the environment variables you already use</b>: in a run configuration's <i>Environment variables</i>,
       set <code>DB_PASSWORD=infisical://DB_PASSWORD</code>, or <code>INFISICAL=infisical://*</code> to import a whole folder.
       Only the reference is stored, so <code>.run</code> files can be shared safely</li>
-  <li>Works with <b>Application, JUnit, TestNG, Spring Boot, Kotlin, Gradle, Maven</b> and other run configurations that have standard
-      environment variables, for Run, Debug, Coverage and Profile</li>
+  <li>Works with <b>Application, JUnit, TestNG, Spring Boot, Kotlin, Gradle, Maven, Node.js, npm/pnpm/Yarn/Bun scripts, Python
+      (pytest, Django, FastAPI, Flask), Go</b> and <b>Docker</b> (image, Dockerfile, <b>Docker Compose</b>) run configurations, for
+      Run, Debug, Coverage and Profile</li>
+  <li><b><code>.env</code> files with references</b>: keep a committed <code>.env</code> that holds <code>infisical://</code>
+      references instead of secrets and attach it to the run configuration as usual</li>
+  <li><b>Terminal</b> (opt-in): new terminal tabs of the project get the secrets too</li>
   <li><b>Fail closed</b>: if a secret can't be loaded, the launch stops with <i>Sign in</i>, <i>Retry</i> and <i>Run without secrets once</i></li>
   <li><b>Secrets tool window</b>: browse projects, environments, folders and secrets. Values stay masked; <i>Reveal</i> hides them
       again after a few seconds, and copied values are cleared from the clipboard after a while. Copy a ready-made
@@ -33,9 +37,9 @@ Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The
 supported IDE (`platformVersion` in `gradle.properties`) and verified against the latest IntelliJ IDEA, WebStorm, PyCharm, GoLand,
 Rider and DataGrip in CI. It declares no upper build limit.
 
-> **Status: M1 (foundation).** Injection works for JVM, Gradle and Maven run configurations and every other configuration type
-> that uses the platform's standard environment variables. Node.js/Bun, Python, Go, Docker/Compose, terminal, editor completion
-> and inlays, Rider .NET and database data sources follow. See the [design and roadmap](docs/DESIGN.md).
+> **Status: M2.** Injection works for JVM, Gradle, Maven, Node.js/npm/Bun, Python, Go and Docker/Compose run configurations,
+> `.env` files with references and the terminal. Editor completion and inlays, Rider .NET and database data sources follow. See
+> the [design and roadmap](docs/DESIGN.md).
 
 ## Quick start
 
@@ -73,6 +77,19 @@ A reference is the value of an environment variable:
   imported ones). Personal overrides are applied.
 - The environment comes from (highest first): the reference → `INFISICAL_ENVIRONMENT` set on the run configuration → the
   environment picked in the IDE → `.infisical.yaml`'s Git branch mapping → its default environment → `dev`.
+
+## Where references work
+
+| Where | How |
+|---|---|
+| Run configurations: Application, JUnit, TestNG, Spring Boot, Kotlin, shell scripts, … | *Environment variables* of the configuration |
+| Gradle, Maven | *Environment variables* of the run configuration (Maven: or the project's Maven runner settings) |
+| Node.js, npm / pnpm / Yarn / Bun scripts | *Environment variables*; Bun and Deno work as interpreters / package managers of these configurations |
+| Python: scripts, modules, pytest, Django, FastAPI, Flask | *Environment variables* |
+| Go: Go Build, Go Test | *Environment* |
+| Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
+| `.env` files | Any run configuration that loads env files: when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Values set on the configuration still win |
+| Terminal | *Settings › Tools › Secrets for Infisical › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
 
 ## Signing in
 

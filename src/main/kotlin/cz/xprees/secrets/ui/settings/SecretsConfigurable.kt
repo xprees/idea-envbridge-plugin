@@ -21,6 +21,8 @@ import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
+import com.intellij.ui.dsl.builder.rows
+import com.intellij.ui.dsl.builder.selected
 import com.intellij.util.ui.JBUI
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
@@ -94,6 +96,22 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                 onApply { applyBinding() }
                 onReset { resetBindingCombos() }
                 onIsModified { isBindingModified() }
+            }
+            group(SecretsBundle.message("settings.terminal")) {
+                lateinit var terminalCheckBox: com.intellij.ui.dsl.builder.Cell<javax.swing.JCheckBox>
+                row {
+                    terminalCheckBox = checkBox(SecretsBundle.message("terminal.enable"))
+                        .bindSelected({ projectSettings.state.terminalEnabled }, { value -> projectSettings.update { terminalEnabled = value } })
+                }
+                row {
+                    textArea().rows(3).align(AlignX.FILL)
+                        .bindText(
+                            { projectSettings.state.terminalReferences ?: ProjectSecretsSettings.DEFAULT_TERMINAL_REFERENCES },
+                            { value -> projectSettings.update { terminalReferences = value } },
+                        )
+                        .comment(SecretsBundle.message("terminal.references.comment"))
+                        .enabledIf(terminalCheckBox.selected)
+                }
             }
             group(SecretsBundle.message("settings.general")) {
                 row(SecretsBundle.message("settings.cache.ttl")) {

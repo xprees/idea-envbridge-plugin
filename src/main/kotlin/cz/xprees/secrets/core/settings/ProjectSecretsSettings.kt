@@ -28,6 +28,12 @@ class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSett
 
         /** Whether the provider's project file (`.infisical.yaml`) is read at all. */
         var useProjectFile by property(true)
+
+        /** Whether new terminal tabs of this project get secrets (opt-in). */
+        var terminalEnabled by property(false)
+
+        /** What new terminal tabs get: one per line, a scope import (a reference whose last segment is `*`) or `NAME=infisical://…`. */
+        var terminalReferences by string(DEFAULT_TERMINAL_REFERENCES)
     }
 
     /** Changes the state; BaseState property setters count the modification, so it gets saved. */
@@ -36,6 +42,8 @@ class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSett
     }
 
     companion object {
+        const val DEFAULT_TERMINAL_REFERENCES = "infisical://*"
+
         fun getInstance(project: Project): ProjectSecretsSettings = project.service()
     }
 }
