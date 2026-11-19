@@ -85,7 +85,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
 
         val actions = DefaultActionGroup(
-            RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyEnvLineAction(),
+            RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
             Separator.create(), ShowAllProjectsAction(), SignInOutAction(), SettingsAction(),
@@ -359,35 +360,60 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
     }
 
+    /** A reference to [node] (a secret, or a folder / environment as a scope import), as short as the project binding allows. */
+    private fun referenceOf(node: SecretsNode): SecretReference? {
+        val connection = node.connection ?: return null
+        val provider = SecretProvider.byId(connection.providerId) ?: return null
+        val binding = binding(node)
+        val (scope, key) = when (node) {
+            is SecretNode -> node.scope to node.entry.key
+            is FolderNode -> node.scope to null
+            is EnvironmentNode -> node.scope to null
+            else -> return null
+        }
+        // Leave out what the project binding already says
+        val sameProject = binding?.projectId == scope.projectId
+        val sameEnv = sameProject && binding?.environment == scope.environment
+        val samePath = sameEnv && binding?.path == scope.path
+        return SecretReference(
+            scheme = provider.referenceScheme,
+            key = key,
+            environment = if (samePath) null else scope.environment,
+            path = if (samePath) null else scope.path,
+            projectId = if (sameProject) null else scope.projectId,
+            connectionId = if (binding != null) null else connection.name,
+        )
+    }
+
+    private fun selectedNodes(): List<SecretsNode> = tree.selectionPaths.orEmpty().mapNotNull { it.lastPathComponent as? SecretsNode }
+
     private inner class CopyReferenceAction : PanelAction(SecretsBundle.message("action.copy.reference"), AllIcons.Actions.InlayGlobe) {
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = selectedSecret() != null || selectedNode() is FolderNode || selectedNode() is EnvironmentNode
+            e.presentation.isEnabled = selectedNode()?.let(::referenceOf) != null
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            val node = selectedNode() ?: return
-            val connection = node.connection ?: return
-            val provider = SecretProvider.byId(connection.providerId) ?: return
-            val binding = binding(node)
-            val (scope, key) = when (node) {
-                is SecretNode -> node.scope to node.entry.key
-                is FolderNode -> node.scope to null
-                is EnvironmentNode -> node.scope to null
-                else -> return
-            }
-            // As short as possible: leave out what the project binding already says
-            val sameProject = binding?.projectId == scope.projectId
-            val sameEnv = sameProject && binding?.environment == scope.environment
-            val samePath = sameEnv && binding?.path == scope.path
-            val reference = SecretReference(
-                scheme = provider.referenceScheme,
-                key = key,
-                environment = if (samePath) null else scope.environment,
-                path = if (samePath) null else scope.path,
-                projectId = if (sameProject) null else scope.projectId,
-                connectionId = if (binding != null) null else connection.name,
-            )
+            val reference = selectedNode()?.let(::referenceOf) ?: return
             CopyPasteManager.getInstance().setContents(StringSelection(reference.format()))
+        }
+    }
+
+    /**
+     * `NAME=infisical://…` lines for the selected secrets (a folder becomes a whole-folder import), ready for the Paste button
+     * of a run configuration's Environment Variables dialog. References only, never values.
+     */
+    private inner class CopyAsEnvironmentVariablesAction : PanelAction(SecretsBundle.message("action.copy.env.references"), AllIcons.Actions.MenuPaste) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedNodes().any { referenceOf(it) != null }
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val lines = selectedNodes().mapNotNull { node ->
+                val reference = referenceOf(node) ?: return@mapNotNull null
+                val name = reference.key ?: cz.xprees.secrets.ui.actions.AddSecretsToRunConfigurationAction.SCOPE_VARIABLE
+                "$name=${reference.format()}"
+            }.distinct()
+            if (lines.isNotEmpty()) CopyPasteManager.getInstance().setContents(StringSelection(lines.joinToString("\n")))
         }
     }
 

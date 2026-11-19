@@ -31,5 +31,14 @@
 - Rider: injection for .NET Project and .NET Executable run configurations (ASP.NET Core included); `appsettings*.json`
   marks settings an Infisical secret overrides and reports plaintext secrets
 - Database data sources: an "Infisical" authentication option with user and password as secret references
+- *Add Secrets to Run Configuration…* (Run menu): pick secrets of the bound folder, or the whole folder, and their references are
+  written into a run configuration's environment variables. *Copy as Environment Variables* in the tool window copies
+  `NAME=infisical://…` lines to paste into any Environment Variables dialog
+- The Run console starts with a line naming the variables that came from secrets and their environment and folder (no values);
+  secrets with empty values are named there, warned about at launch and shown as "(empty)" in the run configuration preview
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview
+
+### Fixed
+
+- A personal override now always wins over the shared secret of the same folder, whichever the API lists first

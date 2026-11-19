@@ -79,7 +79,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                 val resolved = result ?: return
                 if (!confirmGuardedEnvironments(environment, profile.name, resolved.environments)) return
                 if (resolved.warnings.isNotEmpty()) SecretsNotifications.launchWarnings(environment.project, profile.name, resolved.warnings)
-                launch(environment, copyWith(resolved.environment), resolved.secretValues)
+                launch(environment, copyWith(resolved.environment), resolved.secretValues, resolved.summary())
             }
 
             override fun onThrowable(error: Throwable) {
@@ -92,7 +92,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                     configurationName = profile.name,
                     failure = failure,
                     retry = { execute(environment) },
-                    runWithoutSecrets = { launch(environment, copyWith(plan.explicit), emptySet()) },
+                    runWithoutSecrets = { launch(environment, copyWith(plan.explicit), emptySet(), null) },
                 )
             }
 
@@ -100,7 +100,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         }.queue()
     }
 
-    private fun launch(environment: ExecutionEnvironment, copy: RunProfile, secretValues: Set<String>) {
+    private fun launch(environment: ExecutionEnvironment, copy: RunProfile, secretValues: Set<String>, summary: String?) {
         ApplicationManager.getApplication().assertIsDispatchThread()
         markResolved(copy)
         val delegate = delegate(environment.executor.id, copy)
@@ -112,6 +112,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         environment.runnerAndConfigurationSettings?.let { builder.runnerAndSettings(delegate, it) } ?: builder.runner(delegate)
         val delegated = builder.runProfile(copy).build(environment.callback)
         delegated.putUserData(SECRET_VALUES, secretValues)
+        delegated.putUserData(LAUNCH_SUMMARY, summary)
         try {
             delegate.execute(delegated)
         } catch (e: ExecutionException) {
@@ -147,6 +148,9 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
         /** Values that came from a secret manager, on the environment of the delegated launch (for console masking). */
         val SECRET_VALUES: Key<Set<String>> = Key.create("cz.xprees.secrets.values")
+
+        /** What the delegated launch got from secret managers (names and scopes, no values), printed in its console. */
+        val LAUNCH_SUMMARY: Key<String> = Key.create("cz.xprees.secrets.summary")
 
         /** The copies this runner launched (identity, weakly held): it must not claim them a second time. */
         private val resolvedCopies: MutableSet<RunProfile> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))

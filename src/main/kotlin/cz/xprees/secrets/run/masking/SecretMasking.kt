@@ -4,6 +4,7 @@ import com.intellij.execution.ExecutionListener
 import com.intellij.execution.filters.ConsoleInputFilterProvider
 import com.intellij.execution.filters.InputFilter
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.openapi.components.Service
@@ -59,8 +60,9 @@ class SecretMaskingService {
 /** Tracks the launches this plugin resolved secrets for (their environment carries the values). */
 class SecretMaskingExecutionListener(private val project: Project) : ExecutionListener {
     override fun processStarted(executorId: String, env: ExecutionEnvironment, handler: ProcessHandler) {
-        val values = env.getUserData(SecretsProgramRunner.SECRET_VALUES) ?: return
-        SecretMaskingService.getInstance(project).register(handler, values)
+        env.getUserData(SecretsProgramRunner.SECRET_VALUES)?.let { SecretMaskingService.getInstance(project).register(handler, it) }
+        // So the user can see what the process got (and from where) without opening anything
+        env.getUserData(SecretsProgramRunner.LAUNCH_SUMMARY)?.let { handler.notifyTextAvailable("$it\n", ProcessOutputTypes.SYSTEM) }
     }
 
     override fun processTerminated(executorId: String, env: ExecutionEnvironment, handler: ProcessHandler, exitCode: Int) {
