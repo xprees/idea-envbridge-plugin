@@ -10,7 +10,8 @@ import com.intellij.ide.passwordSafe.PasswordSafe
  * store, as configured in Settings › Appearance & Behavior › System Settings › Passwords). Nothing here ever goes to XML
  * settings, logs or caches.
  *
- * Entries are named `Secrets for Infisical — <connection id>/<slot>`. Access may block (the keychain can ask the user), so
+ * Entries are named `Secrets for Infisical — <connection id>/<slot>` (the plugin's former name, kept so stored credentials
+ * survive the rename to EnvBridge). Access may block (the keychain can ask the user), so
  * call it off the EDT.
  */
 object CredentialVault {

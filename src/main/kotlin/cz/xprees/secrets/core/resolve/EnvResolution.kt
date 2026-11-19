@@ -43,6 +43,9 @@ object EnvResolution {
         data class Reference(val reference: SecretReference, val scope: SecretScope) : Source
 
         data class Scope(val reference: SecretReference, val scope: SecretScope, val secretPath: String) : Source
+
+        /** A secret replaced by the user's local override (kept in the credential store). */
+        data class LocalOverride(val replaced: Source) : Source
     }
 
     data class Result(
@@ -51,6 +54,33 @@ object EnvResolution {
         /** Non-fatal problems (secrets of a scope import whose value may not be read, so they were left out). */
         val warnings: List<String> = emptyList(),
     ) {
+        /** Environments the secrets came from (for the prod guard). */
+        val environments: Set<String>
+            get() = sources.values.mapNotNull { source ->
+                when (val s = (source as? Source.LocalOverride)?.replaced ?: source) {
+                    is Source.Reference -> s.scope.environment
+                    is Source.Scope -> s.scope.environment
+                    else -> null
+                }
+            }.toSet()
+
+        /**
+         * This result with [overrides] applied: a variable that came from a secret manager and has an override gets the
+         * override's value. Values set on the run configuration are not touched.
+         */
+        fun withOverrides(overrides: Map<String, String>): Result {
+            if (overrides.isEmpty()) return this
+            val environment = LinkedHashMap(this.environment)
+            val sources = LinkedHashMap(this.sources)
+            for ((name, value) in overrides) {
+                val source = sources[name] ?: continue
+                if (source is Source.Explicit || source is Source.LocalOverride) continue
+                environment[name] = value
+                sources[name] = Source.LocalOverride(source)
+            }
+            return copy(environment = environment, sources = sources)
+        }
+
         /** Values that came from a secret manager (to mask them in consoles). */
         val secretValues: Set<String>
             get() = sources.filterValues { it !is Source.Explicit }.keys.mapNotNull { environment[it] }.filter { it.isNotEmpty() }.toSet()

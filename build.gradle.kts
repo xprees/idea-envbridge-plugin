@@ -117,7 +117,7 @@ intellijPlatform {
     instrumentCode = false
 
     pluginConfiguration {
-        name = "Secrets for Infisical (Unofficial)"
+        name = "EnvBridge"
         version = pluginVersion
         description = providers.fileContents(layout.projectDirectory.file("README.md")).asText.map {
             val start = "<!-- Plugin description -->"

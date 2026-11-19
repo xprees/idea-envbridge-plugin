@@ -1,7 +1,7 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>cz.xprees.secrets</id>
-    <name>Secrets for Infisical (Unofficial)</name>
+    <name>EnvBridge</name>
     <vendor url="https://github.com/xprees">xprees</vendor>
     <!-- <description> and <change-notes> are filled in from README.md / CHANGELOG.md by the Gradle build -->
 
@@ -9,11 +9,22 @@
     <!-- Each integration is optional, so the plugin loads in every IDE -->
     <depends optional="true" config-file="secrets-maven.xml">org.jetbrains.idea.maven</depends>
     <depends optional="true" config-file="secrets-nodejs.xml">NodeJS</depends>
-    <depends optional="true" config-file="secrets-npm.xml">JavaScript</depends>
+    <depends optional="true" config-file="secrets-javascript.xml">JavaScript</depends>
     <depends optional="true" config-file="secrets-python.xml">PythonCore</depends>
     <depends optional="true" config-file="secrets-go.xml">org.jetbrains.plugins.go</depends>
     <depends optional="true" config-file="secrets-docker.xml">Docker</depends>
     <depends optional="true" config-file="secrets-terminal.xml">org.jetbrains.plugins.terminal</depends>
+    <!-- Inlay hints are registered per language, in the plugin that defines it -->
+    <depends optional="true" config-file="secrets-lang-java.xml">com.intellij.java</depends>
+    <depends optional="true" config-file="secrets-lang-kotlin.xml">org.jetbrains.kotlin</depends>
+    <depends optional="true" config-file="secrets-lang-yaml.xml">org.jetbrains.plugins.yaml</depends>
+    <depends optional="true" config-file="secrets-lang-properties.xml">com.intellij.properties</depends>
+    <depends optional="true" config-file="secrets-lang-xml.xml">com.intellij.modules.xml</depends>
+    <depends optional="true" config-file="secrets-lang-shell.xml">com.jetbrains.sh</depends>
+    <depends optional="true" config-file="secrets-lang-dotenv.xml">ru.adelf.idea.dotenv</depends>
+    <depends optional="true" config-file="secrets-lang-php.xml">com.jetbrains.php</depends>
+    <depends optional="true" config-file="secrets-lang-ruby.xml">org.jetbrains.plugins.ruby</depends>
+    <depends optional="true" config-file="secrets-lang-rust.xml">com.jetbrains.rust</depends>
 
     <resource-bundle>messages.SecretsBundle</resource-bundle>
 
@@ -40,6 +51,43 @@
         <projectConfigurable parentId="tools" id="cz.xprees.secrets.settings"
                              instance="cz.xprees.secrets.ui.settings.SecretsConfigurable"
                              key="settings.display.name" bundle="messages.SecretsBundle"/>
-        <notificationGroup id="Secrets for Infisical" displayType="BALLOON" key="notification.group.name"/>
+        <notificationGroup id="EnvBridge" displayType="BALLOON" key="notification.group.name"/>
+
+        <!-- Editor: completion, hover and gutter, masked inlays, missing-secret inspection; language-agnostic -->
+        <completion.contributor language="any" implementationClass="cz.xprees.secrets.editor.SecretKeyCompletionContributor"/>
+        <typedHandler implementation="cz.xprees.secrets.editor.SecretKeyAutoPopup"/>
+        <!-- language="" applies an external annotator to every language -->
+        <externalAnnotator language="" implementationClass="cz.xprees.secrets.editor.SecretReferenceAnnotator"/>
+        <!-- Plain text here; other languages in the secrets-lang-*.xml / integration configs -->
+        <codeInsight.declarativeInlayProvider language="TEXT" implementationClass="cz.xprees.secrets.editor.SecretInlayHintsProvider"
+                                              isEnabledByDefault="true" group="VALUES_GROUP" providerId="cz.xprees.secrets.hints"
+                                              bundle="messages.SecretsBundle" nameKey="inlay.provider.name"
+                                              descriptionKey="inlay.provider.description"/>
+        <localInspection shortName="InfisicalMissingSecret" bundle="messages.SecretsBundle" key="inspection.missing.display.name"
+                         groupKey="inspection.group.name" enabledByDefault="true" level="WARNING"
+                         implementationClass="cz.xprees.secrets.editor.MissingSecretInspection"/>
+
+        <!-- Console masking of injected values -->
+        <consoleInputFilterProvider implementation="cz.xprees.secrets.run.masking.SecretMaskingFilterProvider"/>
+
+        <statusBarWidgetFactory id="SecretsForInfisical" implementation="cz.xprees.secrets.ui.status.SecretsStatusBarWidgetFactory"
+                                order="after positionWidget"/>
     </extensions>
+
+    <!-- Kotlin is only an optional dependency for inlay hints; no Kotlin analysis API is used, so K2 mode is supported -->
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <supportsKotlinPluginMode supportsK2="true"/>
+    </extensions>
+
+    <projectListeners>
+        <listener class="cz.xprees.secrets.run.masking.SecretMaskingExecutionListener" topic="com.intellij.execution.ExecutionListener"/>
+    </projectListeners>
+
+    <actions>
+        <action id="cz.xprees.secrets.RunWithEnvironment" class="cz.xprees.secrets.ui.actions.RunWithEnvironmentAction"
+                text="Run with Infisical Environment…"
+                description="Run the selected configuration once with secrets from another environment">
+            <add-to-group group-id="RunMenu" anchor="after" relative-to-action="ChooseRunConfiguration"/>
+        </action>
+    </actions>
 </idea-plugin>

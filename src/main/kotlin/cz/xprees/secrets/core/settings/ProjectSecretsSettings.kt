@@ -8,6 +8,7 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.util.messages.Topic
 
 /**
  * The project binding chosen in the IDE: which connection, project, environment and folder references fall back to.
@@ -16,7 +17,8 @@ import com.intellij.openapi.project.Project
  */
 @Service(Service.Level.PROJECT)
 @State(name = "SecretsForInfisicalProject", storages = [Storage(StoragePathMacros.WORKSPACE_FILE)])
-class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSettings.ProjectState>(ProjectState()) {
+class ProjectSecretsSettings(private val project: Project) :
+    SimplePersistentStateComponent<ProjectSecretsSettings.ProjectState>(ProjectState()) {
 
     class ProjectState : BaseState() {
         var connectionId by string()
@@ -29,6 +31,12 @@ class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSett
         /** Whether the provider's project file (`.infisical.yaml`) is read at all. */
         var useProjectFile by property(true)
 
+        /**
+         * When a project is bound: whether only that project may be used (references naming another project or connection are
+         * refused, and the tool window shows only the bound project). Has no effect while nothing is bound.
+         */
+        var restrictToBoundProject by property(true)
+
         /** Whether new terminal tabs of this project get secrets (opt-in). */
         var terminalEnabled by property(false)
 
@@ -36,13 +44,25 @@ class ProjectSecretsSettings : SimplePersistentStateComponent<ProjectSecretsSett
         var terminalReferences by string(DEFAULT_TERMINAL_REFERENCES)
     }
 
-    /** Changes the state; BaseState property setters count the modification, so it gets saved. */
+    /**
+     * Changes the state (BaseState property setters count the modification, so it gets saved) and tells listeners that the
+     * binding may have changed.
+     */
     fun update(block: ProjectState.() -> Unit) {
         state.block()
+        if (!project.isDisposed) project.messageBus.syncPublisher(BINDING_TOPIC).bindingChanged()
+    }
+
+    fun interface BindingListener {
+        fun bindingChanged()
     }
 
     companion object {
         const val DEFAULT_TERMINAL_REFERENCES = "infisical://*"
+
+        /** Project-level topic: the binding (connection, project, environment, folder) may have changed. */
+        @JvmField
+        val BINDING_TOPIC: Topic<BindingListener> = Topic.create("EnvBridge binding", BindingListener::class.java)
 
         fun getInstance(project: Project): ProjectSecretsSettings = project.service()
     }

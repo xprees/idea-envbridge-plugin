@@ -109,6 +109,25 @@ class SecretsPlatformTest : BasePlatformTestCase() {
             .isInstanceOf(SecretProviderException::class.java)
     }
 
+    fun `test only the bound project may be used when restricted`() {
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val other = resolver.plan(mapOf("X" to "infisical://DB_PASSWORD?project=someone-elses"))
+        val otherConnection = resolver.plan(mapOf("X" to "infisical://DB_PASSWORD?connection=Other"))
+        assertThat(ProjectSecretsSettings.getInstance(project).state.restrictToBoundProject).isTrue()
+        assertThatThrownBy { resolver.resolve(other) }.isInstanceOf(SecretProviderException::class.java).hasMessageContaining("another project")
+        assertThatThrownBy { resolver.resolve(otherConnection) }.isInstanceOf(SecretProviderException::class.java).hasMessageContaining("another connection")
+        // the bound project named explicitly is fine
+        assertThat(resolver.resolve(resolver.plan(mapOf("X" to "infisical://DB_PASSWORD?project=p1"))).environment).containsEntry("X", "dev-pass")
+
+        ProjectSecretsSettings.getInstance(project).update { restrictToBoundProject = false }
+        try {
+            // the mock serves every project the same secrets
+            assertThat(resolver.resolve(other).environment).containsEntry("X", "dev-pass")
+        } finally {
+            ProjectSecretsSettings.getInstance(project).update { restrictToBoundProject = true }
+        }
+    }
+
     fun `test binding environment precedence`() {
         val bindings = SecretBindingService.getInstance(project)
         val provider = InfisicalProvider()

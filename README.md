@@ -1,7 +1,9 @@
-# Secrets for Infisical (Unofficial)
+# EnvBridge
+
+Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**.
 
 <!-- Plugin description -->
-<p><b>Unofficial community plugin.</b> Not affiliated with, endorsed by or sponsored by Infisical Inc.
+<p><b>Unofficial Infisical integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc.
 "Infisical" is a trademark of Infisical Inc. and is used only to say which service this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
@@ -18,6 +20,16 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b><code>.env</code> files with references</b>: keep a committed <code>.env</code> that holds <code>infisical://</code>
       references instead of secrets and attach it to the run configuration as usual</li>
   <li><b>Terminal</b> (opt-in): new terminal tabs of the project get the secrets too</li>
+  <li><b>In the editor</b>, in every language: completion of secret keys where code reads environment variables
+      (<code>System.getenv("…")</code>, <code>process.env.…</code>, <code>os.environ["…"]</code>, <code>os.Getenv("…")</code>,
+      <code>${…}</code>, …) and after <code>infisical://</code>; a masked hint with the environment; a key icon in the gutter to
+      reveal, copy or locally override the value; a tooltip with the environments that define the key; a warning when a secret
+      is missing in the bound environment</li>
+  <li><b>Environments at a glance</b>: the bound environment in the status bar with a switcher, <i>Run with Infisical
+      Environment…</i> to run a configuration once against another environment, a <b>prod guard</b> that asks before secrets from
+      production-like environments reach a process, and a key-by-key <b>comparison</b> of two environments</li>
+  <li>Injected values are <b>masked in Run and Debug consoles</b>; <b>local overrides</b> (kept in the IDE's password storage)
+      replace a secret for you only</li>
   <li><b>Fail closed</b>: if a secret can't be loaded, the launch stops with <i>Sign in</i>, <i>Retry</i> and <i>Run without secrets once</i></li>
   <li><b>Secrets tool window</b>: browse projects, environments, folders and secrets. Values stay masked; <i>Reveal</i> hides them
       again after a few seconds, and copied values are cleared from the clipboard after a while. Copy a ready-made
@@ -30,20 +42,20 @@ handed to the process in memory. Nothing is written to disk.</p>
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
-<p>Settings: <i>Settings › Tools › Secrets for Infisical</i>. Read-only: the plugin never changes your secrets.</p>
+<p>Settings: <i>Settings › Tools › EnvBridge</i>. Read-only: the plugin never changes your secrets.</p>
 <!-- Plugin description end -->
 
 Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The plugin is built and tested against the oldest
 supported IDE (`platformVersion` in `gradle.properties`) and verified against the latest IntelliJ IDEA, WebStorm, PyCharm, GoLand,
 Rider and DataGrip in CI. It declares no upper build limit.
 
-> **Status: M2.** Injection works for JVM, Gradle, Maven, Node.js/npm/Bun, Python, Go and Docker/Compose run configurations,
-> `.env` files with references and the terminal. Editor completion and inlays, Rider .NET and database data sources follow. See
-> the [design and roadmap](docs/DESIGN.md).
+> **Status: M3.** Injection for JVM, Gradle, Maven, Node.js/npm/Bun, Python, Go and Docker/Compose, `.env` files with
+> references, the terminal, and the editor integration are done. Rider .NET and database data sources follow. See the
+> [design and roadmap](docs/DESIGN.md).
 
 ## Quick start
 
-1. *Settings › Tools › Secrets for Infisical › Connections › +*: pick **Infisical Cloud (US)**, **(EU)** or enter your instance's
+1. *Settings › Tools › EnvBridge › Connections › +*: pick **Infisical Cloud (US)**, **(EU)** or enter your instance's
    URL, and choose a sign-in method (see [Signing in](#signing-in)). Then **Sign In**.
 2. Tell the IDE which Infisical project to use. Either run `infisical init` in the project (the plugin reads `.infisical.yaml`),
    or pick the project and environment under *This Project* in the same settings page.
@@ -89,7 +101,22 @@ A reference is the value of an environment variable:
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
 | `.env` files | Any run configuration that loads env files: when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Values set on the configuration still win |
-| Terminal | *Settings › Tools › Secrets for Infisical › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
+| Terminal | *Settings › Tools › EnvBridge › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
+
+## In the editor
+
+| Feature | Where |
+|---|---|
+| Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
+| Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window |
+| Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
+| Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
+| Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |
+| Status bar | `Infisical: dev`, click to switch. Production-like environments show a warning icon |
+| *Run › Run with Infisical Environment…* | Runs the selected configuration once against another environment |
+| Prod guard | Asks before a launch uses secrets from environments matching `prod*, production*, live*` (configurable) |
+| Console masking | Values handed to a running process are replaced by `••••••` in its Run / Debug console (values of at least 4 characters) |
+| Local overrides | Your own value for a secret, for this project on this computer, kept in the IDE's password storage |
 
 ## Signing in
 

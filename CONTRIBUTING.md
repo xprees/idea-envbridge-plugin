@@ -1,4 +1,4 @@
-# Contributing to Secrets for Infisical
+# Contributing to EnvBridge
 
 Thanks for helping. Bug reports, fixes, new features, tests and documentation are all welcome. This guide covers how to get the
 project running, how the code is organized, and what a pull request needs before it can be merged.

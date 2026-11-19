@@ -15,11 +15,13 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Key
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.EnvResolution
 import cz.xprees.secrets.core.resolve.LaunchSecretResolver
+import cz.xprees.secrets.core.resolve.ProdGuard
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -70,11 +72,12 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                result = resolver.resolve(plan)
+                result = resolver.resolve(plan, environment = environment.getUserData(ENVIRONMENT_OVERRIDE))
             }
 
             override fun onSuccess() {
                 val resolved = result ?: return
+                if (!confirmGuardedEnvironments(environment, profile.name, resolved.environments)) return
                 if (resolved.warnings.isNotEmpty()) SecretsNotifications.launchWarnings(environment.project, profile.name, resolved.warnings)
                 launch(environment, copyWith(resolved.environment), resolved.secretValues)
             }
@@ -116,6 +119,20 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         }
     }
 
+    /** Asks before secrets from a production-like environment (see [ProdGuard]) are handed to a process. */
+    private fun confirmGuardedEnvironments(environment: ExecutionEnvironment, name: String, environments: Set<String>): Boolean {
+        val guarded = environments.filter { ProdGuard.matches(it) }
+        if (guarded.isEmpty()) return true
+        return Messages.showYesNoDialog(
+            environment.project,
+            SecretsBundle.message("prod.guard.message", name, guarded.joinToString()),
+            SecretsBundle.message("prod.guard.title"),
+            SecretsBundle.message("prod.guard.run"),
+            Messages.getCancelButton(),
+            Messages.getWarningIcon(),
+        ) == Messages.YES
+    }
+
     private fun delegate(executorId: String, profile: RunProfile): ProgramRunner<*>? =
         ProgramRunner.PROGRAM_RUNNER_EP.extensionList.firstOrNull { runner ->
             runner !is SecretsProgramRunner && runCatching { runner.canRun(executorId, profile) }.getOrDefault(false)
@@ -124,6 +141,9 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
     companion object {
         const val RUNNER_ID = "SecretsForInfisical"
         private val LOG = logger<SecretsProgramRunner>()
+
+        /** Set on an [ExecutionEnvironment] to resolve this launch against another environment ("Run with environment…"). */
+        val ENVIRONMENT_OVERRIDE: Key<String> = Key.create("cz.xprees.secrets.environmentOverride")
 
         /** Values that came from a secret manager, on the environment of the delegated launch (for console masking). */
         val SECRET_VALUES: Key<Set<String>> = Key.create("cz.xprees.secrets.values")

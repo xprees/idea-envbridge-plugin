@@ -4,6 +4,8 @@
 
 ### Added
 
+- The plugin is called **EnvBridge** (an unofficial Infisical integration); existing settings and sign-ins are kept
+
 - Connections to Infisical Cloud (US, EU), dedicated and self-hosted instances, with three sign-in methods: browser sign-in (like
   the Infisical CLI), OAuth application (read-only, PKCE) and machine identity (Universal Auth). Credentials are stored only in
   the IDE's password storage
@@ -20,5 +22,11 @@
   writing files
 - `.env` files attached to a run configuration may hold `infisical://` references instead of secrets
 - Terminal (opt-in per project in the plugin's settings): new tabs get the referenced secrets
+- Editor integration in every language: completion of secret keys where code reads environment variables and after
+  `infisical://`, a gutter icon to reveal / copy / override a secret, a tooltip with the environments that define it, masked
+  inlay hints, and an inspection for secrets missing in the bound environment
+- Status bar widget with the bound environment and a switcher; *Run with Infisical Environment…*; a prod guard that asks before
+  production secrets reach a process; environment comparison
+- Injected values are masked in Run and Debug consoles; local overrides of secrets are kept in the IDE's password storage
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview

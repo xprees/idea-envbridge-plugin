@@ -30,6 +30,7 @@ import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.SecretProvider
+import cz.xprees.secrets.core.resolve.LocalOverrides
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
@@ -39,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JList
 
 /**
- * Settings › Tools › Secrets for Infisical: connections (application level; edits apply right away, secrets go to the
+ * Settings › Tools › EnvBridge: connections (application level; edits apply right away, secrets go to the
  * credential store), the project binding and general options (applied with Apply/OK).
  */
 class SecretsConfigurable(private val project: Project) : BoundConfigurable(SecretsBundle.message("settings.display.name")) {
@@ -50,11 +51,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
     private val connectionList = JBList(connectionModel)
     private val signedIn = ConcurrentHashMap<String, Boolean>()
 
-    private val bindingConnection = ComboBox<SecretConnection?>()
-    private val bindingProject = ComboBox<String>().apply { isEditable = true }
-    private val bindingEnvironment = ComboBox<String>().apply { isEditable = true }
-    private var loadedProjects: List<ProviderProject> = emptyList()
-    private val effectiveBinding = JBLabel().apply { foreground = JBUI.CurrentTheme.ContextHelp.FOREGROUND }
+    private val binding = ProjectBindingPanel(project)
 
     override fun createPanel(): DialogPanel {
         connectionList.cellRenderer = ConnectionRenderer()
@@ -66,10 +63,6 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
             .setPreferredSize(JBUI.size(480, 110))
             .createPanel()
 
-        resetBindingCombos()
-        bindingConnection.addActionListener { loadProjects() }
-        bindingProject.addActionListener { updateEnvironments() }
-
         return panel {
             group(SecretsBundle.message("settings.connections")) {
                 row { cell(decorated).align(AlignX.FILL) }
@@ -77,25 +70,13 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                     button(SecretsBundle.message("action.sign.in")) { selectedConnection()?.let { SignInHelper.signIn(project, it) { refreshSignInStates() } } }
                     button(SecretsBundle.message("action.sign.out")) { selectedConnection()?.let { SignInHelper.signOut(project, it) { refreshSignInStates() } } }
                 }
-                row { comment(SecretsBundle.message("settings.connections.comment"), maxLineLength = 90) }
+                row { comment(SecretsBundle.message("settings.connections.comment")) }
             }
             group(SecretsBundle.message("settings.binding")) {
-                row(SecretsBundle.message("settings.binding.connection")) { cell(bindingConnection).align(AlignX.FILL) }
-                row(SecretsBundle.message("settings.binding.project")) { cell(bindingProject).align(AlignX.FILL) }
-                row(SecretsBundle.message("settings.binding.environment")) { cell(bindingEnvironment).align(AlignX.FILL) }
-                row(SecretsBundle.message("settings.binding.path")) {
-                    textField().bindText({ projectSettings.state.path.orEmpty() }, { projectSettings.update { path = it.trim().ifEmpty { null } } })
-                        .align(AlignX.FILL).applyToComponent { emptyText.text = "/" }
-                }
-                row {
-                    checkBox(SecretsBundle.message("settings.binding.project.file"))
-                        .bindSelected({ projectSettings.state.useProjectFile }, { projectSettings.update { useProjectFile = it } })
-                }
-                row { comment(SecretsBundle.message("settings.binding.comment"), maxLineLength = 90) }
-                row { cell(effectiveBinding) }
-                onApply { applyBinding() }
-                onReset { resetBindingCombos() }
-                onIsModified { isBindingModified() }
+                binding.build(this)
+                onApply { binding.apply() }
+                onReset { binding.reset() }
+                onIsModified { binding.isModified() }
             }
             group(SecretsBundle.message("settings.terminal")) {
                 lateinit var terminalCheckBox: com.intellij.ui.dsl.builder.Cell<javax.swing.JCheckBox>
@@ -126,6 +107,17 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                     intTextField(0..3600).columns(6).bindIntText(app.state::clipboardClearSeconds)
                     label(SecretsBundle.message("settings.seconds.zero.never"))
                 }
+                row(SecretsBundle.message("settings.prod.guard")) {
+                    textField().align(AlignX.FILL).resizableColumn()
+                        .bindText({ app.state.prodGuardPattern.orEmpty() }, { app.state.prodGuardPattern = it.trim() })
+                }.rowComment(SecretsBundle.message("settings.prod.guard.comment"))
+                row {
+                    checkBox(SecretsBundle.message("settings.mask.console")).bindSelected(app.state::maskConsoleOutput)
+                }
+            }
+            group(SecretsBundle.message("settings.overrides")) {
+                row { cell(overridesPanel()).align(AlignX.FILL) }
+                row { comment(SecretsBundle.message("settings.overrides.comment")) }
             }
         }
     }
@@ -134,7 +126,28 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         super.apply()
         SecretsService.getInstance().invalidate()
         app.fireChanged()
-        updateEffectiveBinding()
+    }
+
+    // ---- Local overrides -------------------------------------------------------------------------------------------
+
+    private val overrideModel = CollectionListModel<String>()
+
+    /** The names of this project's local overrides (values stay in the credential store); remove-only. */
+    private fun overridesPanel(): javax.swing.JComponent {
+        val list = JBList(overrideModel).apply { emptyText.text = SecretsBundle.message("settings.overrides.empty") }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val names = LocalOverrides.getInstance(project).names().sorted()
+            ApplicationManager.getApplication().invokeLater({ overrideModel.replaceAll(names) }, ModalityState.any())
+        }
+        return ToolbarDecorator.createDecorator(list)
+            .disableAddAction()
+            .setRemoveAction {
+                val selected = list.selectedValuesList
+                selected.forEach(overrideModel::remove)
+                ApplicationManager.getApplication().executeOnPooledThread { selected.forEach(LocalOverrides.getInstance(project)::remove) }
+            }
+            .setPreferredSize(JBUI.size(480, 80))
+            .createPanel()
     }
 
     // ---- Connections -----------------------------------------------------------------------------------------------
@@ -178,7 +191,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
     private fun reloadConnections(select: SecretConnection?) {
         connectionModel.replaceAll(app.connections)
         select?.let { wanted -> connectionList.setSelectedValue(connectionModel.items.firstOrNull { it.id == wanted.id }, true) }
-        resetBindingCombos()
+        binding.reset()
         refreshSignInStates()
     }
 
@@ -203,89 +216,6 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                 false -> append("  " + SecretsBundle.message("toolwindow.signed.out"), SimpleTextAttributes.ERROR_ATTRIBUTES)
                 null -> Unit
             }
-        }
-    }
-
-    // ---- Project binding -------------------------------------------------------------------------------------------
-
-    private fun resetBindingCombos() {
-        val state = projectSettings.state
-        val items = listOf<SecretConnection?>(null) + app.connections
-        bindingConnection.removeAllItems()
-        items.forEach(bindingConnection::addItem)
-        bindingConnection.renderer = textListCellRenderer { connection: SecretConnection? ->
-            connection?.name ?: SecretsBundle.message("settings.binding.auto")
-        }
-        bindingConnection.selectedItem = items.firstOrNull { it?.id == state.connectionId }
-        bindingProject.renderer = textListCellRenderer { id: String? ->
-            loadedProjects.firstOrNull { it.id == id }?.let { "${it.name}  ($id)" } ?: id.orEmpty()
-        }
-        bindingProject.selectedItem = state.projectId.orEmpty()
-        bindingEnvironment.selectedItem = state.environment.orEmpty()
-        loadProjects()
-        updateEffectiveBinding()
-    }
-
-    private fun loadProjects() {
-        val connection = (bindingConnection.selectedItem as? SecretConnection) ?: app.connections.firstOrNull() ?: return
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val projects = runCatching { SecretsService.getInstance().projects(connection) }.getOrDefault(emptyList())
-            ApplicationManager.getApplication().invokeLater({
-                loadedProjects = projects
-                val current = bindingProject.editor.item?.toString().orEmpty()
-                bindingProject.removeAllItems()
-                bindingProject.addItem("")
-                projects.forEach { bindingProject.addItem(it.id) }
-                bindingProject.selectedItem = current
-                updateEnvironments()
-            }, ModalityState.any())
-        }
-    }
-
-    private fun updateEnvironments() {
-        val projectId = bindingProject.editor.item?.toString()?.trim().orEmpty()
-        val current = bindingEnvironment.editor.item?.toString().orEmpty()
-        bindingEnvironment.removeAllItems()
-        bindingEnvironment.addItem("")
-        loadedProjects.firstOrNull { it.id == projectId }?.environments?.forEach { bindingEnvironment.addItem(it.slug) }
-        bindingEnvironment.selectedItem = current
-    }
-
-    private fun comboText(combo: ComboBox<String>) = (combo.editor.item ?: combo.selectedItem)?.toString()?.trim().orEmpty()
-
-    private fun isBindingModified(): Boolean {
-        val state = projectSettings.state
-        return (bindingConnection.selectedItem as? SecretConnection)?.id != state.connectionId ||
-            comboText(bindingProject) != state.projectId.orEmpty() ||
-            comboText(bindingEnvironment) != state.environment.orEmpty()
-    }
-
-    private fun applyBinding() {
-        projectSettings.update {
-            connectionId = (bindingConnection.selectedItem as? SecretConnection)?.id
-            projectId = comboText(bindingProject).ifEmpty { null }
-            environment = comboText(bindingEnvironment).ifEmpty { null }
-        }
-    }
-
-    private fun updateEffectiveBinding() {
-        val provider = SecretProvider.all().firstOrNull() ?: return
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val text = try {
-                val b = SecretBindingService.getInstance(project).binding(provider)
-                SecretsBundle.message(
-                    "settings.binding.effective",
-                    b.connection.name,
-                    b.projectId ?: SecretsBundle.message("settings.binding.no.project"),
-                    b.environment,
-                    b.environmentSource,
-                    b.path,
-                    b.projectFile?.file?.fileName?.toString() ?: SecretsBundle.message("settings.binding.no.file"),
-                )
-            } catch (e: Exception) {
-                e.message.orEmpty()
-            }
-            ApplicationManager.getApplication().invokeLater({ effectiveBinding.text = "<html>${text.replace("<", "&lt;")}</html>" }, ModalityState.any())
         }
     }
 

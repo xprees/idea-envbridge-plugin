@@ -14,6 +14,7 @@ import cz.xprees.secrets.core.model.SecretConnection
  * `CredentialVault`), only names, instance URLs, auth method IDs and their non-secret options.
  */
 @Service(Service.Level.APP)
+// Storage names predate the rename to EnvBridge; kept so existing settings are read
 @State(name = "SecretsForInfisical", storages = [Storage("secrets-for-infisical.xml")])
 class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.AppState>(AppState()) {
 
@@ -28,6 +29,12 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
 
         /** After how long a copied value is removed from the clipboard (if it is still there). 0 = never. */
         var clipboardClearSeconds by property(DEFAULT_CLIPBOARD_CLEAR_SECONDS)
+
+        /** Environments that need a confirmation before a launch: comma-separated globs on the slug. Empty = off. */
+        var prodGuardPattern by string(DEFAULT_PROD_GUARD_PATTERN)
+
+        /** Whether secret values are masked in Run and Debug consoles. */
+        var maskConsoleOutput by property(true)
     }
 
     class ConnectionState : BaseState() {
@@ -98,9 +105,10 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
         const val DEFAULT_CACHE_TTL_SECONDS = 300
         const val DEFAULT_REVEAL_SECONDS = 10
         const val DEFAULT_CLIPBOARD_CLEAR_SECONDS = 30
+        const val DEFAULT_PROD_GUARD_PATTERN = "prod*, production*, live*"
 
         @JvmField
-        val TOPIC: Topic<Listener> = Topic.create("Secrets for Infisical connections", Listener::class.java)
+        val TOPIC: Topic<Listener> = Topic.create("EnvBridge connections", Listener::class.java)
 
         fun getInstance(): SecretsAppSettings = service()
     }

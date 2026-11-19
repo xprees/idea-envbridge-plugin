@@ -1,6 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.extensions.intellijPlatform
 
-rootProject.name = "secrets-for-infisical"
+rootProject.name = "envbridge"
 
 // Maven Central is read through Google's mirror first: repo.maven.apache.org rate-limits shared CI runners (HTTP 429), which
 // failed whole CI runs on a cold Gradle cache. The mirror serves the same artifacts; Maven Central stays as the last fallback,

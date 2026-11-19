@@ -7,6 +7,8 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.ide.CopyPasteManager
@@ -34,11 +36,11 @@ import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
+import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.ui.SecretClipboard
 import cz.xprees.secrets.ui.auth.SignInHelper
 import cz.xprees.secrets.ui.settings.SecretsConfigurable
-import java.awt.Toolkit
-import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -84,7 +86,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         val actions = DefaultActionGroup(
             RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyEnvLineAction(),
-            OpenDashboardAction(), Separator.create(), PreviewAction(), SignInOutAction(), SettingsAction(),
+            OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
+            ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
+            Separator.create(), ShowAllProjectsAction(), SignInOutAction(), SettingsAction(),
         )
         val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", actions, true)
         toolbar.targetComponent = tree
@@ -94,6 +98,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         ApplicationManager.getApplication().messageBus.connect(this)
             .subscribe(SecretsAppSettings.TOPIC, SecretsAppSettings.Listener { rebuild() })
+        project.messageBus.connect(this).subscribe(ProjectSecretsSettings.BINDING_TOPIC, ProjectSecretsSettings.BindingListener { rebuild() })
         rebuild()
     }
 
@@ -102,7 +107,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     /** Rebuilds the tree from the configured connections (values are re-read from the cache or the instance on expand). */
     fun rebuild() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val connections = SecretsAppSettings.getInstance().connections
+            // With a bound project (and "only use the bound project"), only its connection is listed
+            val restricted = restrictedBinding()
+            val connections = SecretsAppSettings.getInstance().connections.filter { restricted == null || it.id == restricted.connection.id }
             val nodes = connections.map { connection ->
                 val client = runCatching { SecretsService.getInstance().client(connection) }.getOrNull()
                 ConnectionNode(connection, client?.hasCredentials() == true, null)
@@ -166,6 +173,12 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                     if (e.kind != SecretProviderException.Kind.FORBIDDEN || boundId == null) throw e
                     listOf(ProviderProject(boundId, SecretsBundle.message("toolwindow.bound.project"), boundId, listOf(ProviderEnvironment(binding.environment, binding.environment))))
                 }
+                val restrictedTo = restrictedBinding()?.takeIf { it.connection.id == node.connection.id }?.projectId
+                if (restrictedTo != null) {
+                    val bound = projects.firstOrNull { it.id == restrictedTo }
+                        ?: ProviderProject(restrictedTo, SecretsBundle.message("toolwindow.bound.project"), restrictedTo, listOfNotNull(binding?.environment?.let { ProviderEnvironment(it, it) }))
+                    return listOf(ProjectNode(node.connection, bound, true))
+                }
                 projects.map { ProjectNode(node.connection, it, it.id == binding?.projectId) }
                     .sortedByDescending { it.bound }
             }
@@ -188,6 +201,17 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         val folders = service.folders(connection, scope).map { FolderNode(connection, SecretScope(scope.projectId, scope.environment, it.path), it.name) }
         val secrets = service.secrets(connection, scope, fresh).sortedBy { it.key.lowercase() }.map { SecretNode(connection, scope, it) }
         return folders + secrets
+    }
+
+    /** Whether to show connections and projects other than the bound one (a deliberate, temporary choice). */
+    @Volatile
+    private var showAll = false
+
+    /** The binding the tool window is limited to, or null when everything may be shown. Off the EDT. */
+    private fun restrictedBinding(): SecretBindingService.Binding? {
+        if (showAll || !ProjectSecretsSettings.getInstance(project).state.restrictToBoundProject) return null
+        val provider = SecretProvider.all().firstOrNull() ?: return null
+        return SecretBindingService.getInstance(project).bindingOrNull(provider)?.takeIf { it.projectId != null }
     }
 
     private fun binding(node: SecretsNode): SecretBindingService.Binding? {
@@ -321,7 +345,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            selectedSecret()?.let { copySecret(it.entry.value.reveal()) }
+            selectedSecret()?.let { SecretClipboard.copy(it.entry.value.reveal()) }
         }
     }
 
@@ -331,7 +355,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            selectedSecret()?.let { copySecret("${it.entry.key}=${it.entry.value.reveal()}") }
+            selectedSecret()?.let { SecretClipboard.copy("${it.entry.key}=${it.entry.value.reveal()}") }
         }
     }
 
@@ -379,9 +403,13 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 is SecretNode -> node.scope
                 is FolderNode -> node.scope
                 is EnvironmentNode -> node.scope
+                is ProjectNode -> node.project.environments.firstOrNull()?.let { SecretScope(node.project.id, it.slug) }
                 else -> null
             }
-            SecretProvider.byId(connection.providerId)?.dashboardUrl(connection, scope)?.let(BrowserUtil::browse)
+            // The project node above the selection knows the organization the dashboard URL needs
+            val organizationId = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)?.project?.organizationId
+            val key = (node as? SecretNode)?.entry?.key
+            SecretProvider.byId(connection.providerId)?.dashboardUrl(connection, scope, organizationId, key)?.let(BrowserUtil::browse)
         }
     }
 
@@ -404,25 +432,36 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         override fun actionPerformed(e: AnActionEvent) = RunConfigurationPreviewDialog(project).show()
     }
 
+    private inner class OverrideAction : PanelAction(SecretsBundle.message("editor.action.override"), AllIcons.Actions.Edit) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret() != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedSecret()?.let { cz.xprees.secrets.editor.SecretValueActions.editOverride(project, it.entry.key) }
+        }
+    }
+
+    private inner class CompareAction : PanelAction(SecretsBundle.message("action.compare"), AllIcons.Actions.Diff) {
+        override fun actionPerformed(e: AnActionEvent) = CompareEnvironmentsDialog(project).show()
+    }
+
+    private inner class ShowAllProjectsAction : ToggleAction(
+        SecretsBundle.message("toolwindow.show.all"), SecretsBundle.message("toolwindow.show.all.description"), AllIcons.Actions.Show,
+    ), DumbAware {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun isSelected(e: AnActionEvent): Boolean = showAll
+
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            showAll = state
+            rebuild()
+        }
+    }
+
     private inner class SettingsAction : PanelAction(SecretsBundle.message("action.settings"), AllIcons.General.Settings) {
         override fun actionPerformed(e: AnActionEvent) = SecretsConfigurable.show(project)
     }
 
-    /**
-     * Copies a secret to the system clipboard (not through the IDE's CopyPasteManager, so it doesn't land in the IDE's clipboard
-     * history) and removes it again after the configured delay, if nothing replaced it in the meantime.
-     */
-    private fun copySecret(text: String) {
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.setContents(StringSelection(text), null)
-        val seconds = SecretsAppSettings.getInstance().state.clipboardClearSeconds.toLong()
-        if (seconds <= 0) return
-        AppExecutorUtil.getAppScheduledExecutorService().schedule({
-            ApplicationManager.getApplication().invokeLater({
-                val current = runCatching { clipboard.getData(DataFlavor.stringFlavor) as? String }.getOrNull()
-                if (current == text) clipboard.setContents(StringSelection(""), null)
-            }, ModalityState.any())
-        }, seconds, TimeUnit.SECONDS)
-    }
 
 }
