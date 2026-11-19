@@ -1,6 +1,7 @@
 package cz.xprees.secrets.core.provider
 
 import com.intellij.openapi.extensions.ExtensionPointName
+import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
@@ -98,6 +99,10 @@ interface SecretsClient {
      */
     fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String = ""): CreateOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create secrets")
+
+    /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
+    fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create environments")
 }
 
 /** What [SecretsClient.createSecret] did. */

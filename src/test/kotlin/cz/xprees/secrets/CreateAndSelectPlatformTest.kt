@@ -113,4 +113,21 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
         }
         assertThat(selected()).isEqualTo("BACKEND_ONLY")
     }
+
+    fun `test environments are created and listed, duplicates and read-only connections are refused`() {
+        val service = SecretsService.getInstance()
+        service.projects(connection) // cached before the creation
+        val created = service.createEnvironment(connection, "p1", "QA Staging", "qa-staging")
+        assertThat(created.slug).isEqualTo("qa-staging")
+        assertThat(created.name).isEqualTo("QA Staging")
+        assertThat(mock.requests.last { it.method == "POST" }.path).isEqualTo("/api/v1/projects/p1/environments")
+        assertThat(service.projects(connection).single().environments.map { it.slug }).contains("dev", "prod", "qa-staging")
+
+        assertThatThrownBy { service.createEnvironment(connection, "p1", "Dev", "dev") }
+            .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("already exist")
+        val oauth = connection.copy(id = "oauth-${System.nanoTime()}", authMethodId = InfisicalAuthMethods.OAUTH)
+        assertThatThrownBy { service.createEnvironment(oauth, "p1", "X", "x") }
+            .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("read-only")
+        assertThat(cz.xprees.secrets.ui.secrets.NewEnvironmentDialog.slugOf("QA  Staging (EU)")).isEqualTo("qa-staging-eu")
+    }
 }

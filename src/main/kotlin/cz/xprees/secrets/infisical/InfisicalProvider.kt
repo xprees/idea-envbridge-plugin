@@ -1,5 +1,7 @@
 package cz.xprees.secrets.infisical
 
+import cz.xprees.secrets.core.model.ProviderEnvironment
+
 import cz.xprees.secrets.core.provider.SecretProviderException
 
 import cz.xprees.secrets.core.model.SecretValue
@@ -126,14 +128,22 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
     override fun listSecrets(scope: SecretScope): List<SecretEntry> = auth.withToken { api.listSecrets(it, scope) }
 
     override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
-        // OAuth applications only offer the secrets:read scope
-        if (connection.authMethodId == InfisicalAuthMethods.OAUTH) {
-            throw SecretProviderException(
-                SecretProviderException.Kind.CONFIGURATION,
-                "OAuth connections are read-only (scope ${InfisicalAuthMethods.OAUTH_SCOPE}). Use browser sign-in or a machine identity " +
-                    "with write permission to create secrets.",
-            )
-        }
+        checkWritable("secrets")
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
+    }
+
+    override fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment {
+        checkWritable("environments")
+        return auth.withToken { api.createEnvironment(it, projectId, name, slug) }
+    }
+
+    // OAuth applications only offer the secrets:read scope
+    private fun checkWritable(what: String) {
+        if (connection.authMethodId != InfisicalAuthMethods.OAUTH) return
+        throw SecretProviderException(
+            SecretProviderException.Kind.CONFIGURATION,
+            "OAuth connections are read-only (scope ${InfisicalAuthMethods.OAUTH_SCOPE}). Use browser sign-in or a machine identity " +
+                "with write permission to create $what.",
+        )
     }
 }

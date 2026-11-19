@@ -1,5 +1,7 @@
 package cz.xprees.secrets.core.resolve
 
+import cz.xprees.secrets.core.model.ProviderEnvironment
+
 import cz.xprees.secrets.core.model.SecretValue
 
 import cz.xprees.secrets.core.provider.CreateOutcome
@@ -49,6 +51,10 @@ class SecretsService {
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
     fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): CreateOutcome =
         client(connection).createSecret(scope, key, value, comment).also { invalidate(connection.id) }
+
+    /** Creates an environment (see [SecretsClient.createEnvironment]) and forgets the connection's cached projects. Off the EDT. */
+    fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment =
+        client(connection).createEnvironment(projectId, name, slug).also { invalidate(connection.id) }
 
     /** Forgets cached values of one connection (after sign-in/out) or of all. */
     fun invalidate(connectionId: String? = null) {

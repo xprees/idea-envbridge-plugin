@@ -17,7 +17,7 @@ Status: agreed plan (grill session, 2026-11-19). Milestones M1–M4 below; this 
 - **Modular**: Infisical is the first implementation of a provider interface, so other secret managers can be added later.
 - IntelliJ Platform **2026.1+**, every IDE (IDEA, WebStorm, PyCharm, GoLand, Rider, DataGrip, …).
 
-Non-goals for v1: editing or deleting secrets, syncing secrets to files. Creating a secret is the one write, always on an explicit user action (*New Secret…*, *Extract value to Infisical…*), through `SecretsClient.createSecret`.
+Non-goals for v1: editing or deleting secrets, syncing secrets to files. Creating secrets and environments are the only writes, always on an explicit user action (*New Secret…*, *Extract value to Infisical…*, *New Environment…*), through `SecretsClient.createSecret` / `createEnvironment`.
 
 ## Identity and licensing
 

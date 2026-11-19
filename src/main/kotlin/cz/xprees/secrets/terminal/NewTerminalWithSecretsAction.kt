@@ -37,44 +37,11 @@ class NewTerminalWithSecretsAction : DumbAwareAction(AllIcons.Nodes.Padlock) {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val configured = SecretsTerminalCustomizer.parse(ProjectSecretsSettings.getInstance(project).state.terminalReferences.orEmpty())
-        val references = configured.ifEmpty { SecretsTerminalCustomizer.parse(ProjectSecretsSettings.DEFAULT_TERMINAL_REFERENCES) }
-        val resolver = LaunchSecretResolver.getInstance(project)
-        val plan = resolver.plan(references)
-
-        object : Task.Backgroundable(project, SecretsBundle.message("terminal.fetching"), true) {
-            private var result: EnvResolution.Result? = null
-
-            override fun run(indicator: ProgressIndicator) {
-                indicator.isIndeterminate = true
-                result = resolver.resolve(plan)
-            }
-
-            override fun onSuccess() {
-                val resolved = result ?: return
-                val guarded = resolved.environments.filter { ProdGuard.matches(it) }
-                if (guarded.isNotEmpty() && Messages.showYesNoDialog(
-                        project,
-                        SecretsBundle.message("prod.guard.message", SecretsBundle.message("terminal.tab.name"), guarded.joinToString()),
-                        SecretsBundle.message("prod.guard.title"),
-                        SecretsBundle.message("prod.guard.run"),
-                        Messages.getCancelButton(),
-                        Messages.getWarningIcon(),
-                    ) != Messages.YES
-                ) return
-                if (resolved.warnings.isNotEmpty()) {
-                    SecretsNotifications.launchWarnings(project, SecretsBundle.message("terminal.tab.name"), resolved.warnings)
-                }
-                TerminalSecretsHandoff.offer(resolved.environment)
-                openTab(project)
-                resolved.summary()?.let { SecretsNotifications.info(project, SecretsBundle.message("terminal.opened"), it) }
-            }
-
-            override fun onThrowable(error: Throwable) {
-                if ((error as? SecretProviderException)?.kind == SecretProviderException.Kind.CANCELLED) return
-                SecretsNotifications.error(project, SecretsBundle.message("terminal.failed"), error.message.orEmpty())
-            }
-        }.queue()
+        TerminalSecrets.fetch(project) { resolved ->
+            TerminalSecretsHandoff.offer(resolved.environment)
+            openTab(project)
+            resolved.summary()?.let { SecretsNotifications.info(project, SecretsBundle.message("terminal.opened"), it) }
+        }
     }
 
     private fun openTab(project: Project) {
@@ -114,4 +81,50 @@ object TerminalSecretsHandoff {
 
     /** The offered variables, once; null when nothing is offered or the offer expired. */
     fun take(): Map<String, String>? = pending.getAndSet(null)?.takeIf { it.expiresAt >= System.currentTimeMillis() }?.environment
+}
+
+/** Fetching what terminals get, shared by the terminal actions. */
+object TerminalSecrets {
+    /**
+     * Resolves the project's terminal references (or, when none are set, every secret of the bound folder) in the background,
+     * asks before production-like environments, reports warnings and hands the result to [then] on the EDT.
+     */
+    fun fetch(project: Project, then: (EnvResolution.Result) -> Unit) {
+        val configured = SecretsTerminalCustomizer.parse(ProjectSecretsSettings.getInstance(project).state.terminalReferences.orEmpty())
+        val references = configured.ifEmpty { SecretsTerminalCustomizer.parse(ProjectSecretsSettings.DEFAULT_TERMINAL_REFERENCES) }
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val plan = resolver.plan(references)
+
+        object : Task.Backgroundable(project, SecretsBundle.message("terminal.fetching"), true) {
+            private var result: EnvResolution.Result? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                result = resolver.resolve(plan)
+            }
+
+            override fun onSuccess() {
+                val resolved = result ?: return
+                val guarded = resolved.environments.filter { ProdGuard.matches(it) }
+                if (guarded.isNotEmpty() && Messages.showYesNoDialog(
+                        project,
+                        SecretsBundle.message("prod.guard.message", SecretsBundle.message("terminal.tab.name"), guarded.joinToString()),
+                        SecretsBundle.message("prod.guard.title"),
+                        SecretsBundle.message("prod.guard.run"),
+                        Messages.getCancelButton(),
+                        Messages.getWarningIcon(),
+                    ) != Messages.YES
+                ) return
+                if (resolved.warnings.isNotEmpty()) {
+                    SecretsNotifications.launchWarnings(project, SecretsBundle.message("terminal.tab.name"), resolved.warnings)
+                }
+                then(resolved)
+            }
+
+            override fun onThrowable(error: Throwable) {
+                if ((error as? SecretProviderException)?.kind == SecretProviderException.Kind.CANCELLED) return
+                SecretsNotifications.error(project, SecretsBundle.message("terminal.failed"), error.message.orEmpty())
+            }
+        }.queue()
+    }
 }

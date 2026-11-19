@@ -45,6 +45,11 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- **Load Infisical Secrets into This Terminal** (terminal toolbar and context menu, *Tools* menu): sets the secrets in the shell of
+  the current tab, in its own syntax: PowerShell (no script execution needed), cmd, bash / zsh / sh (Git Bash and WSL paths
+  on Windows) or fish. Values travel through an owner-only temporary file the shell loads and deletes, never through the
+  terminal's screen or history; refused while a command is running
+- **New Environment…** in the Secrets tool window: name and slug (derived from the name), then selected
 - **Create secrets**: *New Secret…* in the Secrets tool window, and *Extract value to Infisical…* on a plaintext `.env` value
   (creates the secret, then binds the line and clears the value). Production-like environments ask first; folders with a
   change policy get a change request. OAuth connections are read-only and say so

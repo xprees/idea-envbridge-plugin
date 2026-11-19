@@ -94,6 +94,25 @@ class InfisicalApi(val http: InfisicalHttp) {
         return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) CreateOutcome.APPROVAL_REQUESTED else CreateOutcome.CREATED
     }
 
+    /** `POST /api/v1/projects/{id}/environments`: creates an environment. */
+    fun createEnvironment(token: String, projectId: String, name: String, slug: String): ProviderEnvironment {
+        val body = JsonObject().apply {
+            addProperty("name", name)
+            addProperty("slug", slug)
+        }
+        val response = http.postJson("/api/v1/projects/${encodePath(projectId)}/environments", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Creating the environment $slug")
+            throw if (failure.kind == Kind.FORBIDDEN) SecretProviderException(Kind.FORBIDDEN, "Not allowed to create environments in this project") else failure
+        }
+        val env = runCatching { response.json().obj().get("environment").asJsonObject }.getOrNull()
+        return ProviderEnvironment(
+            slug = env?.string("slug") ?: slug,
+            name = env?.string("name") ?: name,
+            id = env?.string("id") ?: slug,
+        )
+    }
+
     // ---- Authentication --------------------------------------------------------------------------------------------
 
     /** Checks that [token] is a valid user session on this instance (`POST /api/v1/auth/checkAuth`). */

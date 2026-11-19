@@ -17,6 +17,9 @@ class MockInfisical : AutoCloseable {
     /** Secrets created through the API: "env:path:KEY" -> value. Listings include them. */
     val created = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Environments created through the API: slug -> name. The project listing includes them. */
+    val createdEnvironments = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** Answer creations with a change request instead of creating the secret. */
     @Volatile
     var requireApproval = false
@@ -70,12 +73,22 @@ class MockInfisical : AutoCloseable {
             created["$env:$path:$key"] = json.get("secretValue").asString
             return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
         }
+        if (request.method == "POST" && request.path == "/api/v1/projects/p1/environments") {
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val slug = json.get("slug").asString
+            if (slug in listOf("dev", "prod") || createdEnvironments.containsKey(slug)) return respond(exchange, 400, """{"message":"Environment with slug '$slug' already exist"}""")
+            createdEnvironments[slug] = json.get("name").asString
+            return respond(exchange, 200, """{"message":"ok","projectId":"p1","environment":{"id":"e-$slug","name":"${json.get("name").asString}","slug":"$slug","position":3}}""")
+        }
         when (request.path) {
-            "/api/v1/projects" -> respond(
-                exchange, 200,
-                """{"projects":[{"id":"p1","_id":"p1","name":"Shop","slug":"shop","type":"secret-manager","orgId":"o",
-                   "environments":[{"name":"Development","slug":"dev","id":"e1"},{"name":"Production","slug":"prod","id":"e2"}]}]}""",
-            )
+            "/api/v1/projects" -> {
+                val extra = createdEnvironments.entries.joinToString("") { (slug, name) -> """,{"name":"$name","slug":"$slug","id":"e-$slug"}""" }
+                respond(
+                    exchange, 200,
+                    """{"projects":[{"id":"p1","_id":"p1","name":"Shop","slug":"shop","type":"secret-manager","orgId":"o",
+                       "environments":[{"name":"Development","slug":"dev","id":"e1"},{"name":"Production","slug":"prod","id":"e2"}$extra]}]}""",
+                )
+            }
 
             "/api/v2/folders" -> respond(exchange, 200, """{"folders":[{"id":"f1","name":"backend"}]}""")
             "/api/v4/secrets" -> {

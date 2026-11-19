@@ -1,6 +1,7 @@
 package cz.xprees.secrets.ui.toolwindow
 
 import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.ui.secrets.NewEnvironmentDialog
 import cz.xprees.secrets.ui.secrets.NewSecretDialog
 
 import com.intellij.ide.BrowserUtil
@@ -88,7 +89,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
 
         val actions = DefaultActionGroup(
-            RefreshAction(), NewSecretAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            RefreshAction(), NewSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
             CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
@@ -439,6 +440,24 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 path = scope?.path ?: binding?.path ?: "/",
             ) { location, outcome ->
                 if (outcome == CreateOutcome.CREATED) refreshAndSelect(location)
+            }.show()
+        }
+    }
+
+    /** Creates an environment in the selected project. */
+    private inner class NewEnvironmentAction : PanelAction(SecretsBundle.message("action.new.environment"), AllIcons.Nodes.ConfigFolder) {
+        private fun projectNode(): ProjectNode? = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = projectNode() != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = projectNode() ?: return
+            NewEnvironmentDialog(project, node.connection, node.project.id, node.project.name, node.project.environments.map { it.slug }) { created ->
+                // Projects carry their environments: read the connection's projects again, then select the new one
+                TreeUtil.findObjectInPath(TreePath(node.path), ConnectionNode::class.java)?.takeIf { !it.loading }?.loaded = false
+                select(SecretLocation(node.connection.id, node.project.id, created.slug, "/", null))
             }.show()
         }
     }
