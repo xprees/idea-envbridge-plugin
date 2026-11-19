@@ -24,18 +24,22 @@ class LaunchSecretResolver(private val project: Project) {
     fun plan(envs: Map<String, String>): EnvResolution.Plan = EnvResolution.plan(envs, schemes())
 
     /**
-     * Fetches fresh values for every reference of [plan]. Blocking network I/O: never on the EDT.
+     * Fetches fresh values for every reference of [plan] and applies the user's local overrides. Blocking network I/O and
+     * credential store access: never on the EDT.
+     *
+     * @param environment an environment for this launch only ("Run with environment…"), winning over the binding
      *
      * @throws SecretProviderException listing every problem (fail closed)
      */
-    fun resolve(plan: EnvResolution.Plan, fresh: Boolean = true): EnvResolution.Result {
+    fun resolve(plan: EnvResolution.Plan, fresh: Boolean = true, environment: String? = null): EnvResolution.Result {
         val bindings = SecretBindingService.getInstance(project)
-        val environmentOverride = plan.explicit[SecretBindingService.ENVIRONMENT_VARIABLE]
+        // "Run with environment…" wins over INFISICAL_ENVIRONMENT on the configuration
+        val environmentOverride = environment ?: plan.explicit[SecretBindingService.ENVIRONMENT_VARIABLE]
         val service = SecretsService.getInstance()
         fun providerOf(reference: SecretReference) = SecretProvider.byScheme(reference.scheme)
             ?: throw SecretProviderException(Kind.CONFIGURATION, "Unknown reference scheme ${reference.scheme}://")
         fun bindingOf(reference: SecretReference) = bindings.binding(providerOf(reference), environmentOverride, reference.connectionId)
-        return EnvResolution.resolve(
+        val result = EnvResolution.resolve(
             plan,
             defaults = { reference ->
                 val binding = bindingOf(reference)
@@ -47,6 +51,7 @@ class LaunchSecretResolver(private val project: Project) {
             },
             fetch = { reference, scope -> service.secrets(bindingOf(reference).connection, scope, fresh) },
         )
+        return if (plan.hasSecrets) result.withOverrides(LocalOverrides.getInstance(project).all()) else result
     }
 
     companion object {

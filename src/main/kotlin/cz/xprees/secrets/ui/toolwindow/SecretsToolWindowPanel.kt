@@ -35,10 +35,9 @@ import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.ui.SecretClipboard
 import cz.xprees.secrets.ui.auth.SignInHelper
 import cz.xprees.secrets.ui.settings.SecretsConfigurable
-import java.awt.Toolkit
-import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -84,7 +83,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         val actions = DefaultActionGroup(
             RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyEnvLineAction(),
-            OpenDashboardAction(), Separator.create(), PreviewAction(), SignInOutAction(), SettingsAction(),
+            OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
+            ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
+            Separator.create(), SignInOutAction(), SettingsAction(),
         )
         val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", actions, true)
         toolbar.targetComponent = tree
@@ -321,7 +322,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            selectedSecret()?.let { copySecret(it.entry.value.reveal()) }
+            selectedSecret()?.let { SecretClipboard.copy(it.entry.value.reveal()) }
         }
     }
 
@@ -331,7 +332,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            selectedSecret()?.let { copySecret("${it.entry.key}=${it.entry.value.reveal()}") }
+            selectedSecret()?.let { SecretClipboard.copy("${it.entry.key}=${it.entry.value.reveal()}") }
         }
     }
 
@@ -404,25 +405,23 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         override fun actionPerformed(e: AnActionEvent) = RunConfigurationPreviewDialog(project).show()
     }
 
+    private inner class OverrideAction : PanelAction(SecretsBundle.message("editor.action.override"), AllIcons.Actions.Edit) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret() != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedSecret()?.let { cz.xprees.secrets.editor.SecretValueActions.editOverride(project, it.entry.key) }
+        }
+    }
+
+    private inner class CompareAction : PanelAction(SecretsBundle.message("action.compare"), AllIcons.Actions.Diff) {
+        override fun actionPerformed(e: AnActionEvent) = CompareEnvironmentsDialog(project).show()
+    }
+
     private inner class SettingsAction : PanelAction(SecretsBundle.message("action.settings"), AllIcons.General.Settings) {
         override fun actionPerformed(e: AnActionEvent) = SecretsConfigurable.show(project)
     }
 
-    /**
-     * Copies a secret to the system clipboard (not through the IDE's CopyPasteManager, so it doesn't land in the IDE's clipboard
-     * history) and removes it again after the configured delay, if nothing replaced it in the meantime.
-     */
-    private fun copySecret(text: String) {
-        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-        clipboard.setContents(StringSelection(text), null)
-        val seconds = SecretsAppSettings.getInstance().state.clipboardClearSeconds.toLong()
-        if (seconds <= 0) return
-        AppExecutorUtil.getAppScheduledExecutorService().schedule({
-            ApplicationManager.getApplication().invokeLater({
-                val current = runCatching { clipboard.getData(DataFlavor.stringFlavor) as? String }.getOrNull()
-                if (current == text) clipboard.setContents(StringSelection(""), null)
-            }, ModalityState.any())
-        }, seconds, TimeUnit.SECONDS)
-    }
 
 }

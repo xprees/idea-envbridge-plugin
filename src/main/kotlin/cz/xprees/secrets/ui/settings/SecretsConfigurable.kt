@@ -30,6 +30,7 @@ import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.SecretProvider
+import cz.xprees.secrets.core.resolve.LocalOverrides
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
@@ -126,6 +127,17 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                     intTextField(0..3600).columns(6).bindIntText(app.state::clipboardClearSeconds)
                     label(SecretsBundle.message("settings.seconds.zero.never"))
                 }
+                row(SecretsBundle.message("settings.prod.guard")) {
+                    textField().align(AlignX.FILL)
+                        .bindText({ app.state.prodGuardPattern.orEmpty() }, { app.state.prodGuardPattern = it.trim() })
+                }.rowComment(SecretsBundle.message("settings.prod.guard.comment"))
+                row {
+                    checkBox(SecretsBundle.message("settings.mask.console")).bindSelected(app.state::maskConsoleOutput)
+                }
+            }
+            group(SecretsBundle.message("settings.overrides")) {
+                row { cell(overridesPanel()).align(AlignX.FILL) }
+                row { comment(SecretsBundle.message("settings.overrides.comment"), maxLineLength = 90) }
             }
         }
     }
@@ -135,6 +147,28 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         SecretsService.getInstance().invalidate()
         app.fireChanged()
         updateEffectiveBinding()
+    }
+
+    // ---- Local overrides -------------------------------------------------------------------------------------------
+
+    private val overrideModel = CollectionListModel<String>()
+
+    /** The names of this project's local overrides (values stay in the credential store); remove-only. */
+    private fun overridesPanel(): javax.swing.JComponent {
+        val list = JBList(overrideModel).apply { emptyText.text = SecretsBundle.message("settings.overrides.empty") }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val names = LocalOverrides.getInstance(project).names().sorted()
+            ApplicationManager.getApplication().invokeLater({ overrideModel.replaceAll(names) }, ModalityState.any())
+        }
+        return ToolbarDecorator.createDecorator(list)
+            .disableAddAction()
+            .setRemoveAction {
+                val selected = list.selectedValuesList
+                selected.forEach(overrideModel::remove)
+                ApplicationManager.getApplication().executeOnPooledThread { selected.forEach(LocalOverrides.getInstance(project)::remove) }
+            }
+            .setPreferredSize(JBUI.size(480, 80))
+            .createPanel()
     }
 
     // ---- Connections -----------------------------------------------------------------------------------------------

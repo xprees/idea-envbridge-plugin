@@ -64,7 +64,7 @@ class MockInfisical : AutoCloseable {
                 val path = query["secretPath"]
                 val secrets = when {
                     env == "dev" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"dev-pass","type":"shared"},{"secretKey":"API_KEY","secretValue":"dev-key","type":"shared"}"""
-                    env == "prod" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"prod-pass","type":"shared"}"""
+                    env == "prod" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"prod-pass","type":"shared"},{"secretKey":"PROD_ONLY","secretValue":"p","type":"shared"}"""
                     env == "dev" && path == "/backend" -> """{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared"}"""
                     else -> return respond(exchange, 404, """{"message":"Folder not found"}""")
                 }

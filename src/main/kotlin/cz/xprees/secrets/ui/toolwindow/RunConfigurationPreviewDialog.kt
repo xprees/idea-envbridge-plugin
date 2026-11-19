@@ -97,6 +97,7 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
     }
 
     private fun describe(source: EnvResolution.Source?): String = when (source) {
+        is EnvResolution.Source.LocalOverride -> SecretsBundle.message("preview.source.override", describe(source.replaced))
         is EnvResolution.Source.Reference -> SecretsBundle.message("preview.source.reference", source.reference.format(), EnvResolution.describe(source.scope))
         is EnvResolution.Source.Scope -> SecretsBundle.message("preview.source.scope", source.reference.format(), source.secretPath)
         else -> SecretsBundle.message("preview.source.explicit")

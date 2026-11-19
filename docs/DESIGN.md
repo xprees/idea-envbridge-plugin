@@ -158,7 +158,14 @@ configuration's variables:
 - *Run configuration preview* (dry run): pick a run configuration and see the final variables it would receive and where each
   comes from (explicit, reference, scope), values masked.
 
-## Editor integration (M3)
+## Editor integration (M3, done)
+
+Language-agnostic by design: variable names are found by text patterns, so completion (`completion.contributor language="any"`),
+hover and gutter (`externalAnnotator language=""`) and the missing-secret inspection (no language) work in every file type. Inlay
+hints have to be registered per language, so they are, in the optional configs of the plugins that define the languages (Java,
+Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`, PHP, Ruby, Rust, plain text). A keys-only index
+(`KeysIndex`) of the bound folder in every environment feeds them; it never holds values.
+
 
 - Completion of secret keys in `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `os.environ[…]` / `os.getenv`, `os.Getenv`,
   `Environment.GetEnvironmentVariable`, `${VAR}` in Compose / YAML / properties / `.env.example`, and in the environment variables
@@ -192,5 +199,6 @@ configuration's variables:
   binding (`.infisical.yaml`), tool window (browse, reveal, copy, run configuration preview), `infisical://` references and scope
   imports, injection for JVM / Gradle / Maven and other configurations with standard environment variables, fail closed.
 - **M2** (done): Node.js / npm / Bun, Python, Go, Docker and Compose, `.env` files with references, terminal.
-- **M3**: editor integration, console masking, status bar, prod guard, *Run with environment…*, environment comparison.
+- **M3** (done): editor integration, console masking, status bar, prod guard, *Run with environment…*, environment comparison,
+  local overrides.
 - **M4**: Rider .NET and appsettings, database data sources.
