@@ -1,0 +1,61 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check existing issues first. Security problems go through
+        [private reporting](https://github.com/xprees/idea-infisical-plugin/security/policy), not here.
+        **Never paste tokens, client secrets or secret values.** Replace them with `***`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sign-in (browser, OAuth, machine identity)
+        - Injecting secrets into a run configuration
+        - References (infisical://…)
+        - Project binding / .infisical.yaml
+        - Secrets tool window
+        - Settings
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Instance and run configuration
+      description: Infisical Cloud US / EU / self-hosted (version if known), sign-in method, and the run configuration type.
+      placeholder: "EU Cloud, browser sign-in, Spring Boot"
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Settings › Plugins › Installed › Secrets for Infisical
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: ide
+    attributes:
+      label: IDE and version
+      description: Help › About (the first lines are enough), and your operating system.
+      placeholder: IntelliJ IDEA 2026.3 (IU-263.7307.202), macOS 26
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Exceptions or logs
+      description: Stack traces from the IDE error reporter or idea.log (Help › Show Log in ...). Check them for secrets first.
+      render: text

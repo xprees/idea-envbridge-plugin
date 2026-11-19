@@ -1,0 +1,39 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>cz.xprees.secrets</id>
+    <name>Secrets for Infisical (Unofficial)</name>
+    <vendor url="https://github.com/xprees">xprees</vendor>
+    <!-- <description> and <change-notes> are filled in from README.md / CHANGELOG.md by the Gradle build -->
+
+    <depends>com.intellij.modules.platform</depends>
+    <!-- Each integration is optional, so the plugin loads in every IDE -->
+    <depends optional="true" config-file="secrets-maven.xml">org.jetbrains.idea.maven</depends>
+
+    <resource-bundle>messages.SecretsBundle</resource-bundle>
+
+    <extensionPoints>
+        <!-- Secret managers (Infisical is the first one) -->
+        <extensionPoint qualifiedName="cz.xprees.secrets.provider" interface="cz.xprees.secrets.core.provider.SecretProvider"
+                        dynamic="true"/>
+        <!-- Reading and replacing the environment variables of one kind of run configuration -->
+        <extensionPoint qualifiedName="cz.xprees.secrets.envPatcher" interface="cz.xprees.secrets.run.EnvPatcher" dynamic="true"/>
+    </extensionPoints>
+
+    <extensions defaultExtensionNs="cz.xprees.secrets">
+        <provider implementation="cz.xprees.secrets.infisical.InfisicalProvider"/>
+        <envPatcher implementation="cz.xprees.secrets.run.ExternalSystemEnvPatcher"/>
+        <envPatcher implementation="cz.xprees.secrets.run.CommonParametersEnvPatcher"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- First, so it sees configurations with secret references before the runner that launches them -->
+        <programRunner implementation="cz.xprees.secrets.run.SecretsProgramRunner" order="first"/>
+
+        <toolWindow id="Secrets" anchor="right" secondary="false" icon="cz.xprees.secrets.SecretsIcons.TOOL_WINDOW"
+                    factoryClass="cz.xprees.secrets.ui.toolwindow.SecretsToolWindowFactory"/>
+        <projectConfigurable parentId="tools" id="cz.xprees.secrets.settings"
+                             instance="cz.xprees.secrets.ui.settings.SecretsConfigurable"
+                             key="settings.display.name" bundle="messages.SecretsBundle"/>
+        <notificationGroup id="Secrets for Infisical" displayType="BALLOON" key="notification.group.name"/>
+    </extensions>
+</idea-plugin>

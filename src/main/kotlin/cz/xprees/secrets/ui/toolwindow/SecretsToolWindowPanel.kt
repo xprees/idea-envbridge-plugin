@@ -1,0 +1,428 @@
+package cz.xprees.secrets.ui.toolwindow
+
+import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.ide.CopyPasteManager
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.icons.AllIcons
+import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.PopupHandler
+import com.intellij.ui.ScrollPaneFactory
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.TreeSpeedSearch
+import com.intellij.ui.treeStructure.Tree
+import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.ui.tree.TreeUtil
+import cz.xprees.secrets.SecretsBundle
+import cz.xprees.secrets.SecretsIcons
+import cz.xprees.secrets.core.model.ProviderEnvironment
+import cz.xprees.secrets.core.model.ProviderProject
+import cz.xprees.secrets.core.model.SecretOrigin
+import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.model.SecretValue
+import cz.xprees.secrets.core.provider.SecretProvider
+import cz.xprees.secrets.core.provider.SecretProviderException
+import cz.xprees.secrets.core.reference.SecretReference
+import cz.xprees.secrets.core.resolve.SecretBindingService
+import cz.xprees.secrets.core.resolve.SecretsService
+import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.ui.auth.SignInHelper
+import cz.xprees.secrets.ui.settings.SecretsConfigurable
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.StringSelection
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.util.concurrent.TimeUnit
+import javax.swing.JTree
+import javax.swing.event.TreeExpansionEvent
+import javax.swing.event.TreeWillExpandListener
+import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.TreePath
+
+/**
+ * The Secrets tool window: connections › projects › environments › folders › secrets. Keys and comments are shown, values
+ * stay masked until revealed (and are hidden again after a few seconds). Copied values are removed from the clipboard after
+ * a while if they are still there.
+ */
+class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPanel(true, true), Disposable {
+    private val root = RootNode()
+    private val model = DefaultTreeModel(root)
+    val tree = Tree(model)
+
+    init {
+        tree.isRootVisible = false
+        tree.showsRootHandles = true
+        tree.cellRenderer = Renderer()
+        tree.addTreeWillExpandListener(object : TreeWillExpandListener {
+            override fun treeWillExpand(event: TreeExpansionEvent) {
+                (event.path.lastPathComponent as? LazyNode)?.let(::load)
+            }
+
+            override fun treeWillCollapse(event: TreeExpansionEvent) = Unit
+        })
+        tree.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount != 2) return
+                when (val node = selectedNode()) {
+                    is SecretNode -> toggleReveal(node)
+                    is MessageNode -> if (node.kind == MessageNode.Kind.SIGN_IN) node.connection?.let(::signIn)
+                    else -> Unit
+                }
+            }
+        })
+        TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
+
+        val actions = DefaultActionGroup(
+            RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyEnvLineAction(),
+            OpenDashboardAction(), Separator.create(), PreviewAction(), SignInOutAction(), SettingsAction(),
+        )
+        val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", actions, true)
+        toolbar.targetComponent = tree
+        setToolbar(toolbar.component)
+        PopupHandler.installPopupMenu(tree, actions, "SecretsToolWindowPopup")
+        setContent(ScrollPaneFactory.createScrollPane(tree))
+
+        ApplicationManager.getApplication().messageBus.connect(this)
+            .subscribe(SecretsAppSettings.TOPIC, SecretsAppSettings.Listener { rebuild() })
+        rebuild()
+    }
+
+    override fun dispose() = Unit
+
+    /** Rebuilds the tree from the configured connections (values are re-read from the cache or the instance on expand). */
+    fun rebuild() {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val connections = SecretsAppSettings.getInstance().connections
+            val nodes = connections.map { connection ->
+                val client = runCatching { SecretsService.getInstance().client(connection) }.getOrNull()
+                ConnectionNode(connection, client?.hasCredentials() == true, null)
+            }
+            ApplicationManager.getApplication().invokeLater({
+                root.removeAllChildren()
+                if (nodes.isEmpty()) root.add(MessageNode(null, SecretsBundle.message("toolwindow.no.connections"), MessageNode.Kind.SIGN_IN))
+                nodes.forEach(root::add)
+                model.reload()
+                // Open the connection of the project binding right away
+                nodes.firstOrNull()?.let { tree.expandPath(TreePath(arrayOf(root, it))) }
+            }, ModalityState.any(), project.disposed)
+        }
+    }
+
+    private fun load(node: LazyNode, force: Boolean = false) {
+        if (node.loading || (node.loaded && !force)) return
+        node.loading = true
+        node.removeAllChildren()
+        node.add(MessageNode(node.connection, SecretsBundle.message("toolwindow.loading"), MessageNode.Kind.LOADING))
+        model.nodeStructureChanged(node)
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val children = try {
+                loadChildren(node, force)
+            } catch (e: SecretProviderException) {
+                listOf(errorNode(node, e))
+            } catch (e: Exception) {
+                listOf(MessageNode(node.connection, e.message ?: e.toString(), MessageNode.Kind.ERROR))
+            }
+            ApplicationManager.getApplication().invokeLater({
+                node.removeAllChildren()
+                children.ifEmpty { listOf(MessageNode(node.connection, SecretsBundle.message("toolwindow.empty"))) }.forEach(node::add)
+                node.loaded = true
+                node.loading = false
+                model.nodeStructureChanged(node)
+            }, ModalityState.any(), project.disposed)
+        }
+    }
+
+    private fun errorNode(node: LazyNode, e: SecretProviderException): MessageNode =
+        if (e.kind == SecretProviderException.Kind.AUTH_REQUIRED) {
+            MessageNode(node.connection, SecretsBundle.message("toolwindow.sign.in"), MessageNode.Kind.SIGN_IN)
+        } else {
+            MessageNode(node.connection, e.message ?: e.kind.name, MessageNode.Kind.ERROR)
+        }
+
+    /** Off the EDT. */
+    private fun loadChildren(node: LazyNode, fresh: Boolean): List<SecretsNode> {
+        val service = SecretsService.getInstance()
+        return when (node) {
+            is ConnectionNode -> {
+                if (!service.client(node.connection).hasCredentials()) {
+                    return listOf(MessageNode(node.connection, SecretsBundle.message("toolwindow.sign.in"), MessageNode.Kind.SIGN_IN))
+                }
+                val binding = binding(node)
+                val projects = try {
+                    service.projects(node.connection, fresh)
+                } catch (e: SecretProviderException) {
+                    // Least-privilege tokens (OAuth secrets:read) may not list projects: show the bound one
+                    val boundId = binding?.projectId
+                    if (e.kind != SecretProviderException.Kind.FORBIDDEN || boundId == null) throw e
+                    listOf(ProviderProject(boundId, SecretsBundle.message("toolwindow.bound.project"), boundId, listOf(ProviderEnvironment(binding.environment, binding.environment))))
+                }
+                projects.map { ProjectNode(node.connection, it, it.id == binding?.projectId) }
+                    .sortedByDescending { it.bound }
+            }
+
+            is ProjectNode -> {
+                val binding = binding(node)
+                node.project.environments.map {
+                    EnvironmentNode(node.connection, node.project, it, node.bound && it.slug == binding?.environment)
+                }
+            }
+
+            is EnvironmentNode -> folderChildren(node.connection, node.scope, fresh)
+            is FolderNode -> folderChildren(node.connection, node.scope, fresh)
+            else -> emptyList()
+        }
+    }
+
+    private fun folderChildren(connection: cz.xprees.secrets.core.model.SecretConnection, scope: SecretScope, fresh: Boolean): List<SecretsNode> {
+        val service = SecretsService.getInstance()
+        val folders = service.folders(connection, scope).map { FolderNode(connection, SecretScope(scope.projectId, scope.environment, it.path), it.name) }
+        val secrets = service.secrets(connection, scope, fresh).sortedBy { it.key.lowercase() }.map { SecretNode(connection, scope, it) }
+        return folders + secrets
+    }
+
+    private fun binding(node: SecretsNode): SecretBindingService.Binding? {
+        val connection = node.connection ?: return null
+        val provider = SecretProvider.byId(connection.providerId) ?: return null
+        return SecretBindingService.getInstance(project).bindingOrNull(provider)?.takeIf { it.connection.id == connection.id }
+    }
+
+    private fun selectedNode(): SecretsNode? = tree.selectionPath?.lastPathComponent as? SecretsNode
+
+    private fun selectedSecret(): SecretNode? = selectedNode() as? SecretNode
+
+    private fun toggleReveal(node: SecretNode) {
+        node.revealed = !node.revealed
+        model.nodeChanged(node)
+        if (node.revealed) {
+            val seconds = SecretsAppSettings.getInstance().state.revealSeconds.toLong().coerceAtLeast(1)
+            AppExecutorUtil.getAppScheduledExecutorService().schedule({
+                ApplicationManager.getApplication().invokeLater({
+                    node.revealed = false
+                    model.nodeChanged(node)
+                }, ModalityState.any(), project.disposed)
+            }, seconds, TimeUnit.SECONDS)
+        }
+    }
+
+    private fun signIn(connection: cz.xprees.secrets.core.model.SecretConnection) = SignInHelper.signIn(project, connection)
+
+    private fun text(node: Any?): String = when (node) {
+        is ConnectionNode -> node.connection.name
+        is ProjectNode -> node.project.name
+        is EnvironmentNode -> node.environment.name
+        is FolderNode -> node.name
+        is SecretNode -> node.entry.key
+        is MessageNode -> node.text
+        else -> ""
+    }
+
+    private inner class Renderer : ColoredTreeCellRenderer() {
+        override fun customizeCellRenderer(tree: JTree, value: Any?, selected: Boolean, expanded: Boolean, leaf: Boolean, row: Int, hasFocus: Boolean) {
+            when (value) {
+                is ConnectionNode -> {
+                    icon = SecretsIcons.PROVIDER
+                    append(value.connection.name)
+                    append("  ${value.connection.baseUrl.removePrefix("https://")}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    if (!value.signedIn) append("  " + SecretsBundle.message("toolwindow.signed.out"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                }
+
+                is ProjectNode -> {
+                    icon = AllIcons.Nodes.Module
+                    append(value.project.name, if (value.bound) SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
+                    if (value.bound) append("  " + SecretsBundle.message("toolwindow.bound"), SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+
+                is EnvironmentNode -> {
+                    icon = AllIcons.Nodes.ConfigFolder
+                    append(value.environment.name, if (value.bound) SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
+                    append("  ${value.environment.slug}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+
+                is FolderNode -> {
+                    icon = AllIcons.Nodes.Folder
+                    append(value.name)
+                }
+
+                is SecretNode -> {
+                    val entry = value.entry
+                    icon = AllIcons.Nodes.Property
+                    append(entry.key, if (entry.origin == SecretOrigin.IMPORTED) SimpleTextAttributes.GRAY_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
+                    append("  ")
+                    when {
+                        entry.valueHidden -> append(SecretsBundle.message("toolwindow.value.hidden"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                        value.revealed -> append(entry.value.reveal().replace("\n", "⏎"), SimpleTextAttributes.SYNTHETIC_ATTRIBUTES)
+                        else -> append(SecretValue.MASK, SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    }
+                    when (entry.origin) {
+                        SecretOrigin.IMPORTED -> append("  " + SecretsBundle.message("toolwindow.imported", "${entry.environment}:${entry.path}"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                        SecretOrigin.PERSONAL -> append("  " + SecretsBundle.message("toolwindow.personal"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                        SecretOrigin.LOCAL -> if (entry.path != value.scope.path) append("  ${entry.path}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    }
+                    if (entry.comment.isNotBlank()) append("  — ${entry.comment.lines().first()}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                }
+
+                is MessageNode -> {
+                    icon = when (value.kind) {
+                        MessageNode.Kind.LOADING -> AllIcons.Process.Step_1
+                        MessageNode.Kind.ERROR -> AllIcons.General.Error
+                        MessageNode.Kind.SIGN_IN -> AllIcons.General.User
+                        MessageNode.Kind.INFO -> AllIcons.General.Information
+                    }
+                    append(value.text, if (value.kind == MessageNode.Kind.SIGN_IN) SimpleTextAttributes.LINK_ATTRIBUTES else SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+            }
+        }
+    }
+
+    // ---- Actions -------------------------------------------------------------------------------------------------------
+
+    private abstract inner class PanelAction(text: String, icon: javax.swing.Icon?) : DumbAwareAction(text, null, icon) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+    }
+
+    private inner class RefreshAction : PanelAction(SecretsBundle.message("action.refresh"), AllIcons.Actions.Refresh) {
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = selectedNode()
+            val lazy = node as? LazyNode ?: (node?.parent as? LazyNode)
+            if (lazy == null) {
+                SecretsService.getInstance().invalidate()
+                rebuild()
+            } else {
+                lazy.connection?.let { SecretsService.getInstance().invalidate(it.id) }
+                load(lazy, force = true)
+                tree.expandPath(TreePath(lazy.path))
+            }
+        }
+    }
+
+    private inner class RevealAction : PanelAction(SecretsBundle.message("action.reveal"), AllIcons.Actions.Show) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret()?.entry?.valueHidden == false
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedSecret()?.let(::toggleReveal)
+        }
+    }
+
+    private inner class CopyValueAction : PanelAction(SecretsBundle.message("action.copy.value"), AllIcons.Actions.Copy) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret()?.entry?.valueHidden == false
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedSecret()?.let { copySecret(it.entry.value.reveal()) }
+        }
+    }
+
+    private inner class CopyEnvLineAction : PanelAction(SecretsBundle.message("action.copy.env.line"), null) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret()?.entry?.valueHidden == false
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedSecret()?.let { copySecret("${it.entry.key}=${it.entry.value.reveal()}") }
+        }
+    }
+
+    private inner class CopyReferenceAction : PanelAction(SecretsBundle.message("action.copy.reference"), AllIcons.Actions.InlayGlobe) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedSecret() != null || selectedNode() is FolderNode || selectedNode() is EnvironmentNode
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = selectedNode() ?: return
+            val connection = node.connection ?: return
+            val provider = SecretProvider.byId(connection.providerId) ?: return
+            val binding = binding(node)
+            val (scope, key) = when (node) {
+                is SecretNode -> node.scope to node.entry.key
+                is FolderNode -> node.scope to null
+                is EnvironmentNode -> node.scope to null
+                else -> return
+            }
+            // As short as possible: leave out what the project binding already says
+            val sameProject = binding?.projectId == scope.projectId
+            val sameEnv = sameProject && binding?.environment == scope.environment
+            val samePath = sameEnv && binding?.path == scope.path
+            val reference = SecretReference(
+                scheme = provider.referenceScheme,
+                key = key,
+                environment = if (samePath) null else scope.environment,
+                path = if (samePath) null else scope.path,
+                projectId = if (sameProject) null else scope.projectId,
+                connectionId = if (binding != null) null else connection.name,
+            )
+            CopyPasteManager.getInstance().setContents(StringSelection(reference.format()))
+        }
+    }
+
+    private inner class OpenDashboardAction : PanelAction(SecretsBundle.message("action.open.dashboard"), AllIcons.General.Web) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedNode()?.connection != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = selectedNode() ?: return
+            val connection = node.connection ?: return
+            val scope = when (node) {
+                is SecretNode -> node.scope
+                is FolderNode -> node.scope
+                is EnvironmentNode -> node.scope
+                else -> null
+            }
+            SecretProvider.byId(connection.providerId)?.dashboardUrl(connection, scope)?.let(BrowserUtil::browse)
+        }
+    }
+
+    private inner class SignInOutAction : PanelAction(SecretsBundle.message("action.sign.in"), AllIcons.General.User) {
+        override fun update(e: AnActionEvent) {
+            val connectionNode = TreeUtil.findObjectInPath(tree.selectionPath, ConnectionNode::class.java)
+                ?: (root.childCount == 1).takeIf { it }?.let { root.firstChild as? ConnectionNode }
+            e.presentation.isEnabled = connectionNode != null
+            e.presentation.text = SecretsBundle.message(if (connectionNode?.signedIn == true) "action.sign.out" else "action.sign.in")
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = TreeUtil.findObjectInPath(tree.selectionPath, ConnectionNode::class.java)
+                ?: root.firstChild as? ConnectionNode ?: return
+            if (node.signedIn) SignInHelper.signOut(project, node.connection) else signIn(node.connection)
+        }
+    }
+
+    private inner class PreviewAction : PanelAction(SecretsBundle.message("action.preview"), AllIcons.Actions.Preview) {
+        override fun actionPerformed(e: AnActionEvent) = RunConfigurationPreviewDialog(project).show()
+    }
+
+    private inner class SettingsAction : PanelAction(SecretsBundle.message("action.settings"), AllIcons.General.Settings) {
+        override fun actionPerformed(e: AnActionEvent) = SecretsConfigurable.show(project)
+    }
+
+    /**
+     * Copies a secret to the system clipboard (not through the IDE's CopyPasteManager, so it doesn't land in the IDE's clipboard
+     * history) and removes it again after the configured delay, if nothing replaced it in the meantime.
+     */
+    private fun copySecret(text: String) {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+        clipboard.setContents(StringSelection(text), null)
+        val seconds = SecretsAppSettings.getInstance().state.clipboardClearSeconds.toLong()
+        if (seconds <= 0) return
+        AppExecutorUtil.getAppScheduledExecutorService().schedule({
+            ApplicationManager.getApplication().invokeLater({
+                val current = runCatching { clipboard.getData(DataFlavor.stringFlavor) as? String }.getOrNull()
+                if (current == text) clipboard.setContents(StringSelection(""), null)
+            }, ModalityState.any())
+        }, seconds, TimeUnit.SECONDS)
+    }
+
+}
