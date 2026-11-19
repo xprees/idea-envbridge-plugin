@@ -10,7 +10,7 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.CollectionListModel
 import com.intellij.ui.ColoredListCellRenderer
-import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBLabel
@@ -195,12 +195,12 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         val items = listOf<SecretConnection?>(null) + app.connections
         bindingConnection.removeAllItems()
         items.forEach(bindingConnection::addItem)
-        bindingConnection.renderer = SimpleListCellRenderer.create { label, connection, _ ->
-            label.text = connection?.name ?: SecretsBundle.message("settings.binding.auto")
+        bindingConnection.renderer = textListCellRenderer { connection: SecretConnection? ->
+            connection?.name ?: SecretsBundle.message("settings.binding.auto")
         }
         bindingConnection.selectedItem = items.firstOrNull { it?.id == state.connectionId }
-        bindingProject.renderer = SimpleListCellRenderer.create { label, id, _ ->
-            label.text = loadedProjects.firstOrNull { it.id == id }?.let { "${it.name}  ($id)" } ?: id.orEmpty()
+        bindingProject.renderer = textListCellRenderer { id: String? ->
+            loadedProjects.firstOrNull { it.id == id }?.let { "${it.name}  ($id)" } ?: id.orEmpty()
         }
         bindingProject.selectedItem = state.projectId.orEmpty()
         bindingEnvironment.selectedItem = state.environment.orEmpty()

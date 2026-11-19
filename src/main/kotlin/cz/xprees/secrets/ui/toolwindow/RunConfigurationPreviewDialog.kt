@@ -7,7 +7,7 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
-import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.dsl.builder.Align
@@ -30,7 +30,7 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
     private val configurations: List<RunnerAndConfigurationSettings> =
         RunManager.getInstance(project).allSettings.filter { EnvPatcher.find(it.configuration) != null }
     private val combo = ComboBox(configurations.toTypedArray()).apply {
-        renderer = SimpleListCellRenderer.create { label, settings, _ -> label.text = settings?.name.orEmpty() }
+        renderer = textListCellRenderer { settings: RunnerAndConfigurationSettings? -> settings?.name.orEmpty() }
         configurations.firstOrNull { cfg -> EnvPatcher.find(cfg.configuration)?.second?.let(LaunchSecretResolver.getInstance(project)::hasReferences) == true }
             ?.let { selectedItem = it }
         addActionListener { refresh() }

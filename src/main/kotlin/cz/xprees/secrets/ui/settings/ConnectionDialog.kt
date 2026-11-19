@@ -5,7 +5,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
-import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.AlignX
@@ -31,12 +31,12 @@ class ConnectionDialog(private val project: Project?, private val existing: Secr
     private val instanceCombo = ComboBox((provider.instancePresets.map { it.second }).toTypedArray()).apply {
         isEditable = true
         selectedItem = existing?.baseUrl ?: provider.instancePresets.first().second
-        renderer = SimpleListCellRenderer.create { label, url, _ ->
-            label.text = provider.instancePresets.firstOrNull { it.second == url }?.let { "${it.first} — ${it.second}" } ?: url.orEmpty()
+        renderer = textListCellRenderer { url: String? ->
+            provider.instancePresets.firstOrNull { it.second == url }?.let { "${it.first} — ${it.second}" } ?: url.orEmpty()
         }
     }
     private val methodCombo = ComboBox(provider.authMethods.toTypedArray()).apply {
-        renderer = SimpleListCellRenderer.create { label, method, _ -> label.text = method?.displayName.orEmpty() }
+        renderer = textListCellRenderer { method: AuthMethod? -> method?.displayName.orEmpty() }
         selectedItem = existing?.let { provider.authMethod(it.authMethodId) } ?: provider.authMethods.first()
     }
 
