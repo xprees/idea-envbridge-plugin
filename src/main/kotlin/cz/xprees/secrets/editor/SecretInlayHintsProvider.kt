@@ -1,5 +1,10 @@
 package cz.xprees.secrets.editor
 
+import com.intellij.codeInsight.hints.declarative.InlayActionData
+import com.intellij.codeInsight.hints.declarative.StringInlayActionPayload
+import cz.xprees.secrets.SecretsBundle
+import cz.xprees.secrets.ui.toolwindow.SecretLocation
+
 import com.intellij.codeInsight.hints.declarative.HintFormat
 import com.intellij.codeInsight.hints.declarative.InlayHintsCollector
 import com.intellij.codeInsight.hints.declarative.InlayHintsProvider
@@ -21,13 +26,19 @@ class SecretInlayHintsProvider : InlayHintsProvider {
         val snapshot = KeysIndex.getInstance(file.project).current() ?: return null
         return object : OwnBypassCollector {
             override fun collectHintsForFile(file: PsiFile, sink: InlayTreeSink) {
+                // In .env files a reference (or binding comment) stands for a value, so it gets the shadow value too
+                val dotEnv = DotEnvLines.isDotEnv(file.name)
                 for (found in EditorReferences.of(file)) {
-                    // References show their own target already; hint the code that reads variables
-                    if (found.kind == EnvReferences.Kind.REFERENCE) continue
+                    // Elsewhere references show their own target already; hint the code that reads variables
+                    if (found.kind == EnvReferences.Kind.REFERENCE && !dotEnv) continue
                     val resolved = EditorReferences.resolve(file.project, found, snapshot) ?: continue
                     if (resolved.info == null) continue
-                    sink.addPresentation(InlineInlayPosition(found.end, true), hintFormat = HintFormat.default) {
-                        text("${snapshot.boundEnvironment} ${SecretValue.MASK}")
+                    val environment = found.reference?.environment ?: snapshot.boundEnvironment
+                    // A click opens the secret in the Secrets tool window
+                    val click = SecretLocation.of(file.project, found.name, found.reference)
+                        ?.let { InlayActionData(StringInlayActionPayload(it.encode()), ShowSecretInToolWindow.HANDLER_ID) }
+                    sink.addPresentation(InlineInlayPosition(found.end, true), hintFormat = HintFormat.default, tooltip = SecretsBundle.message("inlay.click.tooltip")) {
+                        text("$environment ${SecretValue.MASK}", click)
                     }
                 }
             }

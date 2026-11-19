@@ -18,8 +18,13 @@ handed to the process in memory. Nothing is written to disk.</p>
       (pytest, Django, FastAPI, Flask), Go</b> and <b>Docker</b> (image, Dockerfile, <b>Docker Compose</b>) run configurations, for
       Run, Debug, Coverage and Profile</li>
   <li><b><code>.env</code> files with references</b>: keep a committed <code>.env</code> that holds <code>infisical://</code>
-      references instead of secrets and attach it to the run configuration as usual</li>
-  <li><b>Terminal</b> (opt-in): new terminal tabs of the project get the secrets too</li>
+      references instead of secrets: attach it to the run configuration, or let Nuxt, Vite and Next.js read it as usual. Or bind a
+      variable with a comment, <code>API_URL=http://localhost:8090 # infisical://prod/API_URL</code>: tools outside the IDE read
+      the plain value, launches from the IDE get the secret, and the editor shows its masked value. Plaintext secrets in
+      <code>.env</code> files are marked, and Alt+Enter binds them</li>
+  <li><b>Terminal</b>: <i>New Terminal Tab with Infisical Secrets</i> opens a tab with the secrets; <i>Load Infisical Secrets
+      into This Terminal</i> sets them in the current tab, in its shell's syntax (PowerShell, cmd, bash, zsh, fish, Git Bash,
+      WSL), without showing them or leaving them in the history; opt in to give every new tab of the project the secrets</li>
   <li><b>In the editor</b>, in every language: completion of secret keys where code reads environment variables
       (<code>System.getenv("…")</code>, <code>process.env.…</code>, <code>os.environ["…"]</code>, <code>os.Getenv("…")</code>,
       <code>${…}</code>, …) and after <code>infisical://</code>; a masked hint with the environment; a key icon in the gutter to
@@ -38,7 +43,8 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>Fail closed</b>: if a secret can't be loaded, the launch stops with <i>Sign in</i>, <i>Retry</i> and <i>Run without secrets once</i></li>
   <li><b>Secrets tool window</b>: browse projects, environments, folders and secrets. Values stay masked; <i>Reveal</i> hides them
       again after a few seconds, and copied values are cleared from the clipboard after a while. Copy a ready-made
-      <code>infisical://</code> reference, and preview what a run configuration would receive (dry run)</li>
+      <code>infisical://</code> reference, preview what a run configuration would receive (dry run), and create secrets
+      (<i>New Secret…</i>)</li>
   <li><b>Any instance</b>: Infisical Cloud US, EU, dedicated or self-hosted (base URL per connection; the IDE's proxy and certificate
       settings apply)</li>
   <li><b>Sign in through the system browser</b> (like the Infisical CLI), with a read-only <b>OAuth application</b> (PKCE), or with a
@@ -47,7 +53,8 @@ handed to the process in memory. Nothing is written to disk.</p>
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
-<p>Settings: <i>Settings › Tools › EnvBridge</i>. Read-only: the plugin never changes your secrets.</p>
+<p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you create one yourself
+(<i>New Secret…</i>, <i>Extract value to Infisical…</i>); it never changes or deletes existing secrets.</p>
 <!-- Plugin description end -->
 
 Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The plugin is built and tested against the oldest
@@ -103,17 +110,21 @@ A reference is the value of an environment variable:
 | Python: scripts, modules, pytest, Django, FastAPI, Flask | *Environment variables* |
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
-| `.env` files | Any run configuration that loads env files: when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Values set on the configuration still win |
+| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. **Binding comments**: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod/KEY` keeps the file valid for tools outside the IDE (they read the plain value) while IDE launches get the secret. An inspection marks plaintext values of secrets in `.env` files; Alt+Enter binds them (clearing the value or keeping it as a local fallback), and *Bind to Infisical* binds an empty `KEY=` line |
 | Rider: .NET Project, .NET Executable (ASP.NET Core included) | *Environment variables* of the configuration. *Launch profile* configurations take their variables from `launchSettings.json`, which the plugin can't intercept: use a .NET Project configuration with references instead |
 | Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
-| Terminal | *Settings › Tools › EnvBridge › Terminal*: opt in per project and list what new tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line) |
+| Terminal | **New Terminal Tab with Infisical Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). **Load Infisical Secrets into This Terminal** puts them into the shell of the current tab instead, in that shell's own syntax, decided from the tab's shell: PowerShell, cmd, bash / zsh / sh (also Git Bash and WSL on Windows) or fish. The values go through a short-lived owner-only file the shell loads and deletes, so they appear neither on screen nor in the shell history. Typing `export KEY=infisical://…` yourself does nothing: nothing resolves references inside a running shell |
 
 ## In the editor
 
 | Feature | Where |
 |---|---|
 | Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
-| Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window |
+| Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
+| Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
+| `.env` intentions | *Bind to Infisical secret…* (choose from the bound environment's keys, same and similar names first; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
+| Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
+| Creating secrets | *New Secret…* in the tool window and *Extract value to Infisical…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
 | Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
 | Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
 | Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |

@@ -21,6 +21,21 @@ interface EnvPatcher {
     /** A copy of [profile] whose variables are [envs]. */
     fun copyWith(profile: RunProfile, envs: Map<String, String>): RunProfile
 
+    /**
+     * Env files attached by a field of the configuration's own (configurations implementing `EnvFilesOptions` need nothing
+     * here), as written in the configuration.
+     */
+    fun attachedEnvFiles(profile: RunProfile): List<String> = emptyList()
+
+    /** Removes the files of [attachedEnvFiles] from [copy], a copy made by [copyWith]. */
+    fun detachEnvFiles(copy: RunProfile) = Unit
+
+    /**
+     * The directory whose `.env` files the launched program reads by itself (the dotenv convention of Node.js tools such as
+     * Nuxt, Vite and Next.js), or null when the program doesn't.
+     */
+    fun dotenvDirectory(profile: RunProfile): String? = null
+
     companion object {
         val EP_NAME: ExtensionPointName<EnvPatcher> = ExtensionPointName.create("cz.xprees.secrets.envPatcher")
 

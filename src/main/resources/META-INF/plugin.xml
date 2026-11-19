@@ -69,6 +69,26 @@
         <localInspection shortName="InfisicalMissingSecret" bundle="messages.SecretsBundle" key="inspection.missing.display.name"
                          groupKey="inspection.group.name" enabledByDefault="true" level="WARNING"
                          implementationClass="cz.xprees.secrets.editor.MissingSecretInspection"/>
+        <localInspection shortName="InfisicalDotEnvPlaintextSecret" bundle="messages.SecretsBundle" key="inspection.dotenv.display.name"
+                         groupKey="inspection.group.name" enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="cz.xprees.secrets.editor.DotEnvPlaintextSecretInspection"/>
+        <codeInsight.inlayActionHandler handlerId="cz.xprees.secrets.showSecret"
+                                        implementationClass="cz.xprees.secrets.editor.ShowSecretInlayActionHandler"/>
+        <intentionAction>
+            <className>cz.xprees.secrets.editor.DotEnvBindIntention</className>
+            <bundleName>messages.SecretsBundle</bundleName>
+            <categoryKey>inspection.group.name</categoryKey>
+        </intentionAction>
+        <intentionAction>
+            <className>cz.xprees.secrets.editor.DotEnvBindToSecretIntention</className>
+            <bundleName>messages.SecretsBundle</bundleName>
+            <categoryKey>inspection.group.name</categoryKey>
+        </intentionAction>
+        <intentionAction>
+            <className>cz.xprees.secrets.editor.DotEnvExtractToSecretIntention</className>
+            <bundleName>messages.SecretsBundle</bundleName>
+            <categoryKey>inspection.group.name</categoryKey>
+        </intentionAction>
 
         <!-- Console masking of injected values -->
         <consoleInputFilterProvider implementation="cz.xprees.secrets.run.masking.SecretMaskingFilterProvider"/>

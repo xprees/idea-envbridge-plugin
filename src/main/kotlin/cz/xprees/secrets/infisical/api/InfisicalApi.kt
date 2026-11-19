@@ -12,6 +12,7 @@ import cz.xprees.secrets.core.model.SecretFolder
 import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
+import cz.xprees.secrets.core.provider.CreateOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 
@@ -65,6 +66,51 @@ class InfisicalApi(val http: InfisicalHttp) {
         )
         if (!response.isSuccess) throw InfisicalHttp.failure(response, "Reading secrets of ${scope.environment}:${scope.path}")
         return parseSecrets(response.json().obj(), scope)
+    }
+
+    /**
+     * `POST /api/v4/secrets/{name}`: creates a shared secret in the folder of [scope]. With a change policy on the folder,
+     * Infisical opens a change request instead (answered with `approval`).
+     */
+    fun createSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
+        val body = JsonObject().apply {
+            addProperty("projectId", scope.projectId)
+            addProperty("environment", scope.environment)
+            addProperty("secretPath", scope.path)
+            addProperty("secretValue", value.reveal())
+            if (comment.isNotBlank()) addProperty("secretComment", comment)
+            addProperty("type", "shared")
+        }
+        val response = http.postJson("/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Creating $key in ${scope.environment}:${scope.path}")
+            throw if (failure.kind == Kind.FORBIDDEN) {
+                SecretProviderException(Kind.FORBIDDEN, "Not allowed to create secrets in ${scope.environment}:${scope.path}")
+            } else {
+                failure
+            }
+        }
+        val o = runCatching { response.json().obj() }.getOrNull()
+        return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) CreateOutcome.APPROVAL_REQUESTED else CreateOutcome.CREATED
+    }
+
+    /** `POST /api/v1/projects/{id}/environments`: creates an environment. */
+    fun createEnvironment(token: String, projectId: String, name: String, slug: String): ProviderEnvironment {
+        val body = JsonObject().apply {
+            addProperty("name", name)
+            addProperty("slug", slug)
+        }
+        val response = http.postJson("/api/v1/projects/${encodePath(projectId)}/environments", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Creating the environment $slug")
+            throw if (failure.kind == Kind.FORBIDDEN) SecretProviderException(Kind.FORBIDDEN, "Not allowed to create environments in this project") else failure
+        }
+        val env = runCatching { response.json().obj().get("environment").asJsonObject }.getOrNull()
+        return ProviderEnvironment(
+            slug = env?.string("slug") ?: slug,
+            name = env?.string("name") ?: name,
+            id = env?.string("id") ?: slug,
+        )
     }
 
     // ---- Authentication --------------------------------------------------------------------------------------------

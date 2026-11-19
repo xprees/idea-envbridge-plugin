@@ -1,11 +1,13 @@
 package cz.xprees.secrets.core.provider
 
 import com.intellij.openapi.extensions.ExtensionPointName
+import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.model.SecretValue
 import javax.swing.Icon
 
 /**
@@ -89,6 +91,26 @@ interface SecretsClient {
 
     /** Secrets of [scope] with imports applied (local secrets win over imported ones) and references expanded. */
     fun listSecrets(scope: SecretScope): List<SecretEntry>
+
+    /**
+     * Creates the shared secret [key] in the folder of [scope]. The only write the plugin does, always on an explicit user
+     * action. Fails with [SecretProviderException.Kind.CONFIGURATION] when this connection can't write (e.g. a read-only
+     * token) or the secret already exists.
+     */
+    fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String = ""): CreateOutcome =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create secrets")
+
+    /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
+    fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create environments")
+}
+
+/** What [SecretsClient.createSecret] did. */
+enum class CreateOutcome {
+    CREATED,
+
+    /** The folder has a change policy: a change request was opened and the secret exists once it is approved. */
+    APPROVAL_REQUESTED,
 }
 
 /** What a sign-in flow may need from the UI. */

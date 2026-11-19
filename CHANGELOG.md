@@ -36,6 +36,27 @@
   `NAME=infisical://…` lines to paste into any Environment Variables dialog
 - The Run console starts with a line naming the variables that came from secrets and their environment and folder (no values);
   secrets with empty values are named there, warned about at launch and shown as "(empty)" in the run configuration preview
+- **New Terminal Tab with Infisical Secrets** (terminal toolbar, *Tools* menu): one terminal tab, in any shell, whose environment
+  holds the secrets of the bound folder or the project's terminal references, without enabling the terminal integration
+- `.env` binding comments: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod/KEY`. Tools outside the IDE
+  read the plain value; launches from the IDE get the secret; the editor shows a masked shadow value (`dev ••••••`) and the
+  key icon (reveal, copy, override) on the binding
+- `.env` files: an inspection marks plaintext values of variables that are secrets in the bound folder; its quick fixes (and
+  *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
+- Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
+  read by themselves, are resolved at launch
+- **Load Infisical Secrets into This Terminal** (terminal toolbar and context menu, *Tools* menu): sets the secrets in the shell of
+  the current tab, in its own syntax: PowerShell (no script execution needed), cmd, bash / zsh / sh (Git Bash and WSL paths
+  on Windows) or fish. Values travel through an owner-only temporary file the shell loads and deletes, never through the
+  terminal's screen or history; refused while a command is running
+- **New Environment…** in the Secrets tool window: name and slug (derived from the name), then selected
+- **Create secrets**: *New Secret…* in the Secrets tool window, and *Extract value to Infisical…* on a plaintext `.env` value
+  (creates the secret, then binds the line and clears the value). Production-like environments ask first; folders with a
+  change policy get a change request. OAuth connections are read-only and say so
+- `.env`: *Bind to Infisical secret…* chooses any key of the bound environment (same and similar names first) and asks whether
+  to clear the value or keep it as a local fallback
+- Click a masked hint (`dev ••••••`) to open the secret in the Secrets tool window, selected; the gutter's *Show in tool window*
+  selects it too
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview
 
