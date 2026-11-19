@@ -8,6 +8,11 @@
     <depends>com.intellij.modules.platform</depends>
     <!-- Each integration is optional, so the plugin loads in every IDE -->
     <depends optional="true" config-file="secrets-maven.xml">org.jetbrains.idea.maven</depends>
+    <depends optional="true" config-file="secrets-nodejs.xml">NodeJS</depends>
+    <depends optional="true" config-file="secrets-python.xml">PythonCore</depends>
+    <depends optional="true" config-file="secrets-go.xml">org.jetbrains.plugins.go</depends>
+    <depends optional="true" config-file="secrets-docker.xml">Docker</depends>
+    <depends optional="true" config-file="secrets-terminal.xml">org.jetbrains.plugins.terminal</depends>
 
     <resource-bundle>messages.SecretsBundle</resource-bundle>
 

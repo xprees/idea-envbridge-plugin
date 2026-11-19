@@ -139,7 +139,7 @@ configuration's variables:
 | Milestone | Targets |
 |---|---|
 | M1 | Platform `CommonProgramRunConfigurationParameters` (Application, JUnit, TestNG, Spring Boot, Kotlin, shell scripts, …), Gradle and other external-system run configurations, Maven |
-| M2 | Node.js / npm / Bun, Python (incl. FastAPI, Django, pytest), Go, Docker image / Dockerfile / Compose (process env for `${VAR}` interpolation first; a `0600` temp env file outside the project, deleted when the process ends, only where a file is required), Terminal (opt-in) |
+| M2 | Node.js / npm / Bun, Python (incl. FastAPI, Django, pytest), Go, Docker image / Dockerfile / Compose (the Docker run configuration's environment variables: the container's environment, or the `docker compose` process environment for `${VAR}` interpolation; no temporary env file was needed), `.env` files holding references, Terminal (opt-in per project, through the terminal's `ShellExecOptionsCustomizer`, which replaces the deprecated `LocalTerminalCustomizer` and is still marked experimental) |
 | M4 | Rider .NET (project, launchSettings profiles, ASP.NET Core) with appsettings awareness (`Section__Key` ⇄ `Section:Key`), Database data sources (DataGrip-style connection interceptor for user/password) |
 
 ## Caching
@@ -188,9 +188,9 @@ configuration's variables:
 
 ## Milestones
 
-- **M1 (foundation)**: repository and CI, provider interface, Infisical client, the three sign-in methods, settings, project
+- **M1 (foundation, done)**: repository and CI, provider interface, Infisical client, the three sign-in methods, settings, project
   binding (`.infisical.yaml`), tool window (browse, reveal, copy, run configuration preview), `infisical://` references and scope
   imports, injection for JVM / Gradle / Maven and other configurations with standard environment variables, fail closed.
-- **M2**: Node.js / npm / Bun, Python, Go, Docker and Compose, terminal.
+- **M2** (done): Node.js / npm / Bun, Python, Go, Docker and Compose, `.env` files with references, terminal.
 - **M3**: editor integration, console masking, status bar, prod guard, *Run with environment…*, environment comparison.
 - **M4**: Rider .NET and appsettings, database data sources.

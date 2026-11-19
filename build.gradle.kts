@@ -90,7 +90,12 @@ dependencies {
     intellijPlatform {
         intellijIdea(platformVersion)
         // Each of these is an optional dependency in plugin.xml (config-file), so the plugin also loads in IDEs without them
-        bundledPlugins("com.intellij.java", "com.intellij.gradle", "org.jetbrains.idea.maven")
+        bundledPlugins(
+            "com.intellij.java", "com.intellij.gradle", "org.jetbrains.idea.maven",
+            "NodeJS", "JavaScript", "Docker", "org.jetbrains.plugins.terminal",
+        )
+        // Not bundled with IntelliJ IDEA: the versions compatible with platformVersion are looked up on the Marketplace
+        compatiblePlugins("PythonCore", "org.jetbrains.plugins.go")
         testFramework(TestFrameworkType.Platform)
         // pinned: see gradle.properties
         pluginVerifier(providers.gradleProperty("pluginVerifierVersion"))

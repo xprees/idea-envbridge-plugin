@@ -18,6 +18,7 @@ import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.resolve.EnvResolution
 import cz.xprees.secrets.core.resolve.LaunchSecretResolver
+import cz.xprees.secrets.run.EnvFileReferences
 import cz.xprees.secrets.run.EnvPatcher
 import javax.swing.JComponent
 import javax.swing.table.DefaultTableModel
@@ -67,8 +68,9 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
             status.text = SecretsBundle.message("preview.none")
             return
         }
-        val envs = EnvPatcher.find(settings.configuration)?.second.orEmpty()
         val resolver = LaunchSecretResolver.getInstance(project)
+        val configured = EnvPatcher.find(settings.configuration)?.second.orEmpty()
+        val envs = EnvFileReferences.effective(settings.configuration, configured, resolver).first
         val plan = resolver.plan(envs)
         if (!plan.hasSecrets) {
             envs.forEach { (k, v) -> tableModel.addRow(arrayOf(k, v, SecretsBundle.message("preview.source.explicit"))) }
