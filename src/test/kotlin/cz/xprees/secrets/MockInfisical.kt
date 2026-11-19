@@ -14,6 +14,13 @@ class MockInfisical : AutoCloseable {
 
     val requests = CopyOnWriteArrayList<Request>()
 
+    /** Secrets created through the API: "env:path:KEY" -> value. Listings include them. */
+    val created = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Answer creations with a change request instead of creating the secret. */
+    @Volatile
+    var requireApproval = false
+
     /** Access tokens the server accepts; the login hands out the next one. */
     private var tokenCounter = 0
     private val validTokens = mutableSetOf<String>()
@@ -53,6 +60,16 @@ class MockInfisical : AutoCloseable {
         val token = authorization?.removePrefix("Bearer ")
         if (token == null || synchronized(validTokens) { token !in validTokens }) return respond(exchange, 401, """{"message":"Token expired"}""")
 
+        if (request.method == "POST" && request.path.startsWith("/api/v4/secrets/")) {
+            val key = URLDecoder.decode(request.path.removePrefix("/api/v4/secrets/"), StandardCharsets.UTF_8)
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val env = json.get("environment").asString
+            val path = json.get("secretPath").asString
+            if (key in listOf("DB_PASSWORD", "API_KEY") && env == "dev" && path == "/") return respond(exchange, 400, """{"message":"Secret already exist"}""")
+            if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a1","status":"open"}}""")
+            created["$env:$path:$key"] = json.get("secretValue").asString
+            return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
+        }
         when (request.path) {
             "/api/v1/projects" -> respond(
                 exchange, 200,
@@ -70,7 +87,9 @@ class MockInfisical : AutoCloseable {
                     env == "dev" && path == "/backend" -> """{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared"}"""
                     else -> return respond(exchange, 404, """{"message":"Folder not found"}""")
                 }
-                respond(exchange, 200, """{"secrets":[$secrets],"imports":[]}""")
+                val extra = created.entries.filter { it.key.startsWith("$env:$path:") }
+                    .joinToString("") { (k, v) -> """,{"secretKey":"${k.substringAfterLast(':')}","secretValue":"$v","type":"shared"}""" }
+                respond(exchange, 200, """{"secrets":[$secrets$extra],"imports":[]}""")
             }
 
             else -> respond(exchange, 404, """{"message":"Not found"}""")

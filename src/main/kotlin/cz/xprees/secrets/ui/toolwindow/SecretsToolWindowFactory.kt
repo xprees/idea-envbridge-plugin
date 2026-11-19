@@ -21,5 +21,13 @@ class SecretsToolWindowFactory : ToolWindowFactory, DumbAware {
         fun show(project: Project) {
             ToolWindowManager.getInstance(project).getToolWindow(ID)?.activate(null)
         }
+
+        /** Opens the Secrets tool window and selects [location] (a secret, or a folder when it has no key). */
+        fun select(project: Project, location: SecretLocation) {
+            val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ID) ?: return
+            toolWindow.activate {
+                toolWindow.contentManager.contents.firstNotNullOfOrNull { it.component as? SecretsToolWindowPanel }?.select(location)
+            }
+        }
     }
 }

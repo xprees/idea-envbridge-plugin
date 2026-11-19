@@ -145,6 +145,20 @@ object DotEnvLines {
     }
 
     /**
+     * [keys] in the order a chooser offers them for the variable [name]: the same name, then names sharing words with it
+     * (most shared first), then the rest alphabetically.
+     */
+    fun rankKeys(name: String, keys: Collection<String>): List<String> {
+        fun words(s: String) = s.split('_', '-', '.').filter { it.isNotEmpty() }.map(String::lowercase).toSet()
+        val wanted = words(name)
+        return keys.sortedWith(
+            compareByDescending<String> { it.equals(name, ignoreCase = true) }
+                .thenByDescending { (words(it) intersect wanted).size }
+                .thenBy { it.lowercase() },
+        )
+    }
+
+    /**
      * Binds the last [name] line of [document] to [reference] with a comment, replacing any comment it had. With [keepValue]
      * the value stays as the fallback for tools outside the IDE; otherwise it is cleared.
      */

@@ -18,7 +18,7 @@ import com.intellij.psi.PsiFile
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.resolve.KeysIndex
-import cz.xprees.secrets.ui.toolwindow.SecretsToolWindowFactory
+import cz.xprees.secrets.core.reference.SecretReference
 import javax.swing.Icon
 
 /**
@@ -52,7 +52,7 @@ class SecretReferenceAnnotator : ExternalAnnotator<SecretReferenceAnnotator.Inpu
                 .range(TextRange(found.start, found.end))
                 .tooltip(tooltip(resolved))
             // One key icon per line is enough
-            if (markedLines.add(line)) builder.gutterIconRenderer(SecretGutter(found.name, found.reference?.environment, tooltip(resolved)))
+            if (markedLines.add(line)) builder.gutterIconRenderer(SecretGutter(found.name, found.reference, tooltip(resolved)))
             builder.create()
         }
     }
@@ -72,7 +72,9 @@ class SecretReferenceAnnotator : ExternalAnnotator<SecretReferenceAnnotator.Inpu
 }
 
 /** The key icon in the gutter, with the actions on that secret. */
-private class SecretGutter(private val key: String, private val environment: String?, private val tooltip: String) : GutterIconRenderer(), DumbAware {
+private class SecretGutter(private val key: String, private val reference: SecretReference?, private val tooltip: String) : GutterIconRenderer(), DumbAware {
+    private val environment: String? get() = reference?.environment
+
     override fun getIcon(): Icon = SecretsIcons.PROVIDER
 
     override fun getTooltipText(): String = tooltip
@@ -83,16 +85,16 @@ private class SecretGutter(private val key: String, private val environment: Str
         action("editor.action.reveal") { e -> e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment) } },
         action("editor.action.copy") { e -> SecretValueActions.copy(e.project!!, key, environment) },
         action("editor.action.override") { e -> SecretValueActions.editOverride(e.project!!, key) },
-        action("editor.action.show") { e -> SecretsToolWindowFactory.show(e.project!!) },
+        action("editor.action.show") { e -> ShowSecretInToolWindow.show(e.project!!, key, reference) },
     )
 
     override fun getClickAction(): AnAction = action("editor.action.reveal") { e ->
         e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment) }
     }
 
-    override fun equals(other: Any?) = other is SecretGutter && other.key == key && other.environment == environment
+    override fun equals(other: Any?) = other is SecretGutter && other.key == key && other.reference == reference
 
-    override fun hashCode() = key.hashCode() * 31 + environment.hashCode()
+    override fun hashCode() = key.hashCode() * 31 + reference.hashCode()
 
     private fun action(textKey: String, perform: (AnActionEvent) -> Unit): AnAction =
         object : DumbAwareAction(SecretsBundle.message(textKey)) {

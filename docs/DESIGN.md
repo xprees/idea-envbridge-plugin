@@ -17,7 +17,7 @@ Status: agreed plan (grill session, 2026-11-19). Milestones M1–M4 below; this 
 - **Modular**: Infisical is the first implementation of a provider interface, so other secret managers can be added later.
 - IntelliJ Platform **2026.1+**, every IDE (IDEA, WebStorm, PyCharm, GoLand, Rider, DataGrip, …).
 
-Non-goals for v1: creating or editing secrets (read-only), syncing secrets to files.
+Non-goals for v1: editing or deleting secrets, syncing secrets to files. Creating a secret is the one write, always on an explicit user action (*New Secret…*, *Extract value to Infisical…*), through `SecretsClient.createSecret`.
 
 ## Identity and licensing
 
@@ -192,7 +192,7 @@ Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`,
 | Secrets in logs | Values never logged; `SecretValue.toString()` is masked; HTTP errors are logged without bodies. |
 | Secrets on screen or in clipboard | Masked by default, auto-hide on reveal, clipboard auto-clear, console masking (M3). |
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
-| Accidental production use | Prod guard (M3); read-only scope. |
+| Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 
 ## Milestones

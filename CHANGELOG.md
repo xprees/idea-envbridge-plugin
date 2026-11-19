@@ -45,6 +45,13 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- **Create secrets**: *New Secret…* in the Secrets tool window, and *Extract value to Infisical…* on a plaintext `.env` value
+  (creates the secret, then binds the line and clears the value). Production-like environments ask first; folders with a
+  change policy get a change request. OAuth connections are read-only and say so
+- `.env`: *Bind to Infisical secret…* chooses any key of the bound environment (same and similar names first) and asks whether
+  to clear the value or keep it as a local fallback
+- Click a masked hint (`dev ••••••`) to open the secret in the Secrets tool window, selected; the gutter's *Show in tool window*
+  selects it too
 - Secrets tool window: browse projects, environments, folders and secrets with masked values, reveal with auto-hide, copy with
   clipboard auto-clear, copy reference, open in dashboard, run configuration preview
 

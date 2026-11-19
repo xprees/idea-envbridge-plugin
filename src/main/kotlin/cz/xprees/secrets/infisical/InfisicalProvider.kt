@@ -1,5 +1,11 @@
 package cz.xprees.secrets.infisical
 
+import cz.xprees.secrets.core.provider.SecretProviderException
+
+import cz.xprees.secrets.core.model.SecretValue
+
+import cz.xprees.secrets.core.provider.CreateOutcome
+
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
@@ -103,7 +109,7 @@ object InfisicalAuthMethods {
 }
 
 /** [SecretsClient] for one Infisical connection. */
-class InfisicalClient(connection: SecretConnection) : SecretsClient {
+class InfisicalClient(private val connection: SecretConnection) : SecretsClient {
     private val api = InfisicalApi(InfisicalHttp(connection.baseUrl))
     private val auth = InfisicalAuth(connection, api)
 
@@ -118,4 +124,16 @@ class InfisicalClient(connection: SecretConnection) : SecretsClient {
     override fun listFolders(scope: SecretScope): List<SecretFolder> = auth.withToken { api.listFolders(it, scope) }
 
     override fun listSecrets(scope: SecretScope): List<SecretEntry> = auth.withToken { api.listSecrets(it, scope) }
+
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
+        // OAuth applications only offer the secrets:read scope
+        if (connection.authMethodId == InfisicalAuthMethods.OAUTH) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "OAuth connections are read-only (scope ${InfisicalAuthMethods.OAUTH_SCOPE}). Use browser sign-in or a machine identity " +
+                    "with write permission to create secrets.",
+            )
+        }
+        return auth.withToken { api.createSecret(it, scope, key, value, comment) }
+    }
 }

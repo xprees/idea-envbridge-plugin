@@ -42,7 +42,8 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>Fail closed</b>: if a secret can't be loaded, the launch stops with <i>Sign in</i>, <i>Retry</i> and <i>Run without secrets once</i></li>
   <li><b>Secrets tool window</b>: browse projects, environments, folders and secrets. Values stay masked; <i>Reveal</i> hides them
       again after a few seconds, and copied values are cleared from the clipboard after a while. Copy a ready-made
-      <code>infisical://</code> reference, and preview what a run configuration would receive (dry run)</li>
+      <code>infisical://</code> reference, preview what a run configuration would receive (dry run), and create secrets
+      (<i>New Secret…</i>)</li>
   <li><b>Any instance</b>: Infisical Cloud US, EU, dedicated or self-hosted (base URL per connection; the IDE's proxy and certificate
       settings apply)</li>
   <li><b>Sign in through the system browser</b> (like the Infisical CLI), with a read-only <b>OAuth application</b> (PKCE), or with a
@@ -51,7 +52,8 @@ handed to the process in memory. Nothing is written to disk.</p>
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
-<p>Settings: <i>Settings › Tools › EnvBridge</i>. Read-only: the plugin never changes your secrets.</p>
+<p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you create one yourself
+(<i>New Secret…</i>, <i>Extract value to Infisical…</i>); it never changes or deletes existing secrets.</p>
 <!-- Plugin description end -->
 
 Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The plugin is built and tested against the oldest
@@ -117,7 +119,10 @@ A reference is the value of an environment variable:
 | Feature | Where |
 |---|---|
 | Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
-| Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window |
+| Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
+| Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
+| `.env` intentions | *Bind to Infisical secret…* (choose from the bound environment's keys, same and similar names first; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
+| Creating secrets | *New Secret…* in the tool window and *Extract value to Infisical…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
 | Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
 | Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
 | Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |

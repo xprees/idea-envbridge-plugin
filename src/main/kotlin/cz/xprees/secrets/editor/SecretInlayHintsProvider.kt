@@ -1,5 +1,10 @@
 package cz.xprees.secrets.editor
 
+import com.intellij.codeInsight.hints.declarative.InlayActionData
+import com.intellij.codeInsight.hints.declarative.StringInlayActionPayload
+import cz.xprees.secrets.SecretsBundle
+import cz.xprees.secrets.ui.toolwindow.SecretLocation
+
 import com.intellij.codeInsight.hints.declarative.HintFormat
 import com.intellij.codeInsight.hints.declarative.InlayHintsCollector
 import com.intellij.codeInsight.hints.declarative.InlayHintsProvider
@@ -29,8 +34,11 @@ class SecretInlayHintsProvider : InlayHintsProvider {
                     val resolved = EditorReferences.resolve(file.project, found, snapshot) ?: continue
                     if (resolved.info == null) continue
                     val environment = found.reference?.environment ?: snapshot.boundEnvironment
-                    sink.addPresentation(InlineInlayPosition(found.end, true), hintFormat = HintFormat.default) {
-                        text("$environment ${SecretValue.MASK}")
+                    // A click opens the secret in the Secrets tool window
+                    val click = SecretLocation.of(file.project, found.name, found.reference)
+                        ?.let { InlayActionData(StringInlayActionPayload(it.encode()), ShowSecretInToolWindow.HANDLER_ID) }
+                    sink.addPresentation(InlineInlayPosition(found.end, true), hintFormat = HintFormat.default, tooltip = SecretsBundle.message("inlay.click.tooltip")) {
+                        text("$environment ${SecretValue.MASK}", click)
                     }
                 }
             }

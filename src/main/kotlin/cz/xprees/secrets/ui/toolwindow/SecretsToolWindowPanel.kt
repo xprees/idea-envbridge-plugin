@@ -1,5 +1,8 @@
 package cz.xprees.secrets.ui.toolwindow
 
+import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.ui.secrets.NewSecretDialog
+
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
@@ -85,7 +88,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
 
         val actions = DefaultActionGroup(
-            RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            RefreshAction(), NewSecretAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
             CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
@@ -107,6 +110,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     /** Rebuilds the tree from the configured connections (values are re-read from the cache or the instance on expand). */
     fun rebuild() {
+        rebuilding = true
         ApplicationManager.getApplication().executeOnPooledThread {
             // With a bound project (and "only use the bound project"), only its connection is listed
             val restricted = restrictedBinding()
@@ -122,6 +126,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 model.reload()
                 // Open the connection of the project binding right away
                 nodes.firstOrNull()?.let { tree.expandPath(TreePath(arrayOf(root, it))) }
+                rebuilding = false
+                pendingSelection?.let { pendingSelection = null; select(it) }
             }, ModalityState.any(), project.disposed)
         }
     }
@@ -146,8 +152,80 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 node.loaded = true
                 node.loading = false
                 model.nodeStructureChanged(node)
+                afterLoad.remove(node)?.invoke()
             }, ModalityState.any(), project.disposed)
         }
+    }
+
+    // ---- Selecting a secret from elsewhere (editor hints, gutter, after creating one) ------------------------------------
+
+    private var rebuilding = false
+    private var pendingSelection: SecretLocation? = null
+    private val afterLoad = HashMap<LazyNode, () -> Unit>()
+
+    /**
+     * Expands the tree down to [location] (loading each level as needed) and selects the secret, or the deepest node that
+     * exists on the way when the secret isn't there. On the EDT.
+     */
+    fun select(location: SecretLocation) {
+        if (rebuilding) {
+            pendingSelection = location
+            return
+        }
+        val connection = root.children().asSequence().filterIsInstance<ConnectionNode>().firstOrNull { it.connection.id == location.connectionId }
+            ?: return
+        whenLoaded(connection) {
+            val projectNode = childrenOf<ProjectNode>(connection).firstOrNull { it.project.id == location.projectId }
+                ?: return@whenLoaded selectNode(connection)
+            whenLoaded(projectNode) {
+                val environment = childrenOf<EnvironmentNode>(projectNode).firstOrNull { it.environment.slug == location.environment }
+                    ?: return@whenLoaded selectNode(projectNode)
+                descend(environment, location.path.split('/').filter(String::isNotEmpty), location.key)
+            }
+        }
+    }
+
+    private fun descend(node: LazyNode, segments: List<String>, key: String?): Unit = whenLoaded(node) {
+        if (segments.isEmpty()) {
+            selectNode(key?.let { k -> childrenOf<SecretNode>(node).firstOrNull { it.entry.key == k } } ?: node)
+            return@whenLoaded
+        }
+        val folder = childrenOf<FolderNode>(node).firstOrNull { it.name == segments.first() } ?: return@whenLoaded selectNode(node)
+        descend(folder, segments.drop(1), key)
+    }
+
+    private fun whenLoaded(node: LazyNode, then: () -> Unit) {
+        val path = TreePath(node.path)
+        if (node.loaded && !node.loading) {
+            tree.expandPath(path)
+            then()
+            return
+        }
+        afterLoad[node] = then
+        load(node)
+        tree.expandPath(path)
+    }
+
+    /** Selects [location] after a change there (e.g. a created secret): the folder is read again first. */
+    fun refreshAndSelect(location: SecretLocation) {
+        // Walk the loaded part of the tree along the location and mark its folder for reloading
+        var node: SecretsNode? = root.children().asSequence().filterIsInstance<ConnectionNode>().firstOrNull { it.connection.id == location.connectionId }
+        node = node?.let { c -> childrenOf<ProjectNode>(c).firstOrNull { it.project.id == location.projectId } }
+        node = node?.let { p -> childrenOf<EnvironmentNode>(p).firstOrNull { it.environment.slug == location.environment } }
+        for (segment in location.path.split('/').filter(String::isNotEmpty)) {
+            node = node?.let { n -> childrenOf<FolderNode>(n).firstOrNull { it.name == segment } }
+        }
+        (node as? LazyNode)?.takeIf { !it.loading }?.loaded = false
+        select(location)
+    }
+
+    private inline fun <reified T : SecretsNode> childrenOf(node: SecretsNode): List<T> = node.children().asSequence().filterIsInstance<T>().toList()
+
+    private fun selectNode(node: SecretsNode) {
+        val path = TreePath(node.path)
+        tree.selectionPath = path
+        tree.scrollPathToVisible(path)
+        tree.requestFocusInWindow()
     }
 
     private fun errorNode(node: LazyNode, e: SecretProviderException): MessageNode =
@@ -327,6 +405,41 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 load(lazy, force = true)
                 tree.expandPath(TreePath(lazy.path))
             }
+        }
+    }
+
+    /** Creates a secret in the selected environment or folder (or the bound one). */
+    private inner class NewSecretAction : PanelAction(SecretsBundle.message("action.new.secret"), AllIcons.General.Add) {
+        private fun context(): Pair<ProjectNode, SecretScope?>? {
+            val selection = tree.selectionPath
+            val projectNode = TreeUtil.findObjectInPath(selection, ProjectNode::class.java)
+                ?: root.children().asSequence().filterIsInstance<ConnectionNode>()
+                    .flatMap { childrenOf<ProjectNode>(it).asSequence() }.firstOrNull { it.bound }
+                ?: return null
+            val scope = when (val node = selectedNode()) {
+                is SecretNode -> node.scope
+                is FolderNode -> node.scope
+                is EnvironmentNode -> node.scope
+                else -> null
+            }?.takeIf { it.projectId == projectNode.project.id }
+            return projectNode to scope
+        }
+
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = context() != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val (projectNode, scope) = context() ?: return
+            val binding = binding(projectNode)?.takeIf { it.projectId == projectNode.project.id }
+            val environments = projectNode.project.environments.map { it.slug }
+            NewSecretDialog(
+                project, projectNode.connection, projectNode.project.id, environments,
+                environment = scope?.environment ?: binding?.environment ?: environments.firstOrNull() ?: return,
+                path = scope?.path ?: binding?.path ?: "/",
+            ) { location, outcome ->
+                if (outcome == CreateOutcome.CREATED) refreshAndSelect(location)
+            }.show()
         }
     }
 
