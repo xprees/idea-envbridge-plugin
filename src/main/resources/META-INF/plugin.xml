@@ -14,6 +14,9 @@
     <depends optional="true" config-file="secrets-go.xml">org.jetbrains.plugins.go</depends>
     <depends optional="true" config-file="secrets-docker.xml">Docker</depends>
     <depends optional="true" config-file="secrets-terminal.xml">org.jetbrains.plugins.terminal</depends>
+    <depends optional="true" config-file="secrets-rider.xml">com.intellij.modules.rider</depends>
+    <depends optional="true" config-file="secrets-json.xml">com.intellij.modules.json</depends>
+    <depends optional="true" config-file="secrets-database.xml">com.intellij.database</depends>
     <!-- Inlay hints are registered per language, in the plugin that defines it -->
     <depends optional="true" config-file="secrets-lang-java.xml">com.intellij.java</depends>
     <depends optional="true" config-file="secrets-lang-kotlin.xml">org.jetbrains.kotlin</depends>
@@ -88,6 +91,11 @@
                 text="Run with Infisical Environment…"
                 description="Run the selected configuration once with secrets from another environment">
             <add-to-group group-id="RunMenu" anchor="after" relative-to-action="ChooseRunConfiguration"/>
+        </action>
+        <action id="cz.xprees.secrets.AddSecretsToRunConfiguration" class="cz.xprees.secrets.ui.actions.AddSecretsToRunConfigurationAction"
+                text="Add Infisical Secrets to Run Configuration…"
+                description="Pick secrets of the bound folder and add references to them to a run configuration's environment variables">
+            <add-to-group group-id="RunMenu" anchor="after" relative-to-action="cz.xprees.secrets.RunWithEnvironment"/>
         </action>
     </actions>
 </idea-plugin>

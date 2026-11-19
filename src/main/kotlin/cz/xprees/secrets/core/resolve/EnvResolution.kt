@@ -81,6 +81,29 @@ object EnvResolution {
             return copy(environment = environment, sources = sources)
         }
 
+        /**
+         * One line for the console of the launched process: which variables came from a secret manager and from where.
+         * Names and scopes only, never values. Null when nothing came from a secret manager.
+         */
+        fun summary(): String? {
+            val injected = sources.filterValues { it !is Source.Explicit }
+            if (injected.isEmpty()) return null
+            val byScope = injected.entries.groupBy({ (_, source) -> label(source) }, { (name, _) -> name })
+            val empty = injected.keys.filter { environment[it].isNullOrEmpty() }
+            return buildString {
+                append("EnvBridge: ").append(injected.size).append(if (injected.size == 1) " variable" else " variables").append(" from secrets: ")
+                append(byScope.entries.joinToString("; ") { (scope, names) -> "$scope ${names.joinToString(", ")}" })
+                if (empty.isNotEmpty()) append(" | empty: ").append(empty.joinToString(", "))
+            }
+        }
+
+        private fun label(source: Source): String = when (source) {
+            is Source.Reference -> "[${EnvResolution.describe(source.scope)}]"
+            is Source.Scope -> "[${EnvResolution.describe(source.scope)}]"
+            is Source.LocalOverride -> "[local override]"
+            Source.Explicit -> ""
+        }
+
         /** Values that came from a secret manager (to mask them in consoles). */
         val secretValues: Set<String>
             get() = sources.filterValues { it !is Source.Explicit }.keys.mapNotNull { environment[it] }.filter { it.isNotEmpty() }.toSet()
@@ -155,7 +178,10 @@ object EnvResolution {
                 problems += "$name: no permission to read the value of ${reference.key} in ${describe(scope)}"
                 continue
             }
-            environment[name] = secret.value.reveal()
+            val value = secret.value.reveal()
+            // An empty value is passed on (it may be intended), but said out loud: the app may fall back to a default
+            if (value.isEmpty()) warnings += "$name: ${reference.key} in ${describe(scope)} has an empty value"
+            environment[name] = value
             sources[name] = Source.Reference(reference, scope)
         }
         if (problems.isNotEmpty()) {

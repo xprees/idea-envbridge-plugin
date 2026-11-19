@@ -70,7 +70,7 @@ class SecretsPlatformTest : BasePlatformTestCase() {
         assertThat(client.hasCredentials()).isTrue()
         assertThat(client.listProjects().single().environments.map { it.slug }).containsExactly("dev", "prod")
         assertThat(client.listFolders(SecretScope("p1", "dev")).single().path).isEqualTo("/backend")
-        assertThat(client.listSecrets(SecretScope("p1", "dev")).map { it.key }).containsExactly("DB_PASSWORD", "API_KEY")
+        assertThat(client.listSecrets(SecretScope("p1", "dev")).map { it.key }).containsExactly("DB_PASSWORD", "API_KEY", "ConnectionStrings__Default")
 
         val secretsRequest = mock.requests.last { it.path == "/api/v4/secrets" }
         assertThat(secretsRequest.authorization).startsWith("Bearer token-")

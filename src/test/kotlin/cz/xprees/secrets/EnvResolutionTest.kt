@@ -14,7 +14,7 @@ class EnvResolutionTest {
     private val defaults = SecretReference.Defaults("p1", "dev", "/")
     private val store = mapOf(
         SecretScope("p1", "dev", "/") to listOf(secret("A", "a-dev"), secret("B", "b-dev"), secret("SHARED", "from-scope")),
-        SecretScope("p1", "prod", "/") to listOf(secret("A", "a-prod")),
+        SecretScope("p1", "prod", "/") to listOf(secret("A", "a-prod"), secret("EMPTY", "")),
         SecretScope("p1", "dev", "/hidden") to listOf(SecretEntry("H", SecretValue(""), valueHidden = true), secret("V", "v")),
     )
     private val fetched = mutableListOf<SecretScope>()
@@ -49,6 +49,17 @@ class EnvResolutionTest {
             .doesNotContainKey("INFISICAL")
         assertThat(result.sources["SHARED"]).isEqualTo(EnvResolution.Source.Explicit)
         assertThat(result.secretValues).contains("a-prod", "a-dev").doesNotContain("explicit")
+    }
+
+    @Test
+    fun `empty values are passed on with a warning and named in the console summary`() {
+        val result = resolve(linkedMapOf("URL" to "infisical://prod/EMPTY", "PASSWORD" to "infisical://prod/A", "PLAIN" to "x"))
+        assertThat(result.environment).containsEntry("URL", "")
+        assertThat(result.warnings).singleElement().asString().contains("URL").contains("EMPTY").contains("prod:/")
+        val summary = result.summary()!!
+        assertThat(summary).contains("2 variables").contains("[prod:/] URL, PASSWORD").contains("empty: URL")
+            .doesNotContain("PLAIN").doesNotContain("a-prod")
+        assertThat(resolve(mapOf("PLAIN" to "x")).summary()).isNull()
     }
 
     @Test

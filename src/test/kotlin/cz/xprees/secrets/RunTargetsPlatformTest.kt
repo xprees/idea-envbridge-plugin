@@ -76,4 +76,35 @@ class RunTargetsPlatformTest : BasePlatformTestCase() {
         Files.writeString(envFile, "PLAIN=1\n")
         assertThat(EnvFileReferences.effective(configuration, configuration.envs, resolver).second).isFalse()
     }
+
+    fun `test npm configurations with references are claimed by the secrets runner and get the values written into the copy`() {
+        val template = template("js.build_tools.npm")
+        val settings = com.intellij.execution.RunManager.getInstance(project).createConfiguration(template, template.factory!!)
+        val (patcher, initial) = EnvPatcher.find(template)!!
+        val stored = settings.configuration
+        val withReference = patcher.copyWith(stored, initial + ("URL" to "infisical://prod/URL")) as RunConfiguration
+        val runner = com.intellij.execution.runners.ProgramRunner.getRunner(com.intellij.execution.executors.DefaultRunExecutor.EXECUTOR_ID, withReference)
+        assertThat(runner).isInstanceOf(cz.xprees.secrets.run.SecretsProgramRunner::class.java)
+        // The settings the IDE's npm launch state reads its environment from
+        val launched = patcher.copyWith(withReference, initial + ("URL" to "https://pb.example.com"))
+        val runSettings = (launched as com.intellij.lang.javascript.buildTools.npm.rc.NpmRunConfiguration).runSettings
+        assertThat(runSettings.envData.envs).containsEntry("URL", "https://pb.example.com")
+        assertThat(launched.envData.envs).containsEntry("URL", "https://pb.example.com")
+    }
+
+    fun `test references picked in the dialog are written into the stored configuration`() {
+        val template = template("js.build_tools.npm")
+        val settings = com.intellij.execution.RunManager.getInstance(project).createConfiguration(template, template.factory!!)
+        val (patcher, initial) = EnvPatcher.find(settings.configuration)!!
+        val prepared = patcher.copyWith(settings.configuration, initial + ("PLAIN" to "keep"))
+        val state = org.jdom.Element("configuration")
+        (prepared as RunConfiguration).writeExternal(state)
+        settings.configuration.readExternal(state)
+
+        val skipped = cz.xprees.secrets.ui.actions.AddSecretsToRunConfigurationAction.addTo(
+            project, settings, linkedMapOf("PLAIN" to "infisical://PLAIN", "DB" to "infisical://DB_PASSWORD"),
+        )
+        assertThat(skipped).containsExactly("PLAIN")
+        assertThat(patcher.read(settings.configuration)).containsEntry("PLAIN", "keep").containsEntry("DB", "infisical://DB_PASSWORD")
+    }
 }

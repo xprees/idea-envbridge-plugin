@@ -42,6 +42,17 @@ class InfisicalApiParsingTest {
     }
 
     @Test
+    fun `personal overrides win over the shared secret whichever comes first`() {
+        for (order in listOf(listOf("shared", "personal"), listOf("personal", "shared"))) {
+            val items = order.joinToString(",") { """{"secretKey":"K","secretValue":"$it","type":"$it","secretPath":"/"}""" }
+            val json = JsonParser.parseString("""{"secrets":[$items],"imports":[]}""").asJsonObject
+            val secret = InfisicalApi.parseSecrets(json, SecretScope("p", "dev", "/")).single()
+            assertThat(secret.value.reveal()).isEqualTo("personal")
+            assertThat(secret.origin).isEqualTo(SecretOrigin.PERSONAL)
+        }
+    }
+
+    @Test
     fun `dashboard links follow the web app routes`() {
         val connection = SecretConnection("c", "infisical", "EU", "https://eu.infisical.com", "browser")
         val provider = cz.xprees.secrets.infisical.InfisicalProvider()

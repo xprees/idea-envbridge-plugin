@@ -85,7 +85,11 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
                 outcome.onSuccess { result ->
                     for ((name, value) in result.environment) {
                         val source = result.sources[name]
-                        val shown = if (source is EnvResolution.Source.Explicit) value else SecretValue.MASK
+                        val shown = when {
+                            value.isEmpty() -> SecretsBundle.message("preview.empty")
+                            source is EnvResolution.Source.Explicit -> value
+                            else -> SecretValue.MASK
+                        }
                         tableModel.addRow(arrayOf(name, shown, describe(source)))
                     }
                     status.text = (listOf(SecretsBundle.message("preview.resolved", result.environment.size)) + result.warnings).joinToString("  ·  ")

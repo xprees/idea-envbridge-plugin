@@ -165,8 +165,15 @@ class InfisicalApi(val http: InfisicalHttp) {
             val result = LinkedHashMap<String, SecretEntry>()
             for (element in o.array("secrets")) {
                 val entry = element.asObjectOrNull()?.let { parseSecret(it, scope, imported = false) } ?: continue
-                // Recursive listings can have the same key in several folders: the first (shallowest) wins, like the CLI
-                result.putIfAbsent(entry.key, entry)
+                val existing = result[entry.key]
+                when {
+                    existing == null -> result[entry.key] = entry
+                    // A personal override wins over the shared secret of the same folder, like in the CLI
+                    entry.origin == SecretOrigin.PERSONAL && existing.origin != SecretOrigin.PERSONAL && existing.path == entry.path ->
+                        result[entry.key] = entry
+                    // Recursive listings can have the same key in several folders: the first (shallowest) wins, like the CLI
+                    else -> Unit
+                }
             }
             for (import in o.array("imports").reversed()) {
                 val importObject = import.asObjectOrNull() ?: continue
