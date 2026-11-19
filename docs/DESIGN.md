@@ -1,4 +1,4 @@
-# Design: Secrets for Infisical (Unofficial)
+# Design: EnvBridge
 
 Status: agreed plan (grill session, 2026-11-19). Milestones M1–M4 below; this document is kept up to date as they land.
 
@@ -22,7 +22,9 @@ Non-goals for v1: creating or editing secrets (read-only), syncing secrets to fi
 ## Identity and licensing
 
 - Plugin ID `cz.xprees.secrets` (neutral, so it can grow beyond Infisical), packages `cz.xprees.secrets.core` and
-  `cz.xprees.secrets.infisical`, display name **Secrets for Infisical (Unofficial)**.
+  `cz.xprees.secrets.infisical`, display name **EnvBridge** (renamed from "Secrets for Infisical (Unofficial)"; the
+  description opens with the unofficial-integration note). Internal identifiers (credential store service name, settings
+  storage) keep the old name so existing settings and sign-ins survive the rename.
 - The plugin description, README and NOTICE say it is unofficial and not affiliated with Infisical Inc.
 - No Infisical logos or other brand assets; the plugin uses its own key icon.
 - Apache-2.0. No code is copied from the Infisical CLI (MIT outside `ee/`): its documented behaviour (browser login callback,
@@ -73,7 +75,7 @@ configurations, references, tool window, caching, credentials) is shared.
 
 Every connection has a **base URL** (presets: `https://app.infisical.com`, `https://eu.infisical.com`, or custom). Custom URLs must
 be `https://`, except loopback addresses. Tokens are kept in PasswordSafe under
-`Secrets for Infisical — <connection id>/<kind>`, never in XML settings.
+`Secrets for Infisical — <connection id>/<kind>` (former name, kept for compatibility), never in XML settings.
 
 | Method | When | Flow |
 |---|---|---|
@@ -96,7 +98,7 @@ possible.
 
 A project is bound to *connection + project + environment + folder*. Sources, highest first:
 
-1. The IDE binding (*Settings › Tools › Secrets for Infisical › Project*), stored in the workspace file (IDs only).
+1. The IDE binding (*Settings › Tools › EnvBridge › Project*), stored in the workspace file (IDs only).
 2. `.infisical.yaml` / `.infisical.json`, looked up like the CLI does (the project directory and its parents, `.yaml` before
    `.json`): `project-id`, `environment`, `secret-path`, `overrides.git-branch`, `general.domain`.
 

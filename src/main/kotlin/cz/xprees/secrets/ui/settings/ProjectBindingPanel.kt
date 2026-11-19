@@ -71,6 +71,11 @@ internal class ProjectBindingPanel(private val project: Project) {
                 .bindSelected({ settings.state.useProjectFile }, { value -> settings.update { useProjectFile = value } })
                 .comment(SecretsBundle.message("settings.binding.project.file.comment"))
         }
+        row {
+            checkBox(SecretsBundle.message("settings.binding.restrict"))
+                .bindSelected({ settings.state.restrictToBoundProject }, { value -> settings.update { restrictToBoundProject = value } })
+                .comment(SecretsBundle.message("settings.binding.restrict.comment"))
+        }
         row { comment(SecretsBundle.message("settings.binding.comment")) }
 
         connectionCombo.addActionListener { if (updating == 0) loadProjects(force = false) }

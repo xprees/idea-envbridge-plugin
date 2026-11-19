@@ -14,6 +14,7 @@ import cz.xprees.secrets.core.model.SecretConnection
  * `CredentialVault`), only names, instance URLs, auth method IDs and their non-secret options.
  */
 @Service(Service.Level.APP)
+// Storage names predate the rename to EnvBridge; kept so existing settings are read
 @State(name = "SecretsForInfisical", storages = [Storage("secrets-for-infisical.xml")])
 class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.AppState>(AppState()) {
 
@@ -107,7 +108,7 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
         const val DEFAULT_PROD_GUARD_PATTERN = "prod*, production*, live*"
 
         @JvmField
-        val TOPIC: Topic<Listener> = Topic.create("Secrets for Infisical connections", Listener::class.java)
+        val TOPIC: Topic<Listener> = Topic.create("EnvBridge connections", Listener::class.java)
 
         fun getInstance(): SecretsAppSettings = service()
     }

@@ -31,6 +31,12 @@ class ProjectSecretsSettings(private val project: Project) :
         /** Whether the provider's project file (`.infisical.yaml`) is read at all. */
         var useProjectFile by property(true)
 
+        /**
+         * When a project is bound: whether only that project may be used (references naming another project or connection are
+         * refused, and the tool window shows only the bound project). Has no effect while nothing is bound.
+         */
+        var restrictToBoundProject by property(true)
+
         /** Whether new terminal tabs of this project get secrets (opt-in). */
         var terminalEnabled by property(false)
 
@@ -56,7 +62,7 @@ class ProjectSecretsSettings(private val project: Project) :
 
         /** Project-level topic: the binding (connection, project, environment, folder) may have changed. */
         @JvmField
-        val BINDING_TOPIC: Topic<BindingListener> = Topic.create("Secrets for Infisical binding", BindingListener::class.java)
+        val BINDING_TOPIC: Topic<BindingListener> = Topic.create("EnvBridge binding", BindingListener::class.java)
 
         fun getInstance(project: Project): ProjectSecretsSettings = project.service()
     }

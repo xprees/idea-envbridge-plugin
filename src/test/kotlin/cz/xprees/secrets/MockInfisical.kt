@@ -18,7 +18,9 @@ class MockInfisical : AutoCloseable {
     private var tokenCounter = 0
     private val validTokens = mutableSetOf<String>()
 
+    @Volatile
     var clientId = "client-id"
+    @Volatile
     var clientSecret = "client-secret"
 
     private val server: HttpServer = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 8).apply {

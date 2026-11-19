@@ -40,7 +40,7 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JList
 
 /**
- * Settings › Tools › Secrets for Infisical: connections (application level; edits apply right away, secrets go to the
+ * Settings › Tools › EnvBridge: connections (application level; edits apply right away, secrets go to the
  * credential store), the project binding and general options (applied with Apply/OK).
  */
 class SecretsConfigurable(private val project: Project) : BoundConfigurable(SecretsBundle.message("settings.display.name")) {

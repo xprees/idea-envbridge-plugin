@@ -71,7 +71,7 @@ class KeysIndex(private val project: Project) : Disposable {
                 val loaded = load()
                 if (loaded != snapshot) {
                     snapshot = loaded
-                    if (!project.isDisposed) DaemonCodeAnalyzer.getInstance(project).restart("Secrets for Infisical: secret keys reloaded")
+                    if (!project.isDisposed) DaemonCodeAnalyzer.getInstance(project).restart("EnvBridge: secret keys reloaded")
                 }
             } finally {
                 loading.set(false)

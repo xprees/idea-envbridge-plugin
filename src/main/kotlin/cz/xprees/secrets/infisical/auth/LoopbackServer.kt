@@ -171,8 +171,9 @@ class BrowserSessionCallback(baseUrl: String) {
                     LoopbackServer.respond(exchange, 400)
                     return
                 }
-                LoopbackServer.respond(exchange, 200, "{}", "application/json")
+                // Record the session before answering, so it is known by the time the browser sees the response
                 result.complete(session)
+                LoopbackServer.respond(exchange, 200, "{}", "application/json")
             }
 
             else -> LoopbackServer.respond(exchange, 405)
@@ -210,8 +211,8 @@ class OAuthRedirectCallback(private val state: String) {
 
             code.isNullOrBlank() -> LoopbackServer.respond(exchange, 400, page("No authorization code received."), HTML)
             else -> {
-                LoopbackServer.respond(exchange, 200, page("Signed in. You can close this tab and return to the IDE."), HTML)
                 result.complete(code)
+                LoopbackServer.respond(exchange, 200, page("Signed in. You can close this tab and return to the IDE."), HTML)
             }
         }
     }
@@ -221,7 +222,7 @@ class OAuthRedirectCallback(private val state: String) {
         private const val HTML = "text/html; charset=utf-8"
 
         private fun page(message: String) =
-            """<!doctype html><html><head><meta charset="utf-8"><title>Secrets for Infisical</title></head>""" +
+            """<!doctype html><html><head><meta charset="utf-8"><title>EnvBridge</title></head>""" +
                 """<body style="font-family:sans-serif;margin:3em"><p>${message.replace("<", "&lt;")}</p></body></html>"""
     }
 }

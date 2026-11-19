@@ -44,7 +44,7 @@ class SecretBindingService(private val project: Project) {
         fun defaults(): SecretReference.Defaults = SecretReference.Defaults(
             projectId = projectId ?: throw SecretProviderException(
                 Kind.CONFIGURATION,
-                "No ${provider.displayName} project is bound to this IDE project. Pick one in Settings › Tools › Secrets for Infisical " +
+                "No ${provider.displayName} project is bound to this IDE project. Pick one in Settings › Tools › EnvBridge " +
                     "or add a project file (infisical init), or name it in the reference (?project=<id>).",
             ),
             environment = environment,
@@ -107,7 +107,7 @@ class SecretBindingService(private val project: Project) {
         if (candidates.isEmpty()) {
             throw SecretProviderException(
                 Kind.AUTH_REQUIRED,
-                "No ${provider.displayName} connection yet. Add one in Settings › Tools › Secrets for Infisical.",
+                "No ${provider.displayName} connection yet. Add one in Settings › Tools › EnvBridge.",
             )
         }
         val domain = file?.domain?.let(SecretConnection::normalizeBaseUrl)
@@ -117,7 +117,7 @@ class SecretBindingService(private val project: Project) {
                 ?: throw SecretProviderException(
                     Kind.CONFIGURATION,
                     "${file.file.fileName} uses the instance $domain, but no connection for it exists. If you trust this instance, " +
-                        "add a connection for it in Settings › Tools › Secrets for Infisical.",
+                        "add a connection for it in Settings › Tools › EnvBridge.",
                 )
         }
         return candidates.first()

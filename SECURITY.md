@@ -5,7 +5,7 @@ This plugin handles credentials and secret values, so security reports are very 
 ## Supported versions
 
 Only the latest release on the JetBrains Marketplace gets security fixes. Update the plugin
-(*Settings › Plugins › Installed › Secrets for Infisical › Update*) before you report a problem.
+(*Settings › Plugins › Installed › EnvBridge › Update*) before you report a problem.
 
 ## Reporting a vulnerability
 

@@ -4,6 +4,8 @@
 
 ### Added
 
+- The plugin is called **EnvBridge** (an unofficial Infisical integration); existing settings and sign-ins are kept
+
 - Connections to Infisical Cloud (US, EU), dedicated and self-hosted instances, with three sign-in methods: browser sign-in (like
   the Infisical CLI), OAuth application (read-only, PKCE) and machine identity (Universal Auth). Credentials are stored only in
   the IDE's password storage

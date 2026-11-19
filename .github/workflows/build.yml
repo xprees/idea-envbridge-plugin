@@ -329,7 +329,7 @@ jobs:
           fi
           ./gradlew signPlugin
 
-      # Attach the built plugin (secrets-for-infisical-<version>.zip, plus the -signed one when available) to the draft release
+      # Attach the built plugin (envbridge-<version>.zip, plus the -signed one when available) to the draft release
       - name: Attach plugin to the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

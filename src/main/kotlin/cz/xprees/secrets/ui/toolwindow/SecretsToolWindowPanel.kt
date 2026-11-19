@@ -7,6 +7,8 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.ide.CopyPasteManager
@@ -34,6 +36,7 @@ import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
+import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.core.settings.SecretsAppSettings
 import cz.xprees.secrets.ui.SecretClipboard
 import cz.xprees.secrets.ui.auth.SignInHelper
@@ -85,7 +88,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             RefreshAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyEnvLineAction(),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
-            Separator.create(), SignInOutAction(), SettingsAction(),
+            Separator.create(), ShowAllProjectsAction(), SignInOutAction(), SettingsAction(),
         )
         val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", actions, true)
         toolbar.targetComponent = tree
@@ -95,6 +98,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         ApplicationManager.getApplication().messageBus.connect(this)
             .subscribe(SecretsAppSettings.TOPIC, SecretsAppSettings.Listener { rebuild() })
+        project.messageBus.connect(this).subscribe(ProjectSecretsSettings.BINDING_TOPIC, ProjectSecretsSettings.BindingListener { rebuild() })
         rebuild()
     }
 
@@ -103,7 +107,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     /** Rebuilds the tree from the configured connections (values are re-read from the cache or the instance on expand). */
     fun rebuild() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val connections = SecretsAppSettings.getInstance().connections
+            // With a bound project (and "only use the bound project"), only its connection is listed
+            val restricted = restrictedBinding()
+            val connections = SecretsAppSettings.getInstance().connections.filter { restricted == null || it.id == restricted.connection.id }
             val nodes = connections.map { connection ->
                 val client = runCatching { SecretsService.getInstance().client(connection) }.getOrNull()
                 ConnectionNode(connection, client?.hasCredentials() == true, null)
@@ -167,6 +173,12 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                     if (e.kind != SecretProviderException.Kind.FORBIDDEN || boundId == null) throw e
                     listOf(ProviderProject(boundId, SecretsBundle.message("toolwindow.bound.project"), boundId, listOf(ProviderEnvironment(binding.environment, binding.environment))))
                 }
+                val restrictedTo = restrictedBinding()?.takeIf { it.connection.id == node.connection.id }?.projectId
+                if (restrictedTo != null) {
+                    val bound = projects.firstOrNull { it.id == restrictedTo }
+                        ?: ProviderProject(restrictedTo, SecretsBundle.message("toolwindow.bound.project"), restrictedTo, listOfNotNull(binding?.environment?.let { ProviderEnvironment(it, it) }))
+                    return listOf(ProjectNode(node.connection, bound, true))
+                }
                 projects.map { ProjectNode(node.connection, it, it.id == binding?.projectId) }
                     .sortedByDescending { it.bound }
             }
@@ -189,6 +201,17 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         val folders = service.folders(connection, scope).map { FolderNode(connection, SecretScope(scope.projectId, scope.environment, it.path), it.name) }
         val secrets = service.secrets(connection, scope, fresh).sortedBy { it.key.lowercase() }.map { SecretNode(connection, scope, it) }
         return folders + secrets
+    }
+
+    /** Whether to show connections and projects other than the bound one (a deliberate, temporary choice). */
+    @Volatile
+    private var showAll = false
+
+    /** The binding the tool window is limited to, or null when everything may be shown. Off the EDT. */
+    private fun restrictedBinding(): SecretBindingService.Binding? {
+        if (showAll || !ProjectSecretsSettings.getInstance(project).state.restrictToBoundProject) return null
+        val provider = SecretProvider.all().firstOrNull() ?: return null
+        return SecretBindingService.getInstance(project).bindingOrNull(provider)?.takeIf { it.projectId != null }
     }
 
     private fun binding(node: SecretsNode): SecretBindingService.Binding? {
@@ -421,6 +444,19 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     private inner class CompareAction : PanelAction(SecretsBundle.message("action.compare"), AllIcons.Actions.Diff) {
         override fun actionPerformed(e: AnActionEvent) = CompareEnvironmentsDialog(project).show()
+    }
+
+    private inner class ShowAllProjectsAction : ToggleAction(
+        SecretsBundle.message("toolwindow.show.all"), SecretsBundle.message("toolwindow.show.all.description"), AllIcons.Actions.Show,
+    ), DumbAware {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun isSelected(e: AnActionEvent): Boolean = showAll
+
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            showAll = state
+            rebuild()
+        }
     }
 
     private inner class SettingsAction : PanelAction(SecretsBundle.message("action.settings"), AllIcons.General.Settings) {

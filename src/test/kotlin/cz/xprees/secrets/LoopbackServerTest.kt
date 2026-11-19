@@ -60,7 +60,7 @@ class LoopbackServerTest {
 
             val post = send(it.port, "POST", "/", headers(it.port), """{"email":"me@example.com","JTWToken":"jwt","RefreshToken":"r"}""")
             assertThat(post.status).isEqualTo(200)
-            val session = callback.result.getNow(null)!!
+            val session = callback.result.get(5, java.util.concurrent.TimeUnit.SECONDS)
             assertThat(session.accessToken).isEqualTo("jwt")
             assertThat(session.refreshToken).isEqualTo("r")
             assertThat(session.toString()).doesNotContain("jwt")
@@ -93,7 +93,7 @@ class LoopbackServerTest {
             val ok = send(it.port, "GET", "/callback?code=the-code&state=expected-state", host)
             assertThat(ok.status).isEqualTo(200)
             assertThat(ok.headers["cache-control"]).isEqualTo("no-store")
-            assertThat(callback.result.getNow(null)).isEqualTo("the-code")
+            assertThat(callback.result.get(5, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo("the-code")
         }
     }
 

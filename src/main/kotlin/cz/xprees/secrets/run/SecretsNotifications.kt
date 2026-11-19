@@ -10,7 +10,7 @@ import cz.xprees.secrets.ui.settings.SecretsConfigurable
 import cz.xprees.secrets.ui.toolwindow.SecretsToolWindowFactory
 
 object SecretsNotifications {
-    private const val GROUP = "Secrets for Infisical"
+    private const val GROUP = "EnvBridge"
 
     private fun group() = NotificationGroupManager.getInstance().getNotificationGroup(GROUP)
 
