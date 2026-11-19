@@ -89,7 +89,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
 
         val actions = DefaultActionGroup(
-            RefreshAction(), NewSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            RefreshAction(), NewSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyKeyAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
             CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
@@ -469,6 +469,21 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         override fun actionPerformed(e: AnActionEvent) {
             selectedSecret()?.let(::toggleReveal)
+        }
+    }
+
+    /** The keys of the selected secrets, one per line (names only, nothing secret), or null when no secret is selected. */
+    fun selectedKeysText(): String? =
+        selectedNodes().filterIsInstance<SecretNode>().map { it.entry.key }.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n")
+
+    private inner class CopyKeyAction : PanelAction(SecretsBundle.message("action.copy.key"), AllIcons.Actions.Copy) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedNodes().any { it is SecretNode }
+        }
+
+        // A key name isn't secret: the ordinary clipboard, without the auto-clear values get
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedKeysText()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
         }
     }
 

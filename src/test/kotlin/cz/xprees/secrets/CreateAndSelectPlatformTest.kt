@@ -130,4 +130,21 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
             .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("read-only")
         assertThat(cz.xprees.secrets.ui.secrets.NewEnvironmentDialog.slugOf("QA  Staging (EU)")).isEqualTo("qa-staging-eu")
     }
+
+    fun `test copy key takes the names of the selected secrets`() {
+        val panel = SecretsToolWindowPanel(project)
+        Disposer.register(testRootDisposable, panel)
+        assertThat(panel.selectedKeysText()).isNull()
+        panel.select(SecretLocation(connection.id, "p1", "dev", "/", "DB_PASSWORD"))
+        val deadline = System.currentTimeMillis() + 15_000
+        while ((panel.tree.selectionPath?.lastPathComponent as? SecretNode) == null && System.currentTimeMillis() < deadline) {
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
+            Thread.sleep(20)
+        }
+        assertThat(panel.selectedKeysText()).isEqualTo("DB_PASSWORD")
+        // Several secrets: one key per line, never a value
+        val secrets = (0 until panel.tree.rowCount).map { panel.tree.getPathForRow(it) }.filter { it.lastPathComponent is SecretNode }
+        panel.tree.selectionPaths = secrets.toTypedArray()
+        assertThat(panel.selectedKeysText()!!.lines()).contains("DB_PASSWORD", "API_KEY").noneMatch { it.contains("dev-pass") }
+    }
 }

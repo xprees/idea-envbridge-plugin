@@ -45,6 +45,7 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- *Copy Key* in the Secrets tool window (toolbar and context menu); several selected secrets give one key per line
 - **Load Infisical Secrets into This Terminal** (terminal toolbar and context menu, *Tools* menu): sets the secrets in the shell of
   the current tab, in its own syntax: PowerShell (no script execution needed), cmd, bash / zsh / sh (Git Bash and WSL paths
   on Windows) or fish. Values travel through an owner-only temporary file the shell loads and deletes, never through the
