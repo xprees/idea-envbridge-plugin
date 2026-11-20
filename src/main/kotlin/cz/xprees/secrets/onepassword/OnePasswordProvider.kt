@@ -328,16 +328,21 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
 
         // Within one item: change the fields' section in one save
         val sameVault = sourceVault == destination.projectId || source.projectId == destination.projectId
-        val destinationIsSource = sameVault && (to[0] == from[0] || to[0] == sourceItem.id || to[0] == sourceItem.title)
-        if (destinationIsSource) {
+        fun moveWithinSourceItem(): MoveResult {
             val section = to.getOrNull(1)?.let { requireSection(sourceItem, it, to[0]) }
             picked.forEach { (_, field) -> OnePasswordEdits.setSection(OnePasswordEdits.field(sourceJson, field.id), section) }
             save(source.projectId, sourceJson, Expect(present = picked.map { it.second.id }.toSet()))
             return MoveResult(keys)
         }
+        if (sameVault && (to[0] == from[0] || to[0] == sourceItem.id || to[0] == sourceItem.title)) return moveWithinSourceItem()
 
         val destinationJson = backend.itemJson(destination.projectId, to[0])
         val destinationItem = OnePasswordJson.item(destinationJson)
+        // The destination may name the source item another way (a title in other letter case, matched leniently): copying onto
+        // the same fields and then removing them from the "source" would delete them
+        if (sourceItem.id.isNotEmpty() && destinationItem.id == sourceItem.id && vaultOf(destinationJson, destination.projectId) == sourceVault) {
+            return moveWithinSourceItem()
+        }
         val section = to.getOrNull(1)?.let { requireSection(destinationItem, it, to[0]) }
         val existing = picked.associate { (key, _) -> key to findField(destinationItem, null, key) }
         val conflicts = existing.filterValues { it != null }.keys

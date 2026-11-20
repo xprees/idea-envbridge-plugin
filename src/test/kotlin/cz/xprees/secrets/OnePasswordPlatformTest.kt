@@ -542,4 +542,14 @@ class OnePasswordPlatformTest : BasePlatformTestCase() {
         // the vault's root isn't a destination
         assertThat(kindOf { service.moveSecrets(connection, scope("/Stripe"), database.take(1), scope("/"), false) }).isEqualTo(Kind.CONFIGURATION)
     }
+
+    fun `test a move to the source item named another way keeps the fields`() {
+        val connection = connectServer()
+        val database = client(connection).listSecrets(scope("/Database")).filter { it.key == "port" }
+        // "/database" resolves to the same item as "/Database" (titles match regardless of case): with Overwrite, copying onto
+        // the same fields and then removing them from the "source" would delete them
+        assertThat(service.moveSecrets(connection, scope("/Database"), database, scope("/database"), true).moved).containsExactly("port")
+        assertThat(fieldOf(connect.item(DEV, DATABASE)!!, "port")).isNotNull()
+        assertThat(fields(connection, "/Database").map { it.first }).contains("port")
+    }
 }
