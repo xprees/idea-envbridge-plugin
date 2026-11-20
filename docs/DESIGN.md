@@ -189,8 +189,7 @@ open-source fork under the Linux Foundation, shares its API, so one provider cov
 exists for either. 1Password is the likely provider after it.
 
 **Scope, first version:** reading and injecting (sign-in, tool window, references in run configurations, terminal, `.env`,
-editor hints). Creating, editing, moving and deleting follow later; until then the write actions are off for Vault
-connections, as with *Read-only*. Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
+editor hints), then writing fields (see *Writes* below). Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
 dynamic secrets are later candidates.
 
 ### Model mapping
@@ -248,8 +247,15 @@ are renewed before they expire; otherwise the user signs in again (the launch fa
   callback to this IDE's request.
 - A token connection's token (or the CLI's `~/.vault-token`) is the user's own: sign-out forgets it but never revokes it. Tokens
   from OIDC, AppRole, userpass and LDAP are revoked on sign-out.
-- `SecretProvider.supportsWrites` is false for Vault: the tool window's and `.env` write actions are off, and the service refuses
-  writes as with *Read-only*.
+- **Writes**: a write changes one field of a KV v2 secret. The client reads the secret (`GET data/<path>`, fields as JSON and
+  `metadata.version`), changes the field and writes the whole secret as a new version with `options.cas` = the version read
+  (0 for a new secret), so a concurrent change fails with "check-and-set parameter did not match" instead of being lost, and
+  other fields keep their JSON types. Removing the last field deletes the latest version (`DELETE data/<path>`, a soft delete
+  Vault can undo); a deleted latest version still reports its version, which the next write names. Moves copy all fields into
+  the destination in one version, then re-read the source and remove them in another; a failed removal is reported per key
+  (`notRemoved`) with both copies kept. KV v2 has no per-field comments, so comments are ignored. Writes at the mount's root
+  (`/`) are refused: fields live in secrets. `createEnvironment` is refused (namespaces are an administrator's job).
+  Integration tests cover writes on real Vault and OpenBao, including check-and-set and a move between namespaces.
 
 ### Tests
 

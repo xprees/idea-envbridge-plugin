@@ -16,7 +16,8 @@
   field of a secret and `#**` for every secret below a path, `?namespace=` and `?connection=`. Sign in with OIDC in the system
   browser (the Vault CLI's redirect URI), a token or the Vault CLI's `~/.vault-token`, AppRole, userpass or LDAP; tokens and
   passwords only in the IDE's password storage, renewable tokens renewed before they expire. Mounts are listed from the server or
-  set on the connection. Creating and changing Vault secrets comes later; those actions are off for Vault connections
+  set on the connection. Creating, editing, moving and deleting fields, with check-and-set (a change made meanwhile is refused,
+  other fields keep their values and types)
 - Choosing the secret manager when adding a connection, once there are several
 - Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
   (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI

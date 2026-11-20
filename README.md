@@ -54,7 +54,7 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>HashiCorp Vault and OpenBao</b> (KV v2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
       <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
-      Reading only for now</li>
+      Create, edit, move and delete fields too</li>
   <li><b>1Password</b>: your existing <code>op://vault/item/field</code> secret references work as they are, plus
       <code>op://vault/item/*</code> for every field of an item. Access through the <b>1Password app</b> (the 1Password CLI asks
       the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
@@ -188,8 +188,13 @@ TEAM_DB=vault://secret/app/db#password?namespace=team-a
 
 Every method also takes a **namespace** (where to sign in; the default environment), **more namespaces** to show, and the **KV v2
 mounts**, needed only when the token may not list secret engines. Renewable tokens are renewed before they expire; AppRole,
-userpass and LDAP sign in again by themselves; OIDC asks you to sign in again. This version reads secrets only; creating and
-changing them comes later.
+userpass and LDAP sign in again by themselves; OIDC asks you to sign in again.
+
+**Writing**: *New Secret…*, *Edit Secret…*, *Move…* and *Delete…* change one field of a KV v2 secret (the secret path is the
+folder; at least one path segment below the mount). Each write reads the secret and writes a new version with check-and-set, so
+a change someone made meanwhile is refused instead of overwritten, and the other fields keep their values and types. Removing a
+secret's last field deletes its latest version, which Vault can restore. Moves work between secrets, mounts and namespaces;
+the token's policy decides what is allowed. Namespaces themselves are not created from the IDE.
 
 ### 1Password
 

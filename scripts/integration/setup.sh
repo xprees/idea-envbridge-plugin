@@ -67,7 +67,11 @@ path "secret/metadata/" { capabilities = ["list"] }
 path "team-kv/data/*" { capabilities = ["read"] }
 path "team-kv/metadata/*" { capabilities = ["list"] }
 path "team-a/secret/data/*" { capabilities = ["read"] }
-path "team-a/secret/metadata/*" { capabilities = ["list"] }'
+path "team-a/secret/metadata/*" { capabilities = ["list"] }
+path "secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
+path "team-a/secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
+path "team-a/secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }'
   vapi PUT sys/policies/acl/envbridge "$(python3 -c 'import json,sys; print(json.dumps({"policy": sys.argv[1]}))' "$policy")" >/dev/null
 
   # AppRole with fixed (test-only) credentials
