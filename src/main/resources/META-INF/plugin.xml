@@ -42,6 +42,7 @@
     <extensions defaultExtensionNs="cz.xprees.secrets">
         <provider implementation="cz.xprees.secrets.infisical.InfisicalProvider"/>
         <provider implementation="cz.xprees.secrets.vault.VaultProvider"/>
+        <provider implementation="cz.xprees.secrets.onepassword.OnePasswordProvider"/>
         <envPatcher implementation="cz.xprees.secrets.run.ExternalSystemEnvPatcher"/>
         <envPatcher implementation="cz.xprees.secrets.run.CommonParametersEnvPatcher"/>
     </extensions>
