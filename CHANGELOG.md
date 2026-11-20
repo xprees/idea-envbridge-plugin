@@ -4,12 +4,16 @@
 
 ### Added
 
+- **1Password: writing.** *New Secret…*, *Edit Secret…*, *Move…*, *Delete…* and *Extract value to …* work for 1Password
+  connections (all three access methods): a secret is a field of an item; a new secret at a vault's root becomes a Password item
+  (`op://vault/KEY/password`); the item's notes are the secrets' comment; fields are moved between items (copy first, remove
+  after); items are never deleted. With the CLI, values go to `op` only on its standard input as item JSON, never on its command
+  line; with Connect, an item changed meanwhile is refused instead of overwritten. *Read-only* turns it off as for every provider
 - **1Password** (unofficial integration), reading and injecting: 1Password's own secret references work as they are
   (`op://vault/item/[section/]field`, names or IDs), plus `op://vault/item/*` for every field of an item, `op://vault/**` for
   every item of a vault and `?connection=`. Access through the 1Password app via the 1Password CLI (the app approves, nothing to
   paste), a service account token (given to the CLI only in its environment, never on its command line) or a 1Password Connect
-  server. Vaults are projects with one environment (`default`), items are folders. Writing comes later; those actions are off
-  for 1Password connections
+  server. Vaults are projects with one environment (`default`), items are folders
 - Sign-in methods that need no instance address (a CLI talking to its desktop app): the connection dialog hides the address
 - *Only use the bound project* accepts references that name the bound project by its name (a 1Password vault), not only its ID
 - **HashiCorp Vault and OpenBao** (KV v2, namespaces), reading and injecting: `vault://secret/app/db#password`, `#*` for every

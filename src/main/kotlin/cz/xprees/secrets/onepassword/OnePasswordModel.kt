@@ -42,7 +42,19 @@ interface OnePasswordBackend {
 
     fun items(vault: String): List<OpItemSummary>
 
-    fun item(vault: String, item: String): OpItem
+    fun item(vault: String, item: String): OpItem = OnePasswordJson.item(itemJson(vault, item))
+
+    /** The item's whole JSON, values included, as 1Password returns it: the base of a read-modify-write. Never log it. */
+    fun itemJson(vault: String, item: String): JsonObject
+
+    /** Creates an item in [vault] from [template] (`title`, `category`, `fields`, …); returns the created item's JSON. */
+    fun createItem(vault: String, template: JsonObject): JsonObject
+
+    /**
+     * Replaces the item [item]`.id` in [vault] with [item]: JSON read with [itemJson] and changed. Fields left out are removed.
+     * Returns the item's JSON after the change (values may be left out).
+     */
+    fun replaceItem(vault: String, item: JsonObject): JsonObject
 }
 
 /**

@@ -39,6 +39,12 @@ interface SecretProvider {
     /** Whether this provider's connections can create, change, move and delete secrets (else the write actions are off). */
     val supportsWrites: Boolean get() = true
 
+    /**
+     * Where [SecretsClient.createSecret] with [scope] and [key] puts the secret, as (folder path, key): by default the scope's
+     * folder and [key]. A provider whose root-level secrets are stored elsewhere (1Password: a new item) says where.
+     */
+    fun createdSecretLocation(scope: SecretScope, key: String): Pair<String, String> = scope.path to key
+
     /** Instances offered when a connection is created (name -> base URL); a custom URL is always possible. */
     val instancePresets: List<Pair<String, String>>
 

@@ -268,8 +268,10 @@ Chosen after Vault for reach among individual developers and small teams: many a
 write `op://` references for `op run` / `op inject`. EnvBridge reads those same references, so a `.env` or run configuration
 written for the CLI works in the IDE unchanged, without `op run` wrapping every launch.
 
-**Scope, first version:** reading and injecting (tool window, references in run configurations, terminal, `.env`, editor
-hints). `supportsWrites` is false, so the write actions are off and `SecretsService` refuses writes, as with *Read-only*.
+**Scope:** reading and injecting (tool window, references in run configurations, terminal, `.env`, editor hints) in the
+first version; creating, changing, moving and deleting fields since then (see [Writes](#writes-1password)).
+`supportsWrites` is true, so the generic write actions (tool window *New / Edit / Move / Delete*, `.env` *Extract value to …*)
+work for 1Password connections, behind the same *Read-only* setting as every other provider.
 
 ### Model mapping
 
@@ -324,7 +326,7 @@ always left open (the binding's, `default`). Decisions:
 |---|---|---|
 | **1Password app (through the CLI)** (default) | `op` as a child process: `op vault list`, `op item list --vault <v>`, `op item get <item> --vault <v> --reveal`, `op whoami`, all `--format json`, optional `--account <shorthand / sign-in address / ID>`. The 1Password app authorizes the CLI (biometrics / system password) | None in the IDE. `SLOT_SESSION` only remembers that the user signed in (so background features don't run `op` for a user who never did) |
 | **Service account (through the CLI)** | The same commands | The token is a secret option (PasswordSafe), given to `op` only as `OP_SERVICE_ACCOUNT_TOKEN` in its environment, never on argv |
-| **1Password Connect server** | `GET /v1/vaults`, `GET /v1/vaults/{vaultId}/items`, `GET /v1/vaults/{vaultId}/items/{itemId}` with `Authorization: Bearer`. Names are resolved to IDs by listing (one list per client, i.e. per operation); a 26-character ID is fetched directly | The access token is a secret option (PasswordSafe) |
+| **1Password Connect server** | `GET /v1/vaults`, `GET /v1/vaults/{vaultId}/items`, `GET /v1/vaults/{vaultId}/items/{itemId}` (writes: `POST …/items`, `PUT …/items/{itemId}`, see [Writes](#writes-1password)) with `Authorization: Bearer`. Names are resolved to IDs by listing (one list per client, i.e. per operation); a 26-character ID is fetched directly | The access token is a secret option (PasswordSafe) |
 
 The CLI methods don't use the connection's base URL. A small generic SPI addition, `AuthMethod.usesBaseUrl` (default true),
 lets the connection dialog hide the address for them and lists not show it; a valid URL is still saved (the previous one, else
@@ -348,9 +350,79 @@ network → NETWORK. Connect: 401 → AUTH_REQUIRED, 403 → FORBIDDEN, 404 → 
 Sign-out: the app method forgets the "signed in" marker (the app's own authorization of the CLI expires by itself); service
 account and Connect forget the stored token.
 
+### Writes (1Password)
+
+Every write is a **read-modify-write of one item**: read the item's whole JSON (CLI `op item get … --reveal`, Connect `GET`),
+change it (`OnePasswordEdits`: add / change / remove fields, set notes), save it whole. Everything not touched (URLs, tags,
+other fields, the read `version`) is sent back as it was read. After a save, the item 1Password returns is checked by field
+IDs (never values): a field that should exist but doesn't, or should be gone but isn't, is a SERVER error ("didn't apply the
+change"), so a CLI that ignores or merges the piped JSON can't pass for success.
+
+| Operation | `/<item>` or `/<item>/<section>` | `/` (vault root) |
+|---|---|---|
+| `createSecret(key, value, comment)` | Adds a **concealed** field labelled `key` to the item's top level, or to the section (by label, else ID; a missing section is NOT_FOUND, sections aren't created). Refused (CONFIGURATION) when the item has a field whose key is `key` **anywhere** (any section): a reference without section must stay unambiguous. A non-blank `comment` is **appended** to the item's notes as `key: comment` (an existing item's notes are never replaced by a create) | Creates a **new item** titled `key`, category **Password**, value in its `password` field (purpose `PASSWORD`), `comment` as its notes. Refused (CONFIGURATION) when the vault has an item with that title (ignoring case): to add a field, choose `/<item>` |
+| `updateSecret(key, value, comment?)` | Sets the field's value (found as listings and references find it: in the section if given, else top-level first). A non-null `comment` **replaces the item's notes**: 1Password fields have no comment, so listings give every field the item's notes as `SecretEntry.comment`, and *Edit Secret* shows and edits them | CONFIGURATION (a root holds items, not secrets) |
+| `deleteSecret(key)` | Removes the field. A **built-in** field (one with a `purpose`: a login's username / password, the notes) is **emptied** instead: items keep their built-in fields, and empty fields aren't listed, so it disappears from the tool window | CONFIGURATION: **EnvBridge never deletes items.** The tool window shows no secrets at a vault's root (items are folders), so no UI action asks for it; deleting / archiving an item is left to 1Password |
+| `moveSecrets(…, destination, overwrite)` | Different items (also across vaults): every field is copied into the destination item in **one save** (with `overwrite`, a field with the same key there gets the value; without it, any such field refuses the whole move before anything is written), then removed from the source item in **a second save** (read again first, for its current version). If the copy's save fails, nothing changed and the error is thrown; if the removal fails, every key is in `MoveResult.notRemoved` with the reason (it exists in both items). Same item, other section: the fields just change section, one save | As destination: CONFIGURATION (choose an item). As source: CONFIGURATION |
+| `createEnvironment` | CONFIGURATION (1Password has no environments) | |
+
+Decisions:
+
+- **Root items are Password items, not API Credentials.** A Password item's layout is exactly one concealed field plus notes,
+  which is what a key / value / comment is. An API Credential item comes with `username`, `type`, `filename`, `hostname`,
+  `valid from`, `expires` that would stay empty (and which a sparse template may or may not get filled in by the CLI / Connect),
+  so its layout fits worse. The new item is addressed as `op://<vault>/<key>/password`; `SecretProvider.createdSecretLocation`
+  (a small generic SPI addition, default: the scope's folder and the key) tells the *New Secret* dialog and *Extract value to …*
+  that the secret is `/<key>` / `password`, so they select it and bind the `.env` line to a reference that resolves.
+- **New fields** get a random 26-character 1Password-style ID (lowercase letters and digits) not used in the item, type
+  `CONCEALED`; moved fields keep their type but not their `purpose` (the destination may have its own built-in field).
+- **No item deletion at all**, so the Connect `DELETE /v1/vaults/{v}/items/{id}` endpoint and `op item delete` are not used.
+  (`op item delete` moves an item to *Recently Deleted* unless `--archive` is given; whether Connect's DELETE is permanent is
+  not documented clearly enough to rely on.) An item whose last custom field was deleted or moved stays, empty.
+- **The New Secret dialog's folder** completes `/` plus `/<item>` for every item (`allFolders` over `listFolders`); sections
+  aren't offered (they are typed as `/<item>/<section>`). Its default is the selected node's folder: an item, a secret's
+  `/<item>/<section>`, or the vault's root (then a new item). Its key pattern (`[A-Za-z_][A-Za-z0-9_.-]*`) is also a valid item
+  title and field label.
+
+**Connect:** `POST /v1/vaults/{v}/items` (the template plus `vault.id`) and `PUT /v1/vaults/{v}/items/{id}` with the whole item,
+including the `version` it was read with. **409** (and 412) is CONFIGURATION "the item was changed meanwhile (…); refresh and try
+again". As far as known, Connect rejects a PUT with an outdated `version`; if a server doesn't, the last write wins within the
+read-modify-write window (milliseconds). `PATCH` (RFC 6902 on `fields`) would send less, but PUT of the item as read keeps
+everything else unchanged and is one code path with the CLI. The HTTP client is now pinned to **HTTP/1.1**, like the other
+providers' (over plain `http://`, the usual local Connect address, Java's default HTTP/2 sends an h2c upgrade that breaks
+request bodies on some servers).
+
+**CLI (app and service account): a value is never on `op`'s command line** (other local processes can read argv). That rules
+out `op item edit <item> 'field=value'` assignment statements entirely; there is no fallback to them. Instead:
+
+| Operation | Command | stdin |
+|---|---|---|
+| Create a root item | `op item create --vault <vault> --format json [--account …]` | The item template JSON (`title`, `category: PASSWORD`, `fields`) |
+| Change an item | `op item edit <item ID> --vault <vault ID> --format json [--account …]` | The whole item JSON as read with `op item get`, changed |
+
+`OnePasswordCli.run` writes the JSON to stdin from its own thread (so a process that never reads it can't block past the
+timeout) and closes it; for reads stdin is still closed at once. Neither stdin nor stdout is logged. Before an edit, an item
+whose concealed values came back masked (`[use 'op item get … --reveal' …]`, an `op` that didn't reveal) is refused, so the
+placeholder can never overwrite the real values.
+
+`op` features relied on, and confidence (from 1Password's documentation and release notes as remembered, **not verified
+against a live account or a real `op` binary** while writing this; the tests use a fake `op`):
+
+- `op item create` reads an item JSON template from **piped stdin** (documented, e.g. `op item get … --format json | op item
+  create --vault …` to copy an item; the template shape is `op item template get Password`'s): **high**.
+- `op item edit <item>` reads the **whole item JSON from piped stdin** and makes the item match it (fields left out are
+  removed), as with `--template` (added in op 2.x, used with the output of `op item get --format json`): **medium**. If an `op`
+  ignores the piped JSON or merges instead, the field-ID check after the save reports "didn't apply the change"; nothing is
+  then claimed as done. A user with such an `op` can update it or use Connect.
+- `op item edit` / `create` print the resulting item with `--format json`: **medium-high** (if they print nothing, the check
+  is skipped).
+- The CLI has no optimistic concurrency that EnvBridge can use: an item changed between `op item get` and `op item edit` (a
+  fraction of a second) is overwritten.
+
 ### Security notes
 
-- No secret on a command line: argv carries only vault / item names, flags and the account. The service account token goes
+- No secret on a command line: argv carries only vault / item names and IDs, flags and the account. Values written go to
+  `op` on stdin, as part of the item's JSON. The service account token goes
   through the child's environment, which other users' processes can't read.
 - Inherited `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN` and `OP_SESSION_*` are removed so `op` uses the
   connection's credentials only (`OP_ACCOUNT` is also removed for service accounts).
@@ -369,7 +441,17 @@ account and Connect forget the stored token.
 - `OnePasswordPlatformTest`: each method lists vaults, items and fields; sections by label and ID; duplicate titles; the
   whole-vault import and its cap; the token only in the environment; errors (op missing, not signed in, wrong token, missing
   item, ambiguous title, Connect 401 / 403); launches resolving `op://` references against a bound vault (vault by name and by
-  ID, section given or not, item import, fail closed, another vault refused while restricted); writes refused.
+  ID, section given or not, item import, fail closed, another vault refused while restricted).
+- Writes: `FakeOp` also answers `item create` / `item edit`, which read the item JSON from stdin, store it (edits are seen
+  under every name through symlinks) and **fail when stdin is empty or an argument is an assignment statement**; it can refuse
+  to edit one item (permission error) and ignore edits. `MockOnePasswordConnect` keeps items in memory with versions: `POST`,
+  `PUT` (409 unless the body carries the current `version`), `DELETE`; it can refuse PUTs of an item and change one "meanwhile".
+  `OnePasswordPlatformTest` covers, on the CLI and on Connect: creating a field (top level, section, comment into notes),
+  duplicate label refused, root-level Password item (template, notes, existing title refused), updating value and notes,
+  deleting a field and emptying a built-in one, root deletion refused, moving between items and sections, overwrite refused
+  then allowed, a move whose source can't be saved (`notRemoved`, copy kept), a Connect conflict (409 → "changed meanwhile",
+  nothing changed), an `op` that ignores the piped item, masked values refused, every written value absent from argv, and
+  *Read-only* blocking each write before anything is sent.
 
 ### Known limits and uncertainties
 
@@ -387,6 +469,11 @@ account and Connect forget the stored token.
   built-in `username` / `password`) are not supported.
 - A whole-vault import makes one `op` call per item (≈0.5 s each); it is capped at 100 items.
 - No dashboard link (opening items needs the account's UUID; a later version can use `whoami`).
+- Writes through the CLI rely on `op item edit` accepting piped item JSON (confidence above); there is no argv fallback.
+- Writes don't check that the item is unchanged since the tool window showed it, only since the operation read it (Connect:
+  `version`; CLI: none). Items are never deleted; sections aren't created; moving into a vault's root is refused.
+- A whole item is sent back on every write, values of all its fields included (to the same `op` / Connect server it was read
+  from, which already holds them).
 
 ## Threat model (summary)
 
@@ -400,7 +487,7 @@ account and Connect forget the stored token.
 | Secrets on screen or in clipboard | Masked by default, auto-hide on reveal, clipboard auto-clear, console masking (M3). |
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
 | Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
-| Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; argv carries names and flags only; inherited `OP_*` credentials are removed. |
+| Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; values written go on stdin as item JSON (never `field=value` assignments); argv carries names and flags only; inherited `OP_*` credentials are removed. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 
 ## Milestones

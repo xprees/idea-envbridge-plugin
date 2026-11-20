@@ -1,5 +1,6 @@
 package cz.xprees.secrets.onepassword
 
+import com.google.gson.JsonObject
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.ProviderEnvironment
@@ -11,6 +12,8 @@ import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.MoveResult
+import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
@@ -21,7 +24,8 @@ import javax.swing.Icon
 
 /**
  * 1Password (unofficial integration): vaults are projects, items are folders and an item's fields are its secrets. Read
- * through the `op` CLI (with the 1Password desktop app, or a service account) or a 1Password Connect server. Reading only.
+ * through the `op` CLI (with the 1Password desktop app, or a service account) or a 1Password Connect server, and writes
+ * fields (and, at a vault's root, password items) through the same.
  */
 class OnePasswordProvider : SecretProvider {
     override val id: String = ID
@@ -29,7 +33,7 @@ class OnePasswordProvider : SecretProvider {
     override val icon: Icon get() = SecretsIcons.PROVIDER
     override val referenceScheme: String = "op"
     override val referenceGrammar: ReferenceGrammar get() = OnePasswordGrammar
-    override val supportsWrites: Boolean get() = false
+    override val supportsWrites: Boolean get() = true
 
     // Only Connect uses the address: Connect servers are self-hosted, most often on the developer's machine or a local container
     override val instancePresets: List<Pair<String, String>> = listOf("1Password Connect on this computer" to "http://localhost:8080")
@@ -39,6 +43,10 @@ class OnePasswordProvider : SecretProvider {
     override fun defaultEnvironment(connection: SecretConnection): String = ENVIRONMENT
 
     override fun createClient(connection: SecretConnection): SecretsClient = OnePasswordClient(connection)
+
+    /** A secret created at a vault's root becomes the password item `/<key>`, its value in the field `password`. */
+    override fun createdSecretLocation(scope: SecretScope, key: String): Pair<String, String> =
+        if (SecretScope.normalizePath(scope.path) == "/") "/$key" to OnePasswordEdits.ROOT_FIELD else scope.path to key
 
     companion object {
         const val ID = "onepassword"
@@ -92,7 +100,10 @@ object OnePasswordAuthMethods {
     )
 }
 
-/** [SecretsClient] for one 1Password connection (reading only). */
+/**
+ * [SecretsClient] for one 1Password connection. Writes are read-modify-write of one item at a time (see docs/DESIGN.md,
+ * "Writes"): a field is created, changed or removed in the item's JSON, which is then saved whole.
+ */
 class OnePasswordClient(private val connection: SecretConnection) : SecretsClient {
     private val method = connection.authMethodId
 
@@ -188,22 +199,238 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
 
     /** The item's fields with values, top-level first, each with its section (null for top-level fields). */
     private fun entries(item: OpItem, itemSegment: String, scope: SecretScope): List<Pair<SecretEntry, OpSection?>> {
-        val sectionOrder = item.sections.withIndex().associate { it.value.id to it.index }
-        return item.fields
-            .filter { it.value.isNotEmpty() }
-            .map { field -> field to item.section(field.sectionId)?.takeIf { it.label.isNotBlank() } }
-            .sortedBy { (_, section) -> section?.let { sectionOrder[it.id]?.plus(1) } ?: 0 }
+        // 1Password fields have no comments: the item's notes are every field's comment (Edit Secret changes them)
+        val notes = OnePasswordEdits.notes(item)
+        return orderedFields(item)
+            .filter { (field, _) -> field.value.isNotEmpty() }
             .map { (field, section) ->
                 val path = "/" + itemSegment + (section?.let { "/" + sectionSegment(it) }.orEmpty())
                 SecretEntry(
                     key = field.label.ifBlank { field.id },
                     value = SecretValue(field.value),
+                    comment = notes,
                     path = path,
                     environment = scope.environment,
                     id = field.id,
                 ) to section
             }
     }
+
+    /** The item's fields, top-level first (a section without a label counts as top level), each with its labelled section. */
+    private fun orderedFields(item: OpItem): List<Pair<OpField, OpSection?>> {
+        val sectionOrder = item.sections.withIndex().associate { it.value.id to it.index }
+        return item.fields
+            .map { field -> field to item.section(field.sectionId)?.takeIf { it.label.isNotBlank() } }
+            .sortedBy { (_, section) -> section?.let { sectionOrder[it.id]?.plus(1) } ?: 0 }
+    }
+
+    // ---- Writes ----
+
+    /**
+     * `/<item>[/<section>]`: adds the concealed field [key] (to the section, else the item's top level), refused when the item
+     * has a field labelled [key] anywhere; a [comment] is added to the item's notes as `key: comment`. `/`: creates the
+     * password item titled [key] holding [value] in its `password` field, [comment] as its notes; refused when an item with
+     * that title exists.
+     */
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
+        val segments = writableSegments(scope, allowRoot = true)
+        if (segments.isEmpty()) {
+            if (backend.items(scope.projectId).any { it.title.equals(key, ignoreCase = true) }) {
+                throw SecretProviderException(
+                    Kind.CONFIGURATION,
+                    "Vault ${scope.projectId} already has an item called \"$key\". To add a field to it, choose the folder /$key",
+                )
+            }
+            val created = backend.createItem(scope.projectId, OnePasswordEdits.rootItem(key, value.reveal(), comment))
+            OnePasswordEdits.fieldIds(created)?.let { ids ->
+                if (OnePasswordEdits.ROOT_FIELD !in ids) throw notApplied("create item $key")
+            }
+            return WriteOutcome.APPLIED
+        }
+        edit(scope.projectId, segments[0]) { json, item ->
+            val section = segments.getOrNull(1)?.let { requireSection(item, it, segments[0]) }
+            if (item.fields.any { keyOf(it) == key }) {
+                throw SecretProviderException(
+                    Kind.CONFIGURATION,
+                    "Item ${segments[0]} already has a field \"$key\" (field labels must be unique within an item for op:// references); edit that one instead",
+                )
+            }
+            val id = OnePasswordEdits.addField(json, key, value.reveal(), "CONCEALED", section)
+            if (comment.isNotBlank()) {
+                val notes = OnePasswordEdits.notes(item)
+                OnePasswordEdits.setNotes(json, (if (notes.isEmpty()) "" else "$notes\n") + "$key: $comment")
+            }
+            Expect(present = setOf(id))
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    /** Changes the field's value; a [comment] that isn't null replaces the item's notes (shown as every field's comment). */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+        val segments = writableSegments(scope, allowRoot = false)
+        edit(scope.projectId, segments[0]) { json, item ->
+            val field = requireField(item, segments, key)
+            OnePasswordEdits.setValue(OnePasswordEdits.field(json, field.id), value.reveal())
+            comment?.let { OnePasswordEdits.setNotes(json, it) }
+            Expect(present = setOf(field.id))
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    /**
+     * Removes the field (a built-in one, such as a login's password, is emptied instead). Items themselves are never deleted:
+     * at a vault's root there are no secrets to delete.
+     */
+    override fun deleteSecret(scope: SecretScope, key: String): WriteOutcome {
+        val segments = segments(scope.path)
+        if (segments.isEmpty()) {
+            throw SecretProviderException(
+                Kind.CONFIGURATION,
+                "EnvBridge doesn't delete 1Password items, only their fields; delete or archive the item \"$key\" in 1Password",
+            )
+        }
+        writableSegments(scope, allowRoot = false)
+        edit(scope.projectId, segments[0]) { json, item ->
+            val field = requireField(item, segments, key)
+            OnePasswordEdits.removeField(json, field.id)
+            Expect(absent = if (field.purpose.isEmpty()) setOf(field.id) else emptySet())
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    /**
+     * Copies the fields into the destination item (one save; with [overwrite], a field with the same label there gets the
+     * value), then removes them from the source item (a second save). Nothing is removed unless the copy was saved; a failed
+     * removal is reported in [MoveResult.notRemoved]. Within one item, the fields just change section (one save).
+     */
+    override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
+        val from = writableSegments(source, allowRoot = false)
+        val to = segments(destination.path)
+        if (to.isEmpty()) {
+            throw SecretProviderException(
+                Kind.CONFIGURATION,
+                "Choose an item (or a section of one) as the destination: in 1Password a secret is a field of an item",
+            )
+        }
+        writableSegments(destination, allowRoot = false)
+        if (secrets.isEmpty()) return MoveResult(emptyList())
+
+        val sourceJson = backend.itemJson(source.projectId, from[0])
+        val sourceItem = OnePasswordJson.item(sourceJson)
+        val picked = secrets.map { entry ->
+            val field = sourceItem.fields.firstOrNull { entry.id.isNotEmpty() && it.id == entry.id }
+                ?: findField(sourceItem, from.getOrNull(1)?.let { findSection(sourceItem, it) }, entry.key)
+                ?: throw SecretProviderException(Kind.NOT_FOUND, "No field \"${entry.key}\" in item ${from[0]}; refresh and try again")
+            entry.key to field
+        }
+        val keys = picked.map { it.first }
+        val sourceVault = vaultOf(sourceJson, source.projectId)
+
+        // Within one item: change the fields' section in one save
+        val sameVault = sourceVault == destination.projectId || source.projectId == destination.projectId
+        val destinationIsSource = sameVault && (to[0] == from[0] || to[0] == sourceItem.id || to[0] == sourceItem.title)
+        if (destinationIsSource) {
+            val section = to.getOrNull(1)?.let { requireSection(sourceItem, it, to[0]) }
+            picked.forEach { (_, field) -> OnePasswordEdits.setSection(OnePasswordEdits.field(sourceJson, field.id), section) }
+            save(source.projectId, sourceJson, Expect(present = picked.map { it.second.id }.toSet()))
+            return MoveResult(keys)
+        }
+
+        val destinationJson = backend.itemJson(destination.projectId, to[0])
+        val destinationItem = OnePasswordJson.item(destinationJson)
+        val section = to.getOrNull(1)?.let { requireSection(destinationItem, it, to[0]) }
+        val existing = picked.associate { (key, _) -> key to findField(destinationItem, null, key) }
+        val conflicts = existing.filterValues { it != null }.keys
+        if (conflicts.isNotEmpty() && !overwrite) {
+            throw SecretProviderException(
+                Kind.CONFIGURATION,
+                "Item ${to[0]} already has ${conflicts.joinToString { "\"$it\"" }}; nothing was moved. Tick Overwrite to replace their values",
+            )
+        }
+        val present = mutableSetOf<String>()
+        for ((key, field) in picked) {
+            val target = existing[key]
+            present += if (target != null) {
+                OnePasswordEdits.setValue(OnePasswordEdits.field(destinationJson, target.id), field.value)
+                target.id
+            } else {
+                // A built-in field's type (a login's password…) is kept, not its purpose: the destination may have its own
+                OnePasswordEdits.addField(destinationJson, key, field.value, field.type.ifEmpty { "CONCEALED" }, section)
+            }
+        }
+        // Throws when the copy wasn't saved: then nothing changed
+        save(destination.projectId, destinationJson, Expect(present = present))
+
+        return try {
+            // Read again: the version (and fields) as they are now
+            val fresh = backend.itemJson(source.projectId, sourceItem.id.ifEmpty { from[0] })
+            picked.forEach { (_, field) -> OnePasswordEdits.removeField(fresh, field.id) }
+            save(source.projectId, fresh, Expect(absent = picked.filter { it.second.purpose.isEmpty() }.map { it.second.id }.toSet()))
+            MoveResult(keys)
+        } catch (e: SecretProviderException) {
+            if (e.kind == Kind.CANCELLED) throw e
+            MoveResult(emptyList(), notRemoved = keys.associateWith { e.message ?: e.kind.name })
+        }
+    }
+
+    /** What a save must show afterwards: fields (by ID) that exist and that are gone. Values aren't compared. */
+    private data class Expect(val present: Set<String> = emptySet(), val absent: Set<String> = emptySet())
+
+    /** Reads the item, lets [change] edit its JSON (with the parsed item for lookups), and saves it whole. */
+    private fun edit(vault: String, item: String, change: (JsonObject, OpItem) -> Expect) {
+        val json = backend.itemJson(vault, item)
+        save(vault, json, change(json, OnePasswordJson.item(json)))
+    }
+
+    /**
+     * Saves [json] and checks the item 1Password returns: a CLI that ignored the piped JSON (or merged instead of replacing)
+     * must not look like success. Skipped when the answer has no fields.
+     */
+    private fun save(vault: String, json: JsonObject, expect: Expect) {
+        val result = backend.replaceItem(vault, json)
+        val ids = OnePasswordEdits.fieldIds(result) ?: return
+        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids }) throw notApplied("save item ${json.get("title")?.asString.orEmpty()}")
+    }
+
+    private fun notApplied(what: String) = SecretProviderException(
+        Kind.SERVER,
+        "1Password didn't apply the change ($what); update the 1Password CLI (it must accept the item as JSON on stdin) or use a Connect server",
+    )
+
+    private fun vaultOf(json: JsonObject, fallback: String): String =
+        json.getAsJsonObject("vault")?.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() } ?: fallback
+
+    /** The path's segments for a write: `/<item>[/<section>]`, or `/` when [allowRoot]. */
+    private fun writableSegments(scope: SecretScope, allowRoot: Boolean): List<String> {
+        val segments = segments(scope.path)
+        if (segments.isEmpty() && !allowRoot) {
+            throw SecretProviderException(Kind.CONFIGURATION, "A vault's root holds items, not secrets: choose an item (/<item>)")
+        }
+        if (segments.size > 2) {
+            throw SecretProviderException(Kind.NOT_FOUND, "No such item or section: ${scope.path} (1Password paths are /<item>[/<section>])")
+        }
+        return segments
+    }
+
+    private fun requireSection(item: OpItem, wanted: String, itemName: String): OpSection =
+        findSection(item, wanted)
+            ?: throw SecretProviderException(Kind.NOT_FOUND, "No section \"$wanted\" in item $itemName; add it in 1Password first")
+
+    /** The field [key] of `/<item>[/<section>]`, as listings and references find it. */
+    private fun requireField(item: OpItem, segments: List<String>, key: String): OpField {
+        val section = segments.getOrNull(1)?.let { requireSection(item, it, segments[0]) }
+        return findField(item, section, key)
+            ?: throw SecretProviderException(Kind.NOT_FOUND, "No field \"$key\" in ${segments.joinToString("/", prefix = "/")}; refresh and try again")
+    }
+
+    /** The first field labelled [key] (in [section] if given), top-level fields first, as resolving a reference does. */
+    private fun findField(item: OpItem, section: OpSection?, key: String): OpField? =
+        orderedFields(item).map { it.first }
+            .filter { section == null || it.sectionId == section.id }
+            .firstOrNull { keyOf(it) == key }
+
+    /** A field's key in listings: its label, else its ID. */
+    private fun keyOf(field: OpField) = field.label.ifBlank { field.id }
 
     private fun findSection(item: OpItem, wanted: String): OpSection? =
         item.sections.firstOrNull { it.label == wanted }

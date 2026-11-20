@@ -58,13 +58,15 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>1Password</b>: your existing <code>op://vault/item/field</code> secret references work as they are, plus
       <code>op://vault/item/*</code> for every field of an item. Access through the <b>1Password app</b> (the 1Password CLI asks
       the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
-      token or a <b>1Password Connect</b> server. Reading only for now</li>
+      token or a <b>1Password Connect</b> server. New, edited, moved and deleted secrets are fields of items (a new secret at a
+      vault's root is a new password item); values reach the CLI only on its standard input, never its command line</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
 <p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you change one yourself
-(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract value to Infisical…</i>; Infisical only).
+(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract value to Infisical…</i>; Infisical and
+1Password).
 <i>Read-only</i> in the settings turns all writing off.</p>
 <!-- Plugin description end -->
 
@@ -225,7 +227,21 @@ WORK_DB=op://Private/Database/password?connection=Work
 | **1Password Connect server** | The server's address (`http://localhost:8080` for one on your machine) and an access token, kept in the password storage. Sign-out forgets the token |
 
 `op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item. Values are
-cached in memory like any other secrets. This version reads secrets only.
+cached in memory like any other secrets.
+
+**Writing** (tool window *New Secret… / Edit Secret… / Move… / Delete…*, `.env` *Extract value to …*; off with *Read-only*):
+
+| Action | In an item (`/Database`, or a section `/Database/Extra`) | At the vault's root (`/`) |
+|---|---|---|
+| New secret | Adds a concealed field with that label (to the section, if given). Refused if the item already has a field with that label. A comment is added to the item's notes as `KEY: comment` | Creates a **Password** item titled with the key, the value in its `password` field (`op://Dev/KEY/password`), the comment as its notes. Refused if an item with that title exists |
+| Edit | Changes the field's value. Fields have no comments: the item's **notes** are shown as the comment, and editing it changes them | — |
+| Delete | Removes the field (a built-in one, such as a login's password, is emptied instead). **Items are never deleted** | — |
+| Move | Copies the fields into the destination item, then removes them from the source item; if that fails, you are told which now exist in both. Without *Overwrite*, a field already in the destination stops the move before anything changes | Not a destination: choose an item |
+
+Each write reads the item and saves it whole. With Connect, the item's version is sent along: if it changed meanwhile, the save
+is refused ("refresh and try again"). Through the CLI, values are handed to `op item create` / `op item edit` as the item's JSON
+on standard input, never as `field=value` arguments (which other processes could read); this needs an `op` that accepts piped
+item JSON. EnvBridge checks that the change took effect and says so if it didn't.
 
 ## Security
 
