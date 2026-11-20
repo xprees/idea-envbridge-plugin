@@ -4,12 +4,29 @@
 
 ### Added
 
+- **1Password** (unofficial integration), reading and injecting: 1Password's own secret references work as they are
+  (`op://vault/item/[section/]field`, names or IDs), plus `op://vault/item/*` for every field of an item, `op://vault/**` for
+  every item of a vault and `?connection=`. Access through the 1Password app via the 1Password CLI (the app approves, nothing to
+  paste), a service account token (given to the CLI only in its environment, never on its command line) or a 1Password Connect
+  server. Vaults are projects with one environment (`default`), items are folders. Writing comes later; those actions are off
+  for 1Password connections
+- Sign-in methods that need no instance address (a CLI talking to its desktop app): the connection dialog hides the address
+- *Only use the bound project* accepts references that name the bound project by its name (a 1Password vault), not only its ID
 - **HashiCorp Vault and OpenBao** (KV v2, namespaces), reading and injecting: `vault://secret/app/db#password`, `#*` for every
   field of a secret and `#**` for every secret below a path, `?namespace=` and `?connection=`. Sign in with OIDC in the system
   browser (the Vault CLI's redirect URI), a token or the Vault CLI's `~/.vault-token`, AppRole, userpass or LDAP; tokens and
   passwords only in the IDE's password storage, renewable tokens renewed before they expire. Mounts are listed from the server or
   set on the connection. Creating and changing Vault secrets comes later; those actions are off for Vault connections
 - Choosing the secret manager when adding a connection, once there are several
+- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
+  (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
+
+### Fixed
+
+- Changing secrets (and other requests with a body) on Infisical instances served over plain `http://` (a local self-hosted one)
+  failed with HTTP 405: such requests now use HTTP/1.1 instead of an HTTP/2 upgrade
+- OpenBao: an expired or revoked token is recognised although the server only says "permission denied", so the plugin signs in
+  again instead of reporting missing permissions
 
 ### Changed
 

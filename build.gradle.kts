@@ -207,6 +207,11 @@ val checkPublishable = tasks.register("checkPublishable") {
     }
 }
 
+
+/** `integrationTest` asked for (or -PintegrationTests): the test task then runs only the integration tests. */
+val integrationTestsRequested: Boolean = providers.gradleProperty("integrationTests").isPresent ||
+    gradle.startParameter.taskNames.any { it.substringAfterLast(':') == "integrationTest" }
+
 tasks {
     named("signPlugin") { dependsOn(checkPublishable) }
     named("publishPlugin") { dependsOn(checkPublishable) }
@@ -227,5 +232,22 @@ tasks {
             events("failed", "skipped")
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
         }
+        // Integration tests talk to real servers (scripts/integration/start.sh): only with -PintegrationTests, then only them
+        if (integrationTestsRequested) {
+            filter.includeTestsMatching("*IntegrationTest")
+            systemProperty("envbridge.it.env", layout.buildDirectory.file("integration.env").get().asFile.absolutePath)
+            outputs.upToDateWhen { false }
+            testLogging.events("passed", "failed", "skipped")
+        } else {
+            exclude("**/*IntegrationTest.class")
+        }
     }
+}
+
+// `integrationTest`: the tests against real Vault, OpenBao and Infisical servers. Start them first:
+//   scripts/integration/start.sh && ./gradlew integrationTest
+tasks.register("integrationTest") {
+    group = "verification"
+    description = "Runs the integration tests against the servers of scripts/integration/start.sh"
+    dependsOn(tasks.test)
 }

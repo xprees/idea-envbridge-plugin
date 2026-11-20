@@ -78,7 +78,16 @@ data class AuthMethod(
     val options: List<AuthOption> = emptyList(),
     /** Secret fields (stored in PasswordSafe, never in settings). */
     val secretOptions: List<AuthOption> = emptyList(),
+    /**
+     * Whether this method talks to the connection's base URL. False for methods that go through a local program (a CLI
+     * talking to its desktop app): the connection dialog then hides the address, and lists don't show it.
+     */
+    val usesBaseUrl: Boolean = true,
 )
+
+/** Whether [connection]'s sign-in method uses its base URL (unknown providers and methods: yes). */
+fun usesBaseUrl(connection: SecretConnection): Boolean =
+    SecretProvider.byId(connection.providerId)?.authMethod(connection.authMethodId)?.usesBaseUrl != false
 
 data class AuthOption(val key: String, val label: String, val required: Boolean = true, val hint: String = "")
 

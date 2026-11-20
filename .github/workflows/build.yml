@@ -133,6 +133,60 @@ jobs:
           name: tests-result
           path: ${{ github.workspace }}/build/reports/tests
 
+  # Integration tests against real servers in Docker: HashiCorp Vault, OpenBao and a self-hosted Infisical
+  # (scripts/integration/start.sh starts and seeds them; the same works locally)
+  integration:
+    name: Integration tests
+    needs: [ build ]
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Maximize Build Space
+        uses: jlumbroso/free-disk-space@v2.0.0
+        with:
+          tool-cache: false
+          large-packages: false
+
+      - name: Fetch Sources
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: true
+
+      - name: Start Vault, OpenBao and Infisical
+        run: scripts/integration/start.sh
+
+      - name: Run integration tests
+        run: ./gradlew integrationTest
+
+      - name: Server logs
+        if: ${{ failure() }}
+        run: |
+          for c in envbridge-it-vault envbridge-it-openbao envbridge-it-infisical; do
+            echo "::group::$c"; docker logs --tail 200 "$c" 2>&1 || true; echo "::endgroup::"
+          done
+
+      - name: Collect Tests Result
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-tests-result
+          path: ${{ github.workspace }}/build/reports/tests
+
+      - name: Stop servers
+        if: ${{ always() }}
+        run: scripts/integration/stop.sh
+
   # Run plugin structure verification along with IntelliJ Plugin Verifier.
   # One job per IDE: every IDE distribution is kept both zipped and extracted in the Gradle cache, and all of them together don't
   # fit on a hosted runner. By default only the latest IDEA, WebStorm, PyCharm, GoLand, DataGrip and Rider are verified (the tests already build and run
@@ -221,7 +275,7 @@ jobs:
   tag:
     name: Tag release
     if: github.event_name != 'pull_request'
-    needs: [ build, test, verify ]
+    needs: [ build, test, integration, verify ]
     runs-on: ubuntu-latest
     permissions:
       contents: write

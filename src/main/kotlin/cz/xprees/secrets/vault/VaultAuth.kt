@@ -42,9 +42,17 @@ class VaultAuth(private val connection: SecretConnection, private val api: Vault
         return try {
             call(token)
         } catch (e: SecretProviderException) {
-            if (e.kind != Kind.AUTH_REQUIRED) throw e
+            // A dead token can look like a missing permission (OpenBao answers only "permission denied"): ask the server
+            if (e.kind != Kind.AUTH_REQUIRED && !(e.kind == Kind.FORBIDDEN && !tokenIsValid(token))) throw e
             call(renew(staleToken = token))
         }
+    }
+
+    private fun tokenIsValid(token: String): Boolean = try {
+        api.lookupSelf(token, loginNamespace)
+        true
+    } catch (e: SecretProviderException) {
+        e.kind != Kind.AUTH_REQUIRED
     }
 
     /** A valid token, renewed (or obtained again) first when it is about to expire. */

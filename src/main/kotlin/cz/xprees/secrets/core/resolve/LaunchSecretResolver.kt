@@ -95,7 +95,7 @@ class LaunchSecretResolver(private val project: Project) {
         for (reference in plan.allReferences) {
             val bound = bindings.bindingOrNull(providerOf(reference)) ?: continue
             val boundProject = bound.projectId ?: continue
-            if (reference.projectId != null && reference.projectId != boundProject) {
+            if (reference.projectId != null && !namesProject(reference.projectId, boundProject, bound.connection)) {
                 problems += SecretsBundle.message("restrict.other.project", reference.format(), boundProject)
             }
             val connection = reference.connectionId
@@ -104,6 +104,17 @@ class LaunchSecretResolver(private val project: Project) {
             }
         }
         if (problems.isNotEmpty()) throw SecretProviderException(Kind.CONFIGURATION, problems.joinToString("\n"))
+    }
+
+    /**
+     * Whether [written] (a project as a reference writes it) is the project [boundProjectId]: its ID, or its slug or name where the
+     * provider's references name projects that way (a 1Password vault by its name).
+     */
+    private fun namesProject(written: String, boundProjectId: String, connection: cz.xprees.secrets.core.model.SecretConnection): Boolean {
+        if (written == boundProjectId) return true
+        val bound = runCatching { SecretsService.getInstance().projects(connection).firstOrNull { it.id == boundProjectId } }.getOrNull()
+            ?: return false
+        return written == bound.slug || written == bound.name
     }
 
     companion object {

@@ -135,6 +135,19 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(mock.issuedTokens()).isEqualTo(2)
     }
 
+    fun `test a dead token answered only with permission denied (OpenBao) still leads to a new login`() {
+        mock.openBaoErrors = true
+        val client = client(appRole())
+        client.listProjects()
+        mock.expireTokens()
+        assertThat(client.listSecrets(SecretScope("secret", "root", "/app/db"))).hasSize(2)
+        assertThat(mock.issuedTokens()).isEqualTo(2)
+        // a real permission problem with a valid token stays one
+        assertThatThrownBy { client.listSecrets(SecretScope("forbidden", "root", "/x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+        assertThat(mock.issuedTokens()).isEqualTo(2)
+    }
+
     fun `test renewable tokens are renewed before they expire`() {
         mock.tokenTtl = 30 // inside the renewal margin, so the next call renews
         val client = client(appRole())

@@ -37,6 +37,9 @@ class VaultHttp(val baseUrl: String) {
     private val client: HttpClient by lazy {
         HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
+            // HTTP/1.1: over plain http:// the default (HTTP/2) sends an h2c upgrade with every request, which servers such
+            // as Infisical's answer with 405 for requests with a body (PATCH, DELETE)
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
             .proxy(ProxySelector.getDefault() ?: ProxySelector.of(null))
             .apply { runCatching { com.intellij.util.net.ssl.CertificateManager.getInstance().sslContext }.getOrNull()?.let(::sslContext) }

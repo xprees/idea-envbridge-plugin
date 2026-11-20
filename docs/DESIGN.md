@@ -256,6 +256,132 @@ are renewed before they expire; otherwise the user signs in again (the launch fa
 A mock Vault server (like `MockInfisical`): mounts, LIST, KV v2 reads, namespaces, each auth method including the OIDC
 round trip, expired tokens and permission errors; the grammar round-trips; launches resolving `vault://` references.
 
+## Third provider: 1Password
+
+Chosen after Vault for reach among individual developers and small teams: many already keep their API keys in 1Password and
+write `op://` references for `op run` / `op inject`. EnvBridge reads those same references, so a `.env` or run configuration
+written for the CLI works in the IDE unchanged, without `op run` wrapping every launch.
+
+**Scope, first version:** reading and injecting (tool window, references in run configurations, terminal, `.env`, editor
+hints). `supportsWrites` is false, so the write actions are off and `SecretsService` refuses writes, as with *Read-only*.
+
+### Model mapping
+
+| EnvBridge | 1Password |
+|---|---|
+| Project | A vault (ID = vault ID, name and slug = vault name) |
+| Environment | None in 1Password: every vault has one, `default` (`defaultEnvironment()`) |
+| Folder | An item: `/<item title>` (the item's ID when its title is shared with another item, contains `/` or is blank). A section is addressable as `/<item>/<section>` (label, else ID) but not shown as a folder |
+| Secret (key = value) | A field with a value (key = its label, else its ID). Empty fields are left out |
+
+`listFolders("/")` lists the vault's items; `listSecrets("/<item>")` returns every field of the item, top-level fields first (a
+section without a label, such as the CLI's `add more`, counts as top level), then by section; each entry's `path` names its
+section. `listSecrets("/<item>/<section>")` returns one section's fields. `listSecrets("/", recursive)` reads every item of the
+vault, at most 100 (each is a CLI call or request; more is a CONFIGURATION error naming item imports instead). Sections are not
+shown as folders because a reference may leave the section out (below): listing their fields under the item keeps one place
+per field in the tool window, and *Copy reference* gives the short form.
+
+### References
+
+1Password's [secret reference syntax](https://developer.1password.com/docs/cli/secret-reference-syntax/), scheme `op`:
+
+```
+op://<vault>/<item>/<field>               field of the item (any section; top-level fields first)
+op://<vault>/<item>/<section>/<field>     field of a section
+op://<vault>/<item>/*                     every field of the item (EnvBridge extension, scope import)
+op://<vault>/<item>/<section>/*           every field of a section
+op://<vault>/**                           every field of every item (EnvBridge extension, capped)
+op://<vault>/<item>/<field>?connection=<name>
+```
+
+`OnePasswordGrammar` maps the vault to `projectId`, `/<item>[/<section>]` to `path` and the field to `key`; `environment` is
+always left open (the binding's, `default`). Decisions:
+
+- **Names** are written raw, spaces included, as 1Password writes them (so a reference copied from the tool window works with
+  `op run` too). Characters outside 1Password's allowed set (letters, digits, `-`, `_`, `.`, space) are percent-encoded on
+  output and decoded on input; `%2F` is refused (1Password requires the ID for a name with `/`). Raw leading or trailing
+  blanks are refused as typos (`%20` writes them). Stars count only when written raw: `%2A` is a field called `*`.
+- **The vault is always written** (`build()` puts the vault ID there; the binding can't shorten an `op://` reference).
+- **`?attribute=`**: only `value` (the default) is accepted. `otp`, `type` and `ssh-format` would need a value that isn't a
+  field's value; they are refused with a message rather than resolving to something else. Unknown parameters are refused.
+- **Section omitted**: resolution takes the first field with that label in the item, top-level first. As far as known
+  (unverified, see limits) `op read` also finds a field without its section when the label is unique.
+- **Case**: field labels match case-sensitively (core compares keys exactly); vault and item names are passed to `op`
+  (which matches them itself) or, for Connect, matched exactly first and then ignoring case when that is unique.
+- **Bound project**: a reference names the vault by name (`op://Dev/…`) while the binding stores its ID. *Only use the bound
+  project* therefore accepts a reference that names the bound project by its slug or name (`LaunchSecretResolver.namesProject`,
+  a generic core change; only when the IDs differ is the project list consulted).
+
+### Access methods
+
+| Method | How | Credentials |
+|---|---|---|
+| **1Password app (through the CLI)** (default) | `op` as a child process: `op vault list`, `op item list --vault <v>`, `op item get <item> --vault <v> --reveal`, `op whoami`, all `--format json`, optional `--account <shorthand / sign-in address / ID>`. The 1Password app authorizes the CLI (biometrics / system password) | None in the IDE. `SLOT_SESSION` only remembers that the user signed in (so background features don't run `op` for a user who never did) |
+| **Service account (through the CLI)** | The same commands | The token is a secret option (PasswordSafe), given to `op` only as `OP_SERVICE_ACCOUNT_TOKEN` in its environment, never on argv |
+| **1Password Connect server** | `GET /v1/vaults`, `GET /v1/vaults/{vaultId}/items`, `GET /v1/vaults/{vaultId}/items/{itemId}` with `Authorization: Bearer`. Names are resolved to IDs by listing (one list per client, i.e. per operation); a 26-character ID is fetched directly | The access token is a secret option (PasswordSafe) |
+
+The CLI methods don't use the connection's base URL. A small generic SPI addition, `AuthMethod.usesBaseUrl` (default true),
+lets the connection dialog hide the address for them and lists not show it; a valid URL is still saved (the previous one, else
+the provider's first preset, `http://localhost:8080`, the usual local Connect address) so switching the method later works.
+
+Finding `op`: the connection's path if set (an error if it doesn't exist; no fallback to another binary), else `PATH`, then the
+usual install locations (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/snap/bin`, `~/.local/bin`; on Windows WinGet's
+links and `Program Files\1Password CLI`), because an IDE started from the Dock or Start menu may lack the shell's `PATH`. Not
+found: CONFIGURATION with an install hint.
+
+Process handling: `ProcessBuilder`, stdin closed at once (`op` must never wait for a password), stdout and stderr drained on
+their own threads with size caps, polling for cancellation (progress indicator, sign-in interaction), timeouts of 120 s for the
+app (the user may have to approve) and 60 s for service accounts. `--reveal` (op 2.24+) makes sure concealed values are in the
+JSON; an `op` that doesn't know the flag is called again without it.
+
+Errors from `op` (exit code non-zero) are classified from stderr, shown without the `[ERROR] <date> <time>` prefix, on one
+line, at most 300 characters: not signed in / authorization dismissed / app not reachable / invalid token → AUTH_REQUIRED;
+"isn't a vault / item" → NOT_FOUND; "more than one … matches" → CONFIGURATION ("name it by its ID"); permission → FORBIDDEN;
+network → NETWORK. Connect: 401 → AUTH_REQUIRED, 403 → FORBIDDEN, 404 → NOT_FOUND, its `message` shown shortened.
+
+Sign-out: the app method forgets the "signed in" marker (the app's own authorization of the CLI expires by itself); service
+account and Connect forget the stored token.
+
+### Security notes
+
+- No secret on a command line: argv carries only vault / item names, flags and the account. The service account token goes
+  through the child's environment, which other users' processes can't read.
+- Inherited `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN` and `OP_SESSION_*` are removed so `op` uses the
+  connection's credentials only (`OP_ACCOUNT` is also removed for service accounts).
+- Neither `op`'s output nor Connect's bodies are logged; `OpField.toString()` leaves the value out; values become `SecretValue`s.
+- The path to `op` is a setting the user chose; EnvBridge does not verify the binary's signature (1Password documents how to).
+- Connect follows the other HTTP clients: IDE proxy and certificates, no redirects, `https://` except loopback.
+
+### Tests
+
+- `OnePasswordGrammarTest`: parsing, formatting and round trips (sections, `*`, `**`, encoded names, a field called `*`),
+  building references, malformed references with their messages, other schemes unaffected.
+- `FakeOp`: a POSIX shell script written to a temp dir that answers `vault list`, `item list`, `item get`, `whoami` from
+  fixture JSON, logs argv and whether `OP_SERVICE_ACCOUNT_TOKEN` was set, can require a token, act signed out, and report an
+  ambiguous title like `op` does. `MockOnePasswordConnect`: a JDK HttpServer with the three Connect endpoints, bearer check,
+  403 and 404.
+- `OnePasswordPlatformTest`: each method lists vaults, items and fields; sections by label and ID; duplicate titles; the
+  whole-vault import and its cap; the token only in the environment; errors (op missing, not signed in, wrong token, missing
+  item, ambiguous title, Connect 401 / 403); launches resolving `op://` references against a bound vault (vault by name and by
+  ID, section given or not, item import, fail closed, another vault refused while restricted); writes refused.
+
+### Known limits and uncertainties
+
+- **JSON shapes are from documentation and memory, not verified against a live account** while writing this: CLI items
+  (`id`, `title`, `vault`, `category`, `sections[] {id, label}`, `fields[] {id, type, purpose, label, value, section {id,
+  label}, reference}`), CLI vaults (`id`, `name`), `whoami` (`url`, `email`, `user_type`), Connect vaults (`id`, `name`) and
+  items (`sections[]`, fields with `section {id}` only). The parser is lenient (missing keys are skipped, a non-string `value`
+  is passed as JSON, `null` / empty output is an empty list).
+- Whether `op read` resolves `op://vault/item/field` for a field inside a section is assumed, not verified; EnvBridge does.
+- The `op` error texts used for classification are known examples; an unknown text is SERVER with the text shown.
+- `--reveal` behaviour of older CLI versions is assumed (retry without it on "unknown flag").
+- Background features (completion's keys index, every 10 minutes) run `op` for a signed-in app connection; when the app's
+  authorization of the CLI has expired, the app may ask to approve at that moment. Signing out stops it.
+- `?attribute=otp`, `?attribute=type`, `?ssh-format=` and field lookup by field ID (except where ID and label are equal, as for
+  built-in `username` / `password`) are not supported.
+- A whole-vault import makes one `op` call per item (≈0.5 s each); it is capped at 100 items.
+- No dashboard link (opening items needs the account's UUID; a later version can use `whoami`).
+
 ## Threat model (summary)
 
 | Threat | Mitigation |
@@ -268,6 +394,7 @@ round trip, expired tokens and permission errors; the grammar round-trips; launc
 | Secrets on screen or in clipboard | Masked by default, auto-hide on reveal, clipboard auto-clear, console masking (M3). |
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
 | Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
+| Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; argv carries names and flags only; inherited `OP_*` credentials are removed. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 
 ## Milestones

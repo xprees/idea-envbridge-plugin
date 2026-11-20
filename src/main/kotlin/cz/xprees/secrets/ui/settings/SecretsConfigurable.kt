@@ -234,7 +234,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
             value ?: return
             icon = SecretsIcons.PROVIDER
             append(value.name)
-            append("  ${value.baseUrl}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+            if (cz.xprees.secrets.core.provider.usesBaseUrl(value)) append("  ${value.baseUrl}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
             val method = SecretProvider.byId(value.providerId)?.authMethod(value.authMethodId)?.displayName ?: value.authMethodId
             append("  · $method", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             when (signedIn[value.id]) {

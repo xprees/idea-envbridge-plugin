@@ -1,12 +1,12 @@
 # EnvBridge
 
 Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**,
-**HashiCorp Vault** and **OpenBao**.
+**HashiCorp Vault**, **OpenBao** and **1Password**.
 
 <!-- Plugin description -->
-<p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company)
-or the OpenBao project. "Infisical", "HashiCorp Vault" and "OpenBao" are trademarks of their owners and are used only to say which
-services this plugin works with.</p>
+<p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company),
+the OpenBao project or AgileBits Inc. (1Password). "Infisical", "HashiCorp Vault", "OpenBao" and "1Password" are trademarks of
+their owners and are used only to say which services this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
 and test locally <b>without keeping secrets in <code>.env</code> files</b>. Values are fetched when a run configuration starts and
@@ -55,6 +55,10 @@ handed to the process in memory. Nothing is written to disk.</p>
       <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
       Reading only for now</li>
+  <li><b>1Password</b>: your existing <code>op://vault/item/field</code> secret references work as they are, plus
+      <code>op://vault/item/*</code> for every field of an item. Access through the <b>1Password app</b> (the 1Password CLI asks
+      the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
+      token or a <b>1Password Connect</b> server. Reading only for now</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
@@ -187,6 +191,37 @@ mounts**, needed only when the token may not list secret engines. Renewable toke
 userpass and LDAP sign in again by themselves; OIDC asks you to sign in again. This version reads secrets only; creating and
 changing them comes later.
 
+### 1Password
+
+A **vault** is a project, an **item** is a folder and the item's **fields** are its keys. 1Password has no environments, so every
+vault has one, `default`. References are 1Password's own [secret references](https://developer.1password.com/docs/cli/secret-reference-syntax/),
+so the ones you already use with `op run` or `op inject` work unchanged:
+
+```
+DB_PASSWORD=op://Private/Database/password
+API_KEY=op://Dev/AWS Keys/prod creds/secret access key      a field in a section ("prod creds")
+OP=op://Dev/Stripe/*                                          every field of the item (EnvBridge extension)
+OP=op://Dev/**                                                every field of every item in the vault (at most 100 items)
+WORK_DB=op://Private/Database/password?connection=Work
+```
+
+- Vault, item, section and field may be names or IDs. Names are written as they are, spaces included (as 1Password writes them);
+  other special characters can be percent-encoded (`%3A`); a name with a `/` must be given by its ID, as in 1Password.
+- The section may be left out: `op://Dev/Database/api key` finds the field in any section, top-level fields first. Fields are
+  matched by label (case-sensitive); empty fields are skipped.
+- `?attribute=` other than `value` (`otp`, `type`, …) and `?ssh-format=` are not supported and say so.
+- Items that share a title, or whose title contains `/`, are shown and addressed by their IDs.
+- With *Only use the bound project*, a reference may name the bound vault by its name or its ID.
+
+| Method | Setup |
+|---|---|
+| **1Password app (through the CLI)** (default) | Install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/) and turn on *Settings › Developer › Integrate with 1Password CLI* in the 1Password app. **Sign In** makes the app ask you to approve; no password or token is entered in the IDE. Optional: the account (shorthand, sign-in address or ID, when you have several) and the path to `op` if it isn't found on `PATH` or in the usual install locations. Sign-out stops EnvBridge from running `op` in the background |
+| **Service account (through the CLI)** | A [service account](https://developer.1password.com/docs/service-accounts/) token, kept in the IDE's password storage and given to `op` only in the environment variable `OP_SERVICE_ACCOUNT_TOKEN`, never on its command line. Sign-out forgets the token |
+| **1Password Connect server** | The server's address (`http://localhost:8080` for one on your machine) and an access token, kept in the password storage. Sign-out forgets the token |
+
+`op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item. Values are
+cached in memory like any other secrets. This version reads secrets only.
+
 ## Security
 
 - **Credentials** (session tokens, refresh tokens, client secrets) are stored only in the IDE's password storage (system keychain,
@@ -201,6 +236,10 @@ changing them comes later.
 - **Browser sign-in callback**: bound to `127.0.0.1` only, single use, short-lived. It accepts only a JSON `POST` from the
   instance's own origin (checked on the CORS preflight and on the request) and a loopback `Host` (DNS-rebinding protection). The
   token is validated against the instance before it is stored. OAuth uses PKCE (S256) and `state`.
+- **1Password CLI**: `op` is run as a child process with `--format json` and no input. A service account token reaches it only
+  through its environment (`OP_SERVICE_ACCOUNT_TOKEN`), never through its command line, which other processes can read;
+  inherited `OP_SESSION_*`, `OP_CONNECT_*` and `OP_SERVICE_ACCOUNT_TOKEN` variables are removed first. Its output is not logged;
+  its error text is shown shortened.
 - See [SECURITY.md](SECURITY.md) for reporting vulnerabilities, and the [threat model](docs/DESIGN.md#threat-model-summary).
 
 ## Building
@@ -218,7 +257,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and conventions.
 Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an
-IBM company) or the OpenBao project. "Infisical" and the Infisical logo are trademarks of Infisical Inc.; "HashiCorp" and "Vault"
-are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation. This plugin uses none of their logos or other brand
-assets, and it contains none of their source code. It talks to their documented APIs and reimplements documented behaviour of
-their CLIs (Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`).
+IBM company), the OpenBao project or AgileBits Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
+"HashiCorp" and "Vault" are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation; "1Password" is a trademark
+of AgileBits Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
+to their documented APIs, runs the 1Password CLI the user installed, and reimplements documented behaviour of their CLIs
+(Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`, 1Password's secret
+reference syntax).
