@@ -12,7 +12,7 @@ import cz.xprees.secrets.core.model.SecretFolder
 import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 
@@ -72,7 +72,7 @@ class InfisicalApi(val http: InfisicalHttp) {
      * `POST /api/v4/secrets/{name}`: creates a shared secret in the folder of [scope]. With a change policy on the folder,
      * Infisical opens a change request instead (answered with `approval`).
      */
-    fun createSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
+    fun createSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
         val body = JsonObject().apply {
             addProperty("projectId", scope.projectId)
             addProperty("environment", scope.environment)
@@ -91,7 +91,30 @@ class InfisicalApi(val http: InfisicalHttp) {
             }
         }
         val o = runCatching { response.json().obj() }.getOrNull()
-        return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) CreateOutcome.APPROVAL_REQUESTED else CreateOutcome.CREATED
+        return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
+    }
+
+    /** `PATCH /api/v4/secrets/{name}`: changes the value (and the comment, when given) of a shared secret. */
+    fun updateSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+        val body = JsonObject().apply {
+            addProperty("projectId", scope.projectId)
+            addProperty("environment", scope.environment)
+            addProperty("secretPath", scope.path)
+            addProperty("secretValue", value.reveal())
+            comment?.let { addProperty("secretComment", it) }
+            addProperty("type", "shared")
+        }
+        val response = http.patchJson("/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Changing $key in ${scope.environment}:${scope.path}")
+            throw if (failure.kind == Kind.FORBIDDEN) {
+                SecretProviderException(Kind.FORBIDDEN, "Not allowed to change secrets in ${scope.environment}:${scope.path}")
+            } else {
+                failure
+            }
+        }
+        val o = runCatching { response.json().obj() }.getOrNull()
+        return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
     }
 
     /** `POST /api/v1/projects/{id}/environments`: creates an environment. */

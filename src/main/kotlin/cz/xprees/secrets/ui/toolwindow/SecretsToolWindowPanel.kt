@@ -1,6 +1,7 @@
 package cz.xprees.secrets.ui.toolwindow
 
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
+import cz.xprees.secrets.ui.secrets.EditSecretDialog
 import cz.xprees.secrets.ui.secrets.NewEnvironmentDialog
 import cz.xprees.secrets.ui.secrets.NewSecretDialog
 
@@ -89,7 +90,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
 
         val actions = DefaultActionGroup(
-            RefreshAction(), NewSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyKeyAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            RefreshAction(), NewSecretAction(), EditSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyKeyAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
             CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
@@ -409,6 +410,34 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
     }
 
+    /** False (with the reason as the description) while *Read-only* is on in the settings. */
+    private fun writable(e: AnActionEvent): Boolean {
+        val allowed = SecretsService.getInstance().writesAllowed
+        if (!allowed) e.presentation.description = SecretsBundle.message("action.read.only.disabled")
+        return allowed
+    }
+
+    /** Changes the value and comment of the selected secret (only one defined in that folder: not imported, not personal). */
+    private inner class EditSecretAction : PanelAction(SecretsBundle.message("action.edit.secret"), AllIcons.Actions.EditSource) {
+        private fun editable(node: SecretNode?): Boolean =
+            node != null && !node.entry.valueHidden && node.entry.origin == SecretOrigin.LOCAL
+
+        override fun update(e: AnActionEvent) {
+            val node = selectedSecret()
+            e.presentation.isEnabled = editable(node) && writable(e)
+            if (node != null && !editable(node)) e.presentation.description = SecretsBundle.message("edit.secret.not.editable")
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = selectedSecret()?.takeIf(::editable) ?: return
+            // The secret may live in a subfolder of a recursive listing: change it where it is defined
+            val scope = SecretScope(node.scope.projectId, node.entry.environment.ifBlank { node.scope.environment }, node.entry.path)
+            EditSecretDialog(project, node.connection, scope, node.entry) { outcome ->
+                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(SecretLocation(node.connection.id, scope.projectId, node.scope.environment, node.scope.path, node.entry.key))
+            }.show()
+        }
+    }
+
     /** Creates a secret in the selected environment or folder (or the bound one). */
     private inner class NewSecretAction : PanelAction(SecretsBundle.message("action.new.secret"), AllIcons.General.Add) {
         private fun context(): Pair<ProjectNode, SecretScope?>? {
@@ -427,7 +456,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = context() != null
+            e.presentation.isEnabled = context() != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {
@@ -439,7 +468,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 environment = scope?.environment ?: binding?.environment ?: environments.firstOrNull() ?: return,
                 path = scope?.path ?: binding?.path ?: "/",
             ) { location, outcome ->
-                if (outcome == CreateOutcome.CREATED) refreshAndSelect(location)
+                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(location)
             }.show()
         }
     }
@@ -449,7 +478,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         private fun projectNode(): ProjectNode? = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)
 
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = projectNode() != null
+            e.presentation.isEnabled = projectNode() != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {

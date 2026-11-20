@@ -70,7 +70,8 @@ data class SecretReference(
             connectionId?.let { add("connection" to it) }
         }
         if (query.isNotEmpty()) {
-            append('?').append(query.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, StandardCharsets.UTF_8)}" })
+            // Slashes stay readable (`?path=/backend`); the parser takes them either way
+            append('?').append(query.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, StandardCharsets.UTF_8).replace("%2F", "/")}" })
         }
     }
 

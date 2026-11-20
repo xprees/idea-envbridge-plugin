@@ -7,7 +7,7 @@ import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.KeysIndex
@@ -62,7 +62,7 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
         val service = SecretsService.getInstance()
         val scope = SecretScope("p1", "dev", "/")
         service.secrets(connection, scope) // cached before the creation
-        assertThat(service.createSecret(connection, scope, "STRIPE_KEY", SecretValue("sk_test"), "from .env")).isEqualTo(CreateOutcome.CREATED)
+        assertThat(service.createSecret(connection, scope, "STRIPE_KEY", SecretValue("sk_test"), "from .env")).isEqualTo(WriteOutcome.APPLIED)
         val request = mock.requests.last { it.method == "POST" }
         assertThat(request.path).isEqualTo("/api/v4/secrets/STRIPE_KEY")
         assertThat(request.body).contains("\"projectId\":\"p1\"").contains("\"environment\":\"dev\"").contains("\"secretPath\":\"/\"")
@@ -78,7 +78,7 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
             .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("already exist")
 
         mock.requireApproval = true
-        assertThat(service.createSecret(connection, scope, "NEEDS_REVIEW", SecretValue("x"))).isEqualTo(CreateOutcome.APPROVAL_REQUESTED)
+        assertThat(service.createSecret(connection, scope, "NEEDS_REVIEW", SecretValue("x"))).isEqualTo(WriteOutcome.APPROVAL_REQUESTED)
 
         val oauth = connection.copy(id = "oauth-${System.nanoTime()}", authMethodId = InfisicalAuthMethods.OAUTH)
         val before = mock.requests.size
@@ -96,9 +96,59 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
         assertThat(SecretLocation.decode("garbage")).isNull()
     }
 
-    fun `test the key chooser offers the same and similar names first`() {
-        val ranked = DotEnvLines.rankKeys("DATABASE_PASSWORD", listOf("API_KEY", "DB_PASSWORD", "DATABASE_URL", "DATABASE_PASSWORD", "ZED"))
-        assertThat(ranked).containsExactly("DATABASE_PASSWORD", "DATABASE_URL", "DB_PASSWORD", "API_KEY", "ZED")
+    fun `test the key chooser offers every folder, same and similar names first, the bound folder before others`() {
+        val choices = listOf(
+            DotEnvLines.KeyChoice("API_KEY", "/"),
+            DotEnvLines.KeyChoice("DB_PASSWORD", "/backend"),
+            DotEnvLines.KeyChoice("DATABASE_URL", "/"),
+            DotEnvLines.KeyChoice("DATABASE_PASSWORD", "/backend/api"),
+            DotEnvLines.KeyChoice("DATABASE_PASSWORD", "/"),
+            DotEnvLines.KeyChoice("ZED", "/"),
+        )
+        val ranked = DotEnvLines.rankChoices("DATABASE_PASSWORD", "/", choices).map { "${it.key}@${it.path}" }
+        assertThat(ranked).containsExactly(
+            "DATABASE_PASSWORD@/", "DATABASE_PASSWORD@/backend/api", "DATABASE_URL@/", "DB_PASSWORD@/backend", "API_KEY@/", "ZED@/",
+        )
+        // The listing the chooser loads: the whole environment from the root, subfolders included, with their folders
+        val everywhere = SecretsService.getInstance().secrets(connection, SecretScope("p1", "dev", "/", recursive = true))
+        assertThat(everywhere.map { "${it.key}@${it.path}" }).contains("DB_PASSWORD@/", "BACKEND_ONLY@/backend")
+    }
+
+    fun `test secrets are changed, change requests and read-only connections handled`() {
+        val service = SecretsService.getInstance()
+        val scope = SecretScope("p1", "dev", "/")
+        assertThat(service.updateSecret(connection, scope, "API_KEY", SecretValue("new-key"), "rotated")).isEqualTo(WriteOutcome.APPLIED)
+        val request = mock.requests.last { it.method == "PATCH" }
+        assertThat(request.path).isEqualTo("/api/v4/secrets/API_KEY")
+        assertThat(request.body).contains("\"secretValue\":\"new-key\"").contains("\"secretComment\":\"rotated\"").contains("\"type\":\"shared\"")
+        assertThat(mock.updated).containsEntry("dev:/:API_KEY", "new-key")
+        // No comment given: the comment is left as it is
+        service.updateSecret(connection, scope, "API_KEY", SecretValue("v2"))
+        assertThat(mock.requests.last { it.method == "PATCH" }.body).doesNotContain("secretComment")
+
+        assertThatThrownBy { service.updateSecret(connection, scope, "MISSING", SecretValue("x")) }.isInstanceOf(SecretProviderException::class.java)
+        mock.requireApproval = true
+        assertThat(service.updateSecret(connection, scope, "API_KEY", SecretValue("x"))).isEqualTo(WriteOutcome.APPROVAL_REQUESTED)
+        val oauth = connection.copy(id = "oauth-${System.nanoTime()}", authMethodId = InfisicalAuthMethods.OAUTH)
+        assertThatThrownBy { service.updateSecret(oauth, scope, "API_KEY", SecretValue("x")) }.hasMessageContaining("read-only")
+    }
+
+    fun `test read-only in the settings stops every write before it is sent`() {
+        val service = SecretsService.getInstance()
+        val scope = SecretScope("p1", "dev", "/")
+        SecretsAppSettings.getInstance().state.readOnly = true
+        try {
+            assertThat(service.writesAllowed).isFalse()
+            val before = mock.requests.size
+            assertThatThrownBy { service.createSecret(connection, scope, "NEW", SecretValue("x")) }.hasMessageContaining("Read-only")
+            assertThatThrownBy { service.updateSecret(connection, scope, "API_KEY", SecretValue("x")) }.hasMessageContaining("Read-only")
+            assertThatThrownBy { service.createEnvironment(connection, "p1", "QA", "qa") }.hasMessageContaining("Read-only")
+            assertThat(mock.requests).hasSize(before)
+            // Reading is unaffected
+            assertThat(service.secrets(connection, scope, fresh = true).map { it.key }).contains("API_KEY")
+        } finally {
+            SecretsAppSettings.getInstance().state.readOnly = false
+        }
     }
 
     fun `test the tool window loads its way down to a secret and selects it`() {

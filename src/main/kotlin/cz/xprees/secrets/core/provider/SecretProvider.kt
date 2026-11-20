@@ -97,19 +97,26 @@ interface SecretsClient {
      * action. Fails with [SecretProviderException.Kind.CONFIGURATION] when this connection can't write (e.g. a read-only
      * token) or the secret already exists.
      */
-    fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String = ""): CreateOutcome =
+    fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create secrets")
+
+    /**
+     * Changes the shared secret [key] in the folder of [scope]: its [value] and, when not null, its [comment]. Same rules as
+     * [createSecret]: explicit user action only, CONFIGURATION when this connection can't write.
+     */
+    fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't change secrets")
 
     /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
     fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create environments")
 }
 
-/** What [SecretsClient.createSecret] did. */
-enum class CreateOutcome {
-    CREATED,
+/** What a write ([SecretsClient.createSecret], [SecretsClient.updateSecret]) did. */
+enum class WriteOutcome {
+    APPLIED,
 
-    /** The folder has a change policy: a change request was opened and the secret exists once it is approved. */
+    /** The folder has a change policy: a change request was opened and the change applies once it is approved. */
     APPROVAL_REQUESTED,
 }
 

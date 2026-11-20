@@ -15,7 +15,7 @@ import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.KeysIndex
 import cz.xprees.secrets.core.resolve.ProdGuard
@@ -39,7 +39,7 @@ class NewSecretDialog(
     path: String,
     key: String = "",
     value: String = "",
-    private val onCreated: (SecretLocation, CreateOutcome) -> Unit = { _, _ -> },
+    private val onCreated: (SecretLocation, WriteOutcome) -> Unit = { _, _ -> },
 ) : DialogWrapper(project) {
     private val keyField = JBTextField(key, 30)
     private val valueField = JBPasswordField().apply { text = value; columns = 30 }
@@ -93,7 +93,7 @@ class NewSecretDialog(
         val value = SecretValue(String(chars))
         Arrays.fill(chars, ' ')
         val outcome = try {
-            ProgressManager.getInstance().runProcessWithProgressSynchronously<CreateOutcome, SecretProviderException>(
+            ProgressManager.getInstance().runProcessWithProgressSynchronously<WriteOutcome, SecretProviderException>(
                 { SecretsService.getInstance().createSecret(connection, scope, key, value, commentField.text.trim()) },
                 SecretsBundle.message("new.secret.creating", key),
                 true,
@@ -107,7 +107,7 @@ class NewSecretDialog(
         val where = "${scope.environment}:${scope.path}"
         SecretsNotifications.info(
             project,
-            SecretsBundle.message(if (outcome == CreateOutcome.CREATED) "new.secret.created" else "new.secret.approval", key, where),
+            SecretsBundle.message(if (outcome == WriteOutcome.APPLIED) "new.secret.created" else "new.secret.approval", key, where),
         )
         super.doOKAction()
         onCreated(SecretLocation(connection.id, projectId, scope.environment, scope.path, key), outcome)

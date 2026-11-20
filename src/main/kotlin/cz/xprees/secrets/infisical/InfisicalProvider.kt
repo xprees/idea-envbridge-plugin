@@ -6,7 +6,7 @@ import cz.xprees.secrets.core.provider.SecretProviderException
 
 import cz.xprees.secrets.core.model.SecretValue
 
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderProject
@@ -127,9 +127,14 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
 
     override fun listSecrets(scope: SecretScope): List<SecretEntry> = auth.withToken { api.listSecrets(it, scope) }
 
-    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
         checkWritable("secrets")
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
+    }
+
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+        checkWritable("secrets")
+        return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
     }
 
     override fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment {
@@ -143,7 +148,7 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         throw SecretProviderException(
             SecretProviderException.Kind.CONFIGURATION,
             "OAuth connections are read-only (scope ${InfisicalAuthMethods.OAUTH_SCOPE}). Use browser sign-in or a machine identity " +
-                "with write permission to create $what.",
+                "with write permission to create or change $what.",
         )
     }
 }

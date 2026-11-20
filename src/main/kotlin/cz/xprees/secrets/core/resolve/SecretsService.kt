@@ -4,7 +4,7 @@ import cz.xprees.secrets.core.model.ProviderEnvironment
 
 import cz.xprees.secrets.core.model.SecretValue
 
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -49,12 +49,35 @@ class SecretsService {
     fun folders(connection: SecretConnection, scope: SecretScope): List<SecretFolder> = client(connection).listFolders(scope)
 
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
-    fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): CreateOutcome =
-        client(connection).createSecret(scope, key, value, comment).also { invalidate(connection.id) }
+    fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome {
+        checkWritesAllowed()
+        return client(connection).createSecret(scope, key, value, comment).also { invalidate(connection.id) }
+    }
+
+    /** Changes a secret (see [SecretsClient.updateSecret]) and forgets the connection's cached values. Off the EDT. */
+    fun updateSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome {
+        checkWritesAllowed()
+        return client(connection).updateSecret(scope, key, value, comment).also { invalidate(connection.id) }
+    }
+
+    /** Whether writing to secret managers is allowed (not turned off with *Read-only* in the settings). */
+    val writesAllowed: Boolean get() = !SecretsAppSettings.getInstance().state.readOnly
+
+    /** Every write passes here, so *Read-only* holds whatever UI asked for it. */
+    private fun checkWritesAllowed() {
+        if (!writesAllowed) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "Read-only is on (Settings › Tools › EnvBridge): this IDE doesn't create or change secrets and environments",
+            )
+        }
+    }
 
     /** Creates an environment (see [SecretsClient.createEnvironment]) and forgets the connection's cached projects. Off the EDT. */
-    fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment =
-        client(connection).createEnvironment(projectId, name, slug).also { invalidate(connection.id) }
+    fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment {
+        checkWritesAllowed()
+        return client(connection).createEnvironment(projectId, name, slug).also { invalidate(connection.id) }
+    }
 
     /** Forgets cached values of one connection (after sign-in/out) or of all. */
     fun invalidate(connectionId: String? = null) {

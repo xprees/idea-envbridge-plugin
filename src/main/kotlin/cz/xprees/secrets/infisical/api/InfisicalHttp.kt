@@ -55,6 +55,38 @@ class InfisicalHttp(val baseUrl: String) {
 
     fun delete(path: String, bearer: String? = null): Response = send("DELETE", url(path), bearer = bearer)
 
+    /**
+     * `PATCH` with a JSON body. [HttpURLConnection] (under [HttpRequests]) can't send PATCH, so this one uses the JDK's
+     * HttpClient, set up like the rest: the IDE's proxy (the default [java.net.ProxySelector] the IDE installs) and its
+     * trusted certificates, no redirects, the same timeouts.
+     */
+    fun patchJson(path: String, json: String, bearer: String? = null): Response {
+        val target = url(path)
+        val client = java.net.http.HttpClient.newBuilder()
+            .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+            .connectTimeout(java.time.Duration.ofMillis(CONNECT_TIMEOUT_MS.toLong()))
+            .proxy(java.net.ProxySelector.getDefault() ?: java.net.ProxySelector.of(null))
+            .apply { runCatching { com.intellij.util.net.ssl.CertificateManager.getInstance().sslContext }.getOrNull()?.let(::sslContext) }
+            .build()
+        val request = java.net.http.HttpRequest.newBuilder(java.net.URI.create(target))
+            .timeout(java.time.Duration.ofMillis(READ_TIMEOUT_MS.toLong()))
+            .header("Accept", "application/json")
+            .header("Content-Type", HttpRequests.JSON_CONTENT_TYPE)
+            .apply { bearer?.let { header("Authorization", "Bearer $it") } }
+            .method("PATCH", java.net.http.HttpRequest.BodyPublishers.ofString(json))
+            .build()
+        return try {
+            val response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+            Response(response.statusCode(), response.body().orEmpty(), response.headers().map())
+        } catch (e: IOException) {
+            LOG.debug("Request to ${redact(target)} failed: ${e.javaClass.simpleName}")
+            throw SecretProviderException(Kind.NETWORK, "Cannot reach $baseUrl: ${e.message ?: e.javaClass.simpleName}", e)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw SecretProviderException(Kind.CANCELLED, "Cancelled", e)
+        }
+    }
+
     fun url(path: String, query: Map<String, String?> = emptyMap()): String = buildString {
         append(baseUrl.trimEnd('/'))
         append(if (path.startsWith('/')) path else "/$path")

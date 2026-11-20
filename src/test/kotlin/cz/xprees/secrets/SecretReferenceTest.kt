@@ -85,10 +85,12 @@ class SecretReferenceTest {
             "infisical://staging/backend/**",
             "infisical://KEY?project=abc&connection=Work",
             "infisical://KEY?path=%2Fbackend",
+            "infisical://KEY?path=/backend/api",
         )) {
             val ref = parse(text)!!
             assertThat(parse(ref.format())).describedAs(text).isEqualTo(ref)
         }
         assertThat(parse("infisical://prod/backend/KEY")!!.format()).isEqualTo("infisical://prod/backend/KEY")
+        assertThat(SecretReference("infisical", "KEY", path = "/backend/api").format()).isEqualTo("infisical://KEY?path=/backend/api")
     }
 }

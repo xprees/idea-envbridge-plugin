@@ -35,6 +35,9 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
 
         /** Whether secret values are masked in Run and Debug consoles. */
         var maskConsoleOutput by property(true)
+
+        /** Never write to secret managers from this IDE: creating and changing secrets and environments is turned off. */
+        var readOnly by property(false)
     }
 
     class ConnectionState : BaseState() {

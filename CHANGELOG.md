@@ -45,6 +45,12 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- **Edit Secret…** in the Secrets tool window: value (filled in masked) and comment, through `PATCH /api/v4/secrets/{name}`;
+  prod guard and change requests as for creating
+- **Read-only** setting: turns off creating and editing secrets and environments; every write is refused before it is sent
+- *Bind to Infisical secret…* offers the secrets of every folder of the bound environment, root included, with their folder;
+  keys from another folder are bound as `infisical://KEY?path=/folder`
+- References keep slashes readable in `?path=` (`infisical://KEY?path=/backend`)
 - *Copy Key* in the Secrets tool window (toolbar and context menu); several selected secrets give one key per line
 - **Load Infisical Secrets into This Terminal** (terminal toolbar and context menu, *Tools* menu): sets the secrets in the shell of
   the current tab, in its own syntax: PowerShell (no script execution needed), cmd, bash / zsh / sh (Git Bash and WSL paths

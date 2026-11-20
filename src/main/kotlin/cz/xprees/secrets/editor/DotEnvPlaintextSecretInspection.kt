@@ -144,17 +144,23 @@ object DotEnvLines {
         }.toList()
     }
 
+    /** A secret the key chooser offers: its key, the folder it is in, and its comment. */
+    data class KeyChoice(val key: String, val path: String, val comment: String = "")
+
     /**
-     * [keys] in the order a chooser offers them for the variable [name]: the same name, then names sharing words with it
-     * (most shared first), then the rest alphabetically.
+     * [choices] in the order the chooser offers them for the variable [name]: the same name, then names sharing words with
+     * it (most shared first); within that, the bound folder ([boundPath]) first, then shallower folders, then by key.
      */
-    fun rankKeys(name: String, keys: Collection<String>): List<String> {
+    fun rankChoices(name: String, boundPath: String, choices: Collection<KeyChoice>): List<KeyChoice> {
         fun words(s: String) = s.split('_', '-', '.').filter { it.isNotEmpty() }.map(String::lowercase).toSet()
         val wanted = words(name)
-        return keys.sortedWith(
-            compareByDescending<String> { it.equals(name, ignoreCase = true) }
-                .thenByDescending { (words(it) intersect wanted).size }
-                .thenBy { it.lowercase() },
+        return choices.sortedWith(
+            compareByDescending<KeyChoice> { it.key.equals(name, ignoreCase = true) }
+                .thenByDescending { (words(it.key) intersect wanted).size }
+                .thenByDescending { it.path == boundPath }
+                .thenBy { it.path.count { c -> c == '/' } - (if (it.path == "/") 1 else 0) }
+                .thenBy { it.key.lowercase() }
+                .thenBy { it.path },
         )
     }
 

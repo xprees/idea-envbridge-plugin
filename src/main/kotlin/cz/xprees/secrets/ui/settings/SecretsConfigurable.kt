@@ -114,6 +114,10 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                 row {
                     checkBox(SecretsBundle.message("settings.mask.console")).bindSelected(app.state::maskConsoleOutput)
                 }
+                row {
+                    checkBox(SecretsBundle.message("settings.read.only")).bindSelected(app.state::readOnly)
+                        .comment(SecretsBundle.message("settings.read.only.comment"))
+                }
             }
             group(SecretsBundle.message("settings.overrides")) {
                 row { cell(overridesPanel()).align(AlignX.FILL) }

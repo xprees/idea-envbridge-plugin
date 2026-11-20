@@ -17,6 +17,9 @@ class MockInfisical : AutoCloseable {
     /** Secrets created through the API: "env:path:KEY" -> value. Listings include them. */
     val created = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Values changed through the API: "env:path:KEY" -> new value. */
+    val updated = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** Environments created through the API: slug -> name. The project listing includes them. */
     val createdEnvironments = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -73,6 +76,16 @@ class MockInfisical : AutoCloseable {
             created["$env:$path:$key"] = json.get("secretValue").asString
             return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
         }
+        if (request.method == "PATCH" && request.path.startsWith("/api/v4/secrets/")) {
+            val key = URLDecoder.decode(request.path.removePrefix("/api/v4/secrets/"), StandardCharsets.UTF_8)
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val env = json.get("environment").asString
+            val path = json.get("secretPath").asString
+            if (key == "MISSING") return respond(exchange, 404, """{"message":"Secret not found"}""")
+            if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a2","status":"open"}}""")
+            updated["$env:$path:$key"] = json.get("secretValue").asString
+            return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
+        }
         if (request.method == "POST" && request.path == "/api/v1/projects/p1/environments") {
             val json = com.google.gson.JsonParser.parseString(body).asJsonObject
             val slug = json.get("slug").asString
@@ -95,7 +108,8 @@ class MockInfisical : AutoCloseable {
                 val env = query["environment"]
                 val path = query["secretPath"]
                 val secrets = when {
-                    env == "dev" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"dev-pass","type":"shared"},{"secretKey":"API_KEY","secretValue":"dev-key","type":"shared"},{"secretKey":"ConnectionStrings__Default","secretValue":"Server=db;Password=dev","type":"shared"}"""
+                    env == "dev" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"dev-pass","type":"shared"},{"secretKey":"API_KEY","secretValue":"dev-key","type":"shared"},{"secretKey":"ConnectionStrings__Default","secretValue":"Server=db;Password=dev","type":"shared"}""" +
+                        (if (query["recursive"] == "true") """,{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared","secretPath":"/backend"}""" else "")
                     env == "prod" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"prod-pass","type":"shared"},{"secretKey":"PROD_ONLY","secretValue":"p","type":"shared"}"""
                     env == "dev" && path == "/backend" -> """{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared"}"""
                     else -> return respond(exchange, 404, """{"message":"Folder not found"}""")

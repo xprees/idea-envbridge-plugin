@@ -89,6 +89,9 @@ class SecretsPlatformTest : BasePlatformTestCase() {
 
     fun `test wrong machine identity secret is a configuration error`() {
         mock.clientSecret = "rotated"
+        // setUp's binding change makes KeysIndex sign in in the background with the old secret; without this, a session it
+        // stored would answer the call below and nothing would need the (now wrong) secret
+        mock.expireTokens()
         assertThatThrownBy { SecretsService.getInstance().client(connection).listProjects() }
             .isInstanceOf(SecretProviderException::class.java)
             .extracting { (it as SecretProviderException).kind }.isEqualTo(SecretProviderException.Kind.CONFIGURATION)
