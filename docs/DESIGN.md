@@ -182,6 +182,68 @@ Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`,
 - Environment coverage and comparison: which environments define a key, and a keys-only diff of two environments.
 - Personal overrides: Infisical personal overrides are honoured (`includePersonalOverrides`).
 
+## Second provider: HashiCorp Vault and OpenBao
+
+Chosen next (over 1Password, Doppler and the cloud managers) for reach: Vault is the enterprise default and OpenBao, its
+open-source fork under the Linux Foundation, shares its API, so one provider covers both. No good JetBrains integration
+exists for either. 1Password is the likely provider after it.
+
+**Scope, first version:** reading and injecting (sign-in, tool window, references in run configurations, terminal, `.env`,
+editor hints). Creating, editing, moving and deleting follow later; until then the write actions are off for Vault
+connections, as with *Read-only*. Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
+dynamic secrets are later candidates.
+
+### Model mapping
+
+| EnvBridge | Vault / OpenBao |
+|---|---|
+| Project | A KV v2 mount (`secret`, `kv`, …) |
+| Environment | A namespace (`root` when the instance has none, or the connection's namespace) |
+| Folder | A path below the mount (`app/`, `app/db`) |
+| Secret (key = value) | A field of a secret (`password` in `secret/app/db`) |
+
+A secret path holds several fields, so a path is shown as a folder whose entries are its fields.
+
+### References
+
+`vault://<mount>/<path…>#<field>`, as Vault users write paths (`vault kv get secret/app/db`):
+
+```
+vault://secret/app/db#password        field password of secret/app/db
+vault://secret/app/db#*               every field of that secret (scope import)
+vault://secret/app/db#password?namespace=team-a&connection=<name>
+```
+
+The mount is always written, so a reference alone says which secret it is; the namespace comes from the binding unless
+given. Each provider now brings its own reference grammar (`SecretProvider.referenceGrammar`); `infisical://` keeps its
+`env:folder/KEY` form.
+
+### API (KV v2, namespaces via `X-Vault-Namespace`, token via `X-Vault-Token`)
+
+| Purpose | Call |
+|---|---|
+| Mounts the token can use | `GET /v1/sys/internal/ui/mounts` (KV v2 only); no compatibility promise, so mounts can also be listed in the connection |
+| Folders and secrets of a path | `LIST /v1/<mount>/metadata/<path>` (`GET …?list=true`); keys ending in `/` are folders |
+| Fields of a secret | `GET /v1/<mount>/data/<path>` → `data.data`; non-string values are passed as JSON |
+| Check / renew the token | `GET /v1/auth/token/lookup-self`, `POST /v1/auth/token/renew-self` |
+
+### Sign-in (browser first; tokens and secrets only in the IDE's password storage)
+
+| Method | Flow |
+|---|---|
+| **OIDC (browser)** | `POST /v1/auth/<mount>/oidc/auth_url` with the role and `redirect_uri` `http://localhost:8250/oidc/callback` (the Vault CLI's, so roles already allowing the CLI work), open the system browser, receive `code` and `state` on the hardened loopback listener, check `state`, then `GET /v1/auth/<mount>/oidc/callback?code&state` → `auth.client_token` |
+| Token | A pasted token (or the Vault CLI's `~/.vault-token`), checked with `lookup-self` |
+| AppRole | `POST /v1/auth/<mount>/login` with `role_id` and `secret_id` (the secret in password storage) |
+| Userpass / LDAP | `POST /v1/auth/<mount>/login/<username>` with the password |
+
+Auth mount paths default to the method names (`oidc`, `approle`, `userpass`, `ldap`) and can be changed. Renewable tokens
+are renewed before they expire; otherwise the user signs in again (the launch fails closed, as with Infisical).
+
+### Tests
+
+A mock Vault server (like `MockInfisical`): mounts, LIST, KV v2 reads, namespaces, each auth method including the OIDC
+round trip, expired tokens and permission errors; the grammar round-trips; launches resolving `vault://` references.
+
 ## Threat model (summary)
 
 | Threat | Mitigation |
