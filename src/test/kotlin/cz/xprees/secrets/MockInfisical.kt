@@ -103,7 +103,11 @@ class MockInfisical : AutoCloseable {
                 )
             }
 
-            "/api/v2/folders" -> respond(exchange, 200, """{"folders":[{"id":"f1","name":"backend"}]}""")
+            "/api/v2/folders" -> when (query["path"]) {
+                "/", null -> respond(exchange, 200, """{"folders":[{"id":"f1","name":"backend"}]}""")
+                "/backend" -> respond(exchange, 200, """{"folders":[{"id":"f2","name":"api"}]}""")
+                else -> respond(exchange, 200, """{"folders":[]}""")
+            }
             "/api/v4/secrets" -> {
                 val env = query["environment"]
                 val path = query["secretPath"]

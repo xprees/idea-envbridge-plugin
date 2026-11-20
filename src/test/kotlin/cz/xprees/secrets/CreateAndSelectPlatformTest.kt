@@ -11,6 +11,7 @@ import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.KeysIndex
+import cz.xprees.secrets.core.resolve.ProdGuard
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.core.settings.SecretsAppSettings
@@ -196,5 +197,30 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
         val secrets = (0 until panel.tree.rowCount).map { panel.tree.getPathForRow(it) }.filter { it.lastPathComponent is SecretNode }
         panel.tree.selectionPaths = secrets.toTypedArray()
         assertThat(panel.selectedKeysText()!!.lines()).contains("DB_PASSWORD", "API_KEY").noneMatch { it.contains("dev-pass") }
+    }
+
+    fun `test folder suggestions walk the environment from the root`() {
+        assertThat(SecretsService.getInstance().allFolders(connection, "p1", "dev")).containsExactly("/", "/backend", "/backend/api")
+    }
+
+    fun `test production is the project's pick when set, otherwise the name pattern, and the prompt can be turned off`() {
+        val settings = ProjectSecretsSettings.getInstance(project)
+        val app = SecretsAppSettings.getInstance().state
+        try {
+            assertThat(ProdGuard.isProduction(project, "prod")).isTrue()
+            assertThat(ProdGuard.isProduction(project, "main")).isFalse()
+            // Teams that call production "main" and "eu-live"
+            settings.update { productionEnvironments = "main, eu-live" }
+            assertThat(ProdGuard.isProduction(project, "main")).isTrue()
+            assertThat(ProdGuard.isProduction(project, "eu-live")).isTrue()
+            assertThat(ProdGuard.isProduction(project, "prod")).isFalse()
+            assertThat(ProdGuard.needsConfirmation(project, "main")).isTrue()
+            app.prodGuardEnabled = false
+            assertThat(ProdGuard.needsConfirmation(project, "main")).isFalse()
+            assertThat(ProdGuard.isProduction(project, "main")).describedAs("still marked").isTrue()
+        } finally {
+            settings.update { productionEnvironments = null }
+            app.prodGuardEnabled = true
+        }
     }
 }

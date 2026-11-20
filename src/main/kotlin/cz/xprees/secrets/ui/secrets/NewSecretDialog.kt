@@ -1,5 +1,11 @@
 package cz.xprees.secrets.ui.secrets
 
+import com.intellij.openapi.application.ModalityState
+
+import com.intellij.openapi.application.ApplicationManager
+
+import com.intellij.ui.TextFieldWithAutoCompletion
+
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -39,6 +45,7 @@ class NewSecretDialog(
     path: String,
     key: String = "",
     value: String = "",
+    comment: String = "",
     private val onCreated: (SecretLocation, WriteOutcome) -> Unit = { _, _ -> },
 ) : DialogWrapper(project) {
     private val keyField = JBTextField(key, 30)
@@ -46,11 +53,14 @@ class NewSecretDialog(
     private val showValue = JBCheckBox(SecretsBundle.message("new.secret.show")).apply {
         addActionListener { valueField.echoChar = if (isSelected) 0.toChar() else '•' }
     }
-    private val commentField = JBTextField(30)
+    private val commentField = JBTextField(comment, 30)
     private val environmentCombo = ComboBox((environments.ifEmpty { listOf(environment) }).toTypedArray()).apply { selectedItem = environment }
-    private val pathField = JBTextField(path, 30)
+    // Completion (Ctrl+Space, and as you type) of the environment's folders, loaded in the background
+    private val pathField = TextFieldWithAutoCompletion.create(project, listOf(path), true, path)
 
     init {
+        environmentCombo.addActionListener { loadFolders() }
+        loadFolders()
         title = SecretsBundle.message("new.secret.title")
         setOKButtonText(SecretsBundle.message("new.secret.create"))
         init()
@@ -64,8 +74,19 @@ class NewSecretDialog(
         }
         row(SecretsBundle.message("new.secret.comment")) { cell(commentField).align(AlignX.FILL) }
         row(SecretsBundle.message("new.secret.environment")) { cell(environmentCombo) }
-        row(SecretsBundle.message("new.secret.folder")) { cell(pathField).align(AlignX.FILL) }
+        row(SecretsBundle.message("new.secret.folder")) { cell(pathField).align(AlignX.FILL).comment(SecretsBundle.message("new.secret.folder.comment")) }
         row { comment(SecretsBundle.message("new.secret.note", connection.name)) }
+    }
+
+    /** Offers the folders of the selected environment (a stale answer for another environment is dropped). */
+    private fun loadFolders() {
+        val environment = environmentCombo.selectedItem as? String ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val folders = runCatching { SecretsService.getInstance().allFolders(connection, projectId, environment) }.getOrNull() ?: return@executeOnPooledThread
+            ApplicationManager.getApplication().invokeLater({
+                if (environmentCombo.selectedItem == environment) pathField.setVariants(folders)
+            }, ModalityState.any())
+        }
     }
 
     override fun getPreferredFocusedComponent(): JComponent = if (keyField.text.isEmpty()) keyField else valueField
@@ -80,7 +101,7 @@ class NewSecretDialog(
         val key = keyField.text.trim()
         val environment = environmentCombo.selectedItem as? String ?: return
         val scope = SecretScope(projectId, environment, SecretScope.normalizePath(pathField.text.trim()))
-        if (ProdGuard.matches(environment) && Messages.showYesNoDialog(
+        if (ProdGuard.needsConfirmation(project, environment) && Messages.showYesNoDialog(
                 project,
                 SecretsBundle.message("new.secret.prod.message", key, environment),
                 SecretsBundle.message("prod.guard.title"),

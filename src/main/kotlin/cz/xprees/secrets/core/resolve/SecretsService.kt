@@ -48,6 +48,18 @@ class SecretsService {
 
     fun folders(connection: SecretConnection, scope: SecretScope): List<SecretFolder> = client(connection).listFolders(scope)
 
+    /** Every folder of an environment, root first, walking [maxDepth] levels down (at most [maxCount]). Off the EDT. */
+    fun allFolders(connection: SecretConnection, projectId: String, environment: String, maxDepth: Int = 4, maxCount: Int = 200): List<String> {
+        val found = mutableListOf("/")
+        var level = listOf("/")
+        repeat(maxDepth) {
+            if (level.isEmpty() || found.size >= maxCount) return@repeat
+            level = level.flatMap { parent -> folders(connection, SecretScope(projectId, environment, parent)).map { it.path } }
+            found += level
+        }
+        return found.distinct().take(maxCount)
+    }
+
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
     fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome {
         checkWritesAllowed()

@@ -138,6 +138,8 @@ class DotEnvExtractToSecretIntention : IntentionAction {
         NewSecretDialog(
             project, binding.connection, projectId, snapshot.environments.keys.toList(),
             environment = binding.environment, path = binding.path, key = line.name, value = line.value,
+            // The comment above the variable, if any, describes it: prefill it as the secret's comment
+            comment = DotEnvLines.commentAbove(editor!!.document.text, line),
         ) { location, outcome ->
             // Bind only to a secret that exists; a pending change request would make launches fail
             if (outcome != WriteOutcome.APPLIED || location.key == null) return@NewSecretDialog

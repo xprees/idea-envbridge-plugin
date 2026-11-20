@@ -44,7 +44,7 @@ class RunWithEnvironmentAction : DumbAwareAction(AllIcons.Actions.Execute) {
         if (environments.isEmpty()) return
         val popup = JBPopupFactory.getInstance().createListPopup(
             object : BaseListPopupStep<String>(SecretsBundle.message("run.with.environment.title", settings.name), environments) {
-                override fun getIconFor(value: String): Icon? = if (ProdGuard.matches(value)) AllIcons.General.Warning else null
+                override fun getIconFor(value: String): Icon? = if (ProdGuard.isProduction(project, value)) AllIcons.General.Warning else null
 
                 override fun isSpeedSearchEnabled() = true
 

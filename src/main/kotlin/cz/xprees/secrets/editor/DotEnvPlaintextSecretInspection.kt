@@ -144,6 +144,26 @@ object DotEnvLines {
         }.toList()
     }
 
+    /**
+     * The comment block directly above [line] in [text]: consecutive `#` lines without a blank line in between, `#` and
+     * surrounding spaces removed, joined with spaces. Commented-out assignments (`# OLD=1`) end the block. Empty when none.
+     */
+    fun commentAbove(text: String, line: Line): String {
+        val lineStart = text.lastIndexOf('\n', line.afterEquals.startOffset - 1) + 1
+        val above = text.substring(0, lineStart).removeSuffix("\n").removeSuffix("\r").split('\n')
+        val block = ArrayDeque<String>()
+        for (raw in above.asReversed()) {
+            val trimmed = raw.trim()
+            if (!trimmed.startsWith("#")) break
+            val content = trimmed.trimStart('#').trim()
+            if (ASSIGNMENT.matches(content)) break
+            block.addFirst(content)
+        }
+        return block.filter { it.isNotEmpty() }.joinToString(" ")
+    }
+
+    private val ASSIGNMENT = Regex("""(?:export\s+)?[A-Za-z_][A-Za-z0-9_.\-]*\s*=.*""")
+
     /** A secret the key chooser offers: its key, the folder it is in, and its comment. */
     data class KeyChoice(val key: String, val path: String, val comment: String = "")
 

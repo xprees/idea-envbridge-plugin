@@ -45,6 +45,10 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- Prod guard: can be turned off (*Ask before secrets from production environments are used or changed*), and a project can pick
+  its own production environments (*This Project › Production environments*, with a chooser) for other naming conventions
+- *New Secret…*: the folder field completes the environment's folders; *Extract value to Infisical…* prefills the comment
+  from the `#` comment lines directly above the variable
 - **Edit Secret…** in the Secrets tool window: value (filled in masked) and comment, through `PATCH /api/v4/secrets/{name}`;
   prod guard and change requests as for creating
 - **Read-only** setting: turns off creating and editing secrets and environments; every write is refused before it is sent

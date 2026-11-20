@@ -76,6 +76,17 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
         assertThat(DotEnvLines.isDotEnv("environment.ts")).isFalse()
     }
 
+    fun `test the comment above a variable is found for extracting`() {
+        val text = "# unrelated\n\n# Base URL of the deployed Cloudflare export-zip worker.\n#   Leave empty to use the legacy local zip cron.\nEXPORT_WORKER_URL=https://export.example.app\n" +
+            "# OLD_KEY=1\nNEXT=2\nNONE=3\n"
+        val lines = DotEnvLines.parse(text).associateBy { it.name }
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("EXPORT_WORKER_URL")))
+            .isEqualTo("Base URL of the deployed Cloudflare export-zip worker. Leave empty to use the legacy local zip cron.")
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("NEXT"))).describedAs("commented-out assignment").isEmpty()
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("NONE"))).isEmpty()
+        assertThat(DotEnvLines.commentAbove("# only\nFIRST=1", DotEnvLines.parse("# only\nFIRST=1").single())).isEqualTo("only")
+    }
+
     fun `test plaintext secrets in env files are reported and bound with comments`() {
         myFixture.enableInspections(DotEnvPlaintextSecretInspection::class.java)
         myFixture.configureByText(

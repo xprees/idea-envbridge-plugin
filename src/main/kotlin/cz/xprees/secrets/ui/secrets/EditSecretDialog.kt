@@ -60,7 +60,7 @@ class EditSecretDialog(
     override fun getPreferredFocusedComponent(): JComponent = valueField
 
     override fun doOKAction() {
-        if (ProdGuard.matches(scope.environment) && Messages.showYesNoDialog(
+        if (ProdGuard.needsConfirmation(project, scope.environment) && Messages.showYesNoDialog(
                 project,
                 SecretsBundle.message("edit.secret.prod.message", entry.key, scope.environment),
                 SecretsBundle.message("prod.guard.title"),

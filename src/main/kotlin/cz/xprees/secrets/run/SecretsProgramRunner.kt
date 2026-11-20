@@ -122,7 +122,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
     /** Asks before secrets from a production-like environment (see [ProdGuard]) are handed to a process. */
     private fun confirmGuardedEnvironments(environment: ExecutionEnvironment, name: String, environments: Set<String>): Boolean {
-        val guarded = environments.filter { ProdGuard.matches(it) }
+        val guarded = environments.filter { ProdGuard.needsConfirmation(environment.project, it) }
         if (guarded.isEmpty()) return true
         return Messages.showYesNoDialog(
             environment.project,
