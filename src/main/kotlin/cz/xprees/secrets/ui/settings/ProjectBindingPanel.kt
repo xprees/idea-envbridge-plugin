@@ -284,7 +284,7 @@ internal class ProjectBindingPanel(private val project: Project) {
     private fun effectiveProjectId(): String? = fileBinding()?.projectId
 
     private fun fileBinding(): SecretBindingService.Binding? =
-        SecretProvider.all().firstOrNull()?.let { SecretBindingService.getInstance(project).bindingOrNull(it) }
+        SecretBindingService.getInstance(project).boundProvider()?.let { SecretBindingService.getInstance(project).bindingOrNull(it) }
 
     private fun askForProjectId() {
         val id = Messages.showInputDialog(

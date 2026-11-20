@@ -88,6 +88,18 @@ class SecretBindingService(private val project: Project) {
         )
     }
 
+    /**
+     * The provider the project uses: the one of the bound connection (This Project), else the first provider that has a
+     * connection, else the first provider.
+     */
+    fun boundProvider(): SecretProvider? {
+        val app = SecretsAppSettings.getInstance()
+        app.connection(ProjectSecretsSettings.getInstance(project).state.connectionId)
+            ?.let { SecretProvider.byId(it.providerId) }?.let { return it }
+        val providers = SecretProvider.all()
+        return providers.firstOrNull { app.connectionsOf(it.id).isNotEmpty() } ?: providers.firstOrNull()
+    }
+
     /** Like [binding], but null instead of an exception when nothing is configured. */
     fun bindingOrNull(provider: SecretProvider): Binding? = runCatching { binding(provider) }.getOrNull()
 

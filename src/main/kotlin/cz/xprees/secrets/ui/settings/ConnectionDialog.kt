@@ -24,8 +24,12 @@ import javax.swing.JComponent
  * Creates or edits a connection: name, instance URL (cloud presets or a self-hosted URL) and sign-in method with its options.
  * Secret options (client secrets) go to the credential store, never into the settings file.
  */
-class ConnectionDialog(private val project: Project?, private val existing: SecretConnection?) : DialogWrapper(project) {
-    private val provider: SecretProvider = existing?.let { SecretProvider.byId(it.providerId) } ?: SecretProvider.all().first()
+class ConnectionDialog(
+    private val project: Project?,
+    private val existing: SecretConnection?,
+    newProvider: SecretProvider? = null,
+) : DialogWrapper(project) {
+    private val provider: SecretProvider = existing?.let { SecretProvider.byId(it.providerId) } ?: newProvider ?: SecretProvider.all().first()
 
     private val nameField = JBTextField(existing?.name ?: provider.displayName)
     private val instanceCombo = ComboBox((provider.instancePresets.map { it.second }).toTypedArray()).apply {

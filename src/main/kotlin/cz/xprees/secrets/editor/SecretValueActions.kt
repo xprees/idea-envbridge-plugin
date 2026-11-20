@@ -21,7 +21,7 @@ object SecretValueActions {
     private fun withValue(project: Project, key: String, environment: String?, folder: String? = null, then: (String) -> Unit) {
         ApplicationManager.getApplication().executeOnPooledThread {
             val outcome = runCatching {
-                val provider = SecretProvider.all().first()
+                val provider = SecretBindingService.getInstance(project).boundProvider() ?: error("No secret manager connection")
                 val binding = SecretBindingService.getInstance(project).binding(provider)
                 val scope = SecretScope(binding.defaults().projectId, environment ?: binding.environment, SecretScope.normalizePath(folder ?: "/"))
                 SecretsService.getInstance().secrets(binding.connection, scope).firstOrNull { it.key == key && !it.valueHidden }?.value?.reveal()

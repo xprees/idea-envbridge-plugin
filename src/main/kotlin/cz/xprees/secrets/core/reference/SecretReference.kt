@@ -1,9 +1,6 @@
 package cz.xprees.secrets.core.reference
 
 import cz.xprees.secrets.core.model.SecretScope
-import java.net.URLDecoder
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 /**
  * A reference to one secret, or to every secret of a folder, written as the value of an environment variable:
@@ -46,29 +43,8 @@ data class SecretReference(
         recursive = recursive,
     )
 
-    /** Canonical text form; [parse] of it gives an equal reference. */
-    fun format(): String = buildString {
-        append(scheme).append("://")
-        val segments = mutableListOf<String>()
-        SecretScope.normalizePath(path ?: "/").split('/').filter { it.isNotEmpty() }.let { segments += it }
-        segments += when {
-            key != null -> key
-            recursive -> "**"
-            else -> "*"
-        }
-        // An environment slug can always be written as the prefix (slugs have no ':' or '/'); anything else as ?env=
-        val prefixed = environment != null && environment.none { it == ':' || it == '/' || it == '?' }
-        if (prefixed) append(environment).append(':')
-        append(segments.joinToString("/") { encodeSegment(it) })
-        val query = buildList {
-            if (environment != null && !prefixed) add("env" to environment)
-            projectId?.let { add("project" to it) }
-            connectionId?.let { add("connection" to it) }
-        }
-        if (query.isNotEmpty()) {
-            append('?').append(query.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, StandardCharsets.UTF_8).replace("%2F", "/")}" })
-        }
-    }
+    /** Canonical text form in the provider's grammar; [parse] of it gives an equal reference. */
+    fun format(): String = grammarFor(scheme).format(this)
 
     override fun toString(): String = format()
 
@@ -92,56 +68,16 @@ data class SecretReference(
             val match = SCHEME.matchEntire(text.trim()) ?: return null
             val scheme = match.groupValues[1].lowercase()
             if (schemes.none { it.equals(scheme, ignoreCase = true) }) return null
-            val body = match.groupValues[2]
-            val (pathPart, queryPart) = body.split('?', limit = 2).let { it[0] to it.getOrNull(1) }
-            val query = parseQuery(queryPart)
-            val segments = pathPart.split('/').filter { it.isNotEmpty() }.map(::decodeSegment)
-            require(segments.isNotEmpty()) { "Reference '$text' names no secret: add a key, or * for every secret" }
-            require(segments.none { it.isBlank() || it.any(Char::isWhitespace) }) { "Reference '$text' contains whitespace" }
-
-            // `env:` before the first segment names the environment; every other segment is a folder from the root
-            var environment: String? = null
-            val parts = segments.toMutableList()
-            val colon = parts.first().indexOf(':')
-            if (colon >= 0) {
-                environment = parts.first().substring(0, colon)
-                require(environment.isNotEmpty()) { "In '$text', the environment before ':' is empty" }
-                val rest = parts.first().substring(colon + 1)
-                if (rest.isEmpty()) parts.removeAt(0) else parts[0] = rest
-                require(parts.isNotEmpty()) { "Reference '$text' names no secret: add a key, or * for every secret" }
-            }
-            val last = parts.last()
-            val isScope = last == "*" || last == "**"
-            require(parts.dropLast(1).none { it == "*" || it == "**" }) { "In '$text', * and ** may only be the last segment" }
-            var path: String? = parts.dropLast(1).takeIf { it.isNotEmpty() }?.joinToString("/", prefix = "/")
-            query["env"]?.let { environment = it.ifBlank { null } }
-            query["path"]?.let { path = SecretScope.normalizePath(it) }
-            if (path == "/") path = null
-            val unknown = query.keys - setOf("env", "path", "project", "connection")
-            require(unknown.isEmpty()) { "Unknown parameter(s) ${unknown.joinToString()} in '$text'" }
-            return SecretReference(
-                scheme = scheme,
-                key = if (isScope) null else last,
-                environment = environment,
-                path = path,
-                recursive = last == "**",
-                projectId = query["project"]?.ifBlank { null },
-                connectionId = query["connection"]?.ifBlank { null },
-            )
+            return grammarFor(scheme).parse(scheme, match.groupValues[2], text)
         }
 
-        private fun parseQuery(query: String?): Map<String, String> {
-            if (query.isNullOrEmpty()) return emptyMap()
-            return query.split('&').filter { it.isNotEmpty() }.associate { pair ->
-                val (k, v) = pair.split('=', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
-                URLDecoder.decode(k, StandardCharsets.UTF_8).lowercase() to URLDecoder.decode(v, StandardCharsets.UTF_8)
-            }
-        }
+        /** Grammars set by tests (the IDE's extension point isn't there in plain unit tests). */
+        val grammarOverrides: MutableMap<String, ReferenceGrammar> = java.util.concurrent.ConcurrentHashMap()
 
-        private fun decodeSegment(segment: String): String = URLDecoder.decode(segment.replace("+", "%2B"), StandardCharsets.UTF_8)
-
-        private fun encodeSegment(segment: String): String =
-            if (segment.all { it.isLetterOrDigit() || it in "_-.*" }) segment
-            else URLEncoder.encode(segment, StandardCharsets.UTF_8).replace("+", "%20")
+        /** The grammar of [scheme]: its provider's, or the path grammar. */
+        fun grammarFor(scheme: String): ReferenceGrammar =
+            grammarOverrides[scheme.lowercase()]
+                ?: runCatching { cz.xprees.secrets.core.provider.SecretProvider.byScheme(scheme)?.referenceGrammar }.getOrNull()
+                ?: PathGrammar
     }
 }

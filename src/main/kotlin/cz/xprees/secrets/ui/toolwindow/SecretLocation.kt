@@ -30,7 +30,7 @@ data class SecretLocation(
          * environment, folder or project). Null when nothing is bound or the reference names another connection.
          */
         fun of(project: Project, key: String?, reference: SecretReference? = null): SecretLocation? {
-            val provider = reference?.let { SecretProvider.byScheme(it.scheme) } ?: SecretProvider.all().firstOrNull() ?: return null
+            val provider = reference?.let { SecretProvider.byScheme(it.scheme) } ?: SecretBindingService.getInstance(project).boundProvider() ?: return null
             if (reference?.connectionId != null) return null
             val binding = SecretBindingService.getInstance(project).bindingOrNull(provider) ?: return null
             val projectId = reference?.projectId ?: binding.projectId ?: return null

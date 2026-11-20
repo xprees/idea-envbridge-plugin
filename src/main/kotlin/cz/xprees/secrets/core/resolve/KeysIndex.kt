@@ -38,6 +38,15 @@ class KeysIndex(private val project: Project) : Disposable {
         /** Folder path -> keys defined there, for every folder of the bound environment (root and subfolders). */
         val folders: Map<String, Map<String, KeyInfo>> = emptyMap(),
     ) {
+        /**
+         * The text of a reference to [key] (every secret when null) in [path] of [environment] (the bound one when null), as
+         * short as the provider's grammar allows.
+         */
+        fun reference(key: String?, path: String = "/", environment: String? = null): String =
+            cz.xprees.secrets.core.reference.SecretReference.grammarFor(scheme)
+                .build(scheme, SecretScope(projectId, environment ?: boundEnvironment, path), key, cz.xprees.secrets.core.reference.SecretReference.Defaults(projectId, boundEnvironment))
+                .format()
+
         /** The folders of the bound environment that define [key]. */
         fun foldersOf(key: String): List<String> = folders.filterValues { key in it }.keys.sorted()
 
@@ -89,7 +98,7 @@ class KeysIndex(private val project: Project) : Disposable {
 
     /** Off the EDT. Null when nothing is bound or the account is signed out. */
     private fun load(): Snapshot? {
-        val provider = SecretProvider.all().firstOrNull() ?: return null
+        val provider = SecretBindingService.getInstance(project).boundProvider() ?: return null
         val binding = runCatching { SecretBindingService.getInstance(project).binding(provider) }.getOrNull() ?: return null
         val projectId = binding.projectId ?: return null
         val service = SecretsService.getInstance()

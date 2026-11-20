@@ -64,7 +64,7 @@ class CompareEnvironmentsDialog(private val project: Project) : DialogWrapper(pr
         status.text = SecretsBundle.message("preview.resolving")
         ApplicationManager.getApplication().executeOnPooledThread {
             val outcome = runCatching {
-                val binding = SecretBindingService.getInstance(project).binding(SecretProvider.all().first())
+                val binding = SecretBindingService.getInstance(project).binding(SecretBindingService.getInstance(project).boundProvider() ?: error("No secret manager connection"))
                 val projectId = binding.defaults().projectId
                 val service = SecretsService.getInstance()
                 val valuesA = service.secrets(binding.connection, SecretScope(projectId, a, binding.path)).associate { it.key to it.value }

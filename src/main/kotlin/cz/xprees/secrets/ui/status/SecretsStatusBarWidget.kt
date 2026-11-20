@@ -104,7 +104,7 @@ class SecretsStatusBarWidget(private val project: Project) : StatusBarWidget, St
 
     private fun refresh() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            val provider = SecretProvider.all().firstOrNull()
+            val provider = SecretBindingService.getInstance(project).boundProvider()
             val binding = provider?.let { runCatching { SecretBindingService.getInstance(project).binding(it) }.getOrNull() }
             environment = binding?.environment
             text = binding?.let { SecretsBundle.message("status.text", it.provider.displayName, it.environment) }

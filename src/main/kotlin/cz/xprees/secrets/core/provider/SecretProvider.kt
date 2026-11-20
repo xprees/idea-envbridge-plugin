@@ -1,5 +1,7 @@
 package cz.xprees.secrets.core.provider
 
+import cz.xprees.secrets.core.reference.PathGrammar
+import cz.xprees.secrets.core.reference.ReferenceGrammar
 import com.intellij.openapi.extensions.ExtensionPointName
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -24,6 +26,9 @@ interface SecretProvider {
 
     /** Scheme of secret references for this provider: `infisical` for `infisical://KEY`. */
     val referenceScheme: String
+
+    /** How this provider's references are written (default: `scheme://[env:][folder/…/]KEY`). */
+    val referenceGrammar: ReferenceGrammar get() = PathGrammar
 
     /** Instances offered when a connection is created (name -> base URL); a custom URL is always possible. */
     val instancePresets: List<Pair<String, String>>
