@@ -9,6 +9,14 @@
   (`op://vault/KEY/password`); the item's notes are the secrets' comment; fields are moved between items (copy first, remove
   after); items are never deleted. With the CLI, values go to `op` only on its standard input as item JSON, never on its command
   line; with Connect, an item changed meanwhile is refused instead of overwritten. *Read-only* turns it off as for every provider
+- **Doppler** (unofficial integration), reading, injecting and writing: Doppler projects are projects and configs (`dev`,
+  `dev_personal`, `stg`, `prd`, branch configs) are environments. References `doppler://KEY`, `doppler://prd:KEY`,
+  `doppler://*` for every secret of a config, `?project=` and `?connection=`; Doppler's computed values (its `${…}` references
+  resolved). Sign in through the system browser like `doppler login` (the IDE shows the code to compare, the token is kept in the
+  IDE's password storage and revoked on sign-out) or with a personal, service account or service token (a service token offers
+  just its project and config). Create, edit (with notes), move between configs and delete secrets, and create branch configs;
+  uppercase names are checked before anything is sent. Reads the Doppler CLI's `doppler.yaml`. Tested against a mock of the
+  Doppler API (Doppler can't be self-hosted)
 - **1Password** (unofficial integration), reading and injecting: 1Password's own secret references work as they are
   (`op://vault/item/[section/]field`, names or IDs), plus `op://vault/item/*` for every field of an item, `op://vault/**` for
   every item of a vault and `?connection=`. Access through the 1Password app via the 1Password CLI (the app approves, nothing to

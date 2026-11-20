@@ -1,12 +1,12 @@
 # EnvBridge
 
 Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**,
-**HashiCorp Vault**, **OpenBao** and **1Password**.
+**HashiCorp Vault**, **OpenBao**, **1Password** and **Doppler**.
 
 <!-- Plugin description -->
 <p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company),
-the OpenBao project or AgileBits Inc. (1Password). "Infisical", "HashiCorp Vault", "OpenBao" and "1Password" are trademarks of
-their owners and are used only to say which services this plugin works with.</p>
+the OpenBao project, AgileBits Inc. (1Password) or Doppler Inc. "Infisical", "HashiCorp Vault", "OpenBao", "1Password" and
+"Doppler" are trademarks of their owners and are used only to say which services this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
 and test locally <b>without keeping secrets in <code>.env</code> files</b>. Values are fetched when a run configuration starts and
@@ -60,12 +60,16 @@ handed to the process in memory. Nothing is written to disk.</p>
       the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
       token or a <b>1Password Connect</b> server. New, edited, moved and deleted secrets are fields of items (a new secret at a
       vault's root is a new password item); values reach the CLI only on its standard input, never its command line</li>
+  <li><b>Doppler</b>: <code>DB_PASSWORD=doppler://DB_PASSWORD</code> from the bound config, <code>doppler://prd:DB_PASSWORD</code>
+      from another, or <code>doppler://*</code> for every secret of a config. Sign in <b>through the system browser</b> (like
+      <code>doppler login</code>) or with a personal, service account or service token; reads the CLI's <code>doppler.yaml</code>.
+      Create, edit, move and delete secrets, and create branch configs</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
 <p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you change one yourself
-(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract Value to Secret Manager…</i>; Infisical, Vault and OpenBao, 1Password).
+(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract Value to Secret Manager…</i>; Infisical, Vault and OpenBao, 1Password, Doppler).
 <i>Read-only</i> in the settings turns all writing off.</p>
 <!-- Plugin description end -->
 
@@ -242,6 +246,37 @@ is refused ("refresh and try again"). Through the CLI, values are handed to `op 
 on standard input, never as `field=value` arguments (which other processes could read); this needs an `op` that accepts piped
 item JSON. EnvBridge checks that the change took effect and says so if it didn't.
 
+### Doppler
+
+A Doppler **project** is a project and a **config** is an environment: `dev`, `dev_personal`, `stg`, `prd` and branch configs
+such as `dev_feature` (shown as *dev_feature (branch of dev)*). Doppler has no folders. Values are Doppler's computed ones, so
+Doppler references (`${DB_HOST}`) are resolved as `doppler run` resolves them.
+
+```
+DB_PASSWORD=doppler://DB_PASSWORD                    from the bound config
+PRD_PASSWORD=doppler://prd:DB_PASSWORD               from config prd
+DOPPLER=doppler://dev_personal:*                     every secret of config dev_personal
+WEB_URL=doppler://PUBLIC_URL?project=web&connection=Work
+```
+
+- A folder in a reference (`doppler://app/KEY`) is refused: Doppler has none.
+- Doppler's own `DOPPLER_PROJECT`, `DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` are not injected (`doppler run` sets them).
+- The CLI's `doppler.yaml` (`setup:` with `project` and `config`, or a list of them with a `path` per directory) binds the
+  project and config, as `doppler setup` does. The CLI's own `~/.doppler/.doppler.yaml`, which holds its tokens, is never read.
+- **Writes**: *New Secret…*, *Edit Secret…* (value and note; a note is shared by all configs of the project), *Move…* to another
+  config (copies the raw value, then deletes the original; a secret that can't be deleted stays in both and is reported),
+  *Delete…*, and *New Environment…*, which creates a branch config: name it after its environment, `dev_feature` or
+  `dev-feature`. Names must be uppercase letters, digits and underscores. *Read-only* turns all of it off.
+
+| Method | Setup |
+|---|---|
+| **Browser sign-in** (default) | None. **Sign In** opens Doppler in your browser and shows a code in the IDE; approve in the browser if it shows the same code, as with `doppler login`. The token is kept in the IDE's password storage and revoked on sign-out |
+| **Token** | A personal token (`dp.pt.…`), a service account token (`dp.sa.…`) or a service token (`dp.st.…`), kept in the password storage. A service token reads one config, so only that project and config are offered. Sign-out forgets the token but doesn't revoke it |
+
+Doppler is a hosted service: the API address is `https://api.doppler.com` (it can be changed, e.g. for a proxy in front of it).
+"Open in dashboard" opens the config in the Doppler dashboard. Doppler can't be self-hosted, so this integration is tested
+against a mock of its API only, not a live account.
+
 ## Security
 
 - **Credentials** (session tokens, refresh tokens, client secrets) are stored only in the IDE's password storage (system keychain,
@@ -277,9 +312,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and conventions.
 Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an
-IBM company), the OpenBao project or AgileBits Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
+IBM company), the OpenBao project, AgileBits Inc. or Doppler Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
 "HashiCorp" and "Vault" are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation; "1Password" is a trademark
-of AgileBits Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
+of AgileBits Inc.; "Doppler" is a trademark of Doppler Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
 to their documented APIs, runs the 1Password CLI the user installed, and reimplements documented behaviour of their CLIs
 (Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`, 1Password's secret
-reference syntax).
+reference syntax, Doppler's `doppler login` flow and `doppler.yaml`).

@@ -45,6 +45,10 @@ cz.xprees.secrets
     resolve    SecretResolver (launch-time, always fresh), SecretCache (memory-only TTL for UI/editor)
     settings   connections (application level), project binding (project level)
   infisical/   InfisicalProvider, InfisicalClient (REST), auth flows, project config (.infisical.yaml / .infisical.json)
+  vault/       VaultProvider (HashiCorp Vault / OpenBao, KV v2)
+  onepassword/ OnePasswordProvider (op CLI, Connect)
+  doppler/     DopplerProvider, DopplerClient, DopplerApi / DopplerHttp (REST v3), DopplerAuth (CLI browser flow, tokens),
+               DopplerGrammar (doppler://), DopplerProjectFile (doppler.yaml)
   run/         launch-time injection: SecretsProgramRunner (clone-and-delegate), EnvPatcher extension point, per-tech patchers
   ui/          tool window, settings pages, login dialogs, notifications
   editor/      (M3) completion, inlays, hover, inspections, console masking, status bar
@@ -475,6 +479,155 @@ against a live account or a real `op` binary** while writing this; the tests use
 - A whole item is sent back on every write, values of all its fields included (to the same `op` / Connect server it was read
   from, which already holds them).
 
+## Fourth provider: Doppler
+
+Chosen after 1Password because Doppler is popular with application teams that want hosted secrets per environment without
+running a server, and has no JetBrains integration. Its model (projects, environments, configs of flat key/value secrets) is
+close to Infisical's, so reading **and writing** fit the existing SPI with no core changes.
+
+**Scope, first version:** reading and injecting, plus every write the tool window offers (create, edit with note, move between
+configs, delete, new branch config). Doppler is SaaS only and can't be self-hosted, so there are **no integration tests against a
+real server**: everything is tested against a mock of the API (below).
+
+### Model mapping
+
+| EnvBridge | Doppler |
+|---|---|
+| Project | A Doppler project (ID = slug = the project's name as the API takes it, `backend`) |
+| Environment | A Doppler **config**: `dev`, `dev_personal`, `stg`, `prd`, branch configs such as `dev_feature`. Configs hold the secrets; Doppler's environments only group them. Shown as the config's name, branch configs as `dev_feature (branch of dev)` |
+| Folder | None: a config is a flat list. `listFolders` is empty; any path other than `/` is NOT_FOUND ("Doppler has no folders") |
+| Secret (key = value) | A secret of the config, with Doppler's **computed** value (Doppler references `${KEY}`, `${env.config.KEY}` resolved by the server); the comment is the secret's note |
+| Organization (dashboard links) | The workplace (from `/v3/me`) |
+
+`defaultEnvironment()` is `dev` (Doppler creates `dev`, `stg` and `prd` in every new project). Doppler adds `DOPPLER_PROJECT`,
+`DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` to every config; `listSecrets` leaves them out, so scope imports don't inject them
+(they describe the binding, which the IDE already knows; `doppler run` sets them, EnvBridge deliberately doesn't). A reference to
+one of them is therefore NOT_FOUND. Secrets whose value is restricted (`computed` null or `computedVisibility: restricted`) are
+listed with `valueHidden`. Dynamic secrets are not requested (`include_dynamic_secrets=false`).
+
+### References
+
+The default path grammar with scheme `doppler`, without folders (`DopplerGrammar`, a thin wrapper around `PathGrammar`):
+
+```
+doppler://DB_PASSWORD                   DB_PASSWORD of the bound config
+doppler://prd:DB_PASSWORD               DB_PASSWORD of config prd of the bound project
+doppler://dev_personal:*                every secret of config dev_personal (scope import)
+doppler://DB_PASSWORD?project=web&connection=<name>
+```
+
+A folder segment or `?path=` is refused at parse time ("Doppler has no folders: write doppler://[config:]KEY"); `**` is accepted
+and means `*`. Config names (lowercase, digits, `_`) always fit the `config:` prefix form.
+
+### API (v3, `https://api.doppler.com`, `Authorization: Bearer <token>`)
+
+| Purpose | Call |
+|---|---|
+| Account, workplace, token type | `GET /v3/me` → `name`, `type`, `workplace {slug, name}`, `user {email}` |
+| Projects | `GET /v3/projects?page&per_page=100` → `projects[] {slug, name}` (paged, ≤ 20 pages) |
+| Configs of a project | `GET /v3/configs?project&page&per_page=100` → `configs[] {name, environment, root, locked}` |
+| Secrets of a config | `GET /v3/configs/config/secrets?project&config&include_dynamic_secrets=false` → `secrets {KEY: {raw, computed, note, computedVisibility}}` |
+| Create / change secrets | `POST /v3/configs/config/secrets` `{project, config, secrets: {KEY: VALUE}}` |
+| Delete a secret | `DELETE /v3/configs/config/secret?project&config&name` |
+| Secret note | `POST /v3/projects/project/note?project` `{project, secret, note}` (a note belongs to the project, shared by its configs) |
+| New branch config | `POST /v3/configs` `{project, environment, name}` |
+| Browser sign-in | `POST /v3/auth/cli/generate_2` (fallback `generate`) `{hostname, version, os, arch}` → `{code, polling_code, auth_url}`; `POST /v3/auth/cli/authorize` `{code: polling_code}` until `{token, name, workplace}` |
+| Sign-out | `POST /v3/auth/revoke` `{token}` |
+
+`DopplerHttp` uses the JDK HttpClient like `VaultHttp`: IDE proxy and certificates, no redirects, HTTP/1.1, 10 s / 30 s timeouts;
+the token only ever goes in the `Authorization` header, the polling code only in a request body, and no body is logged. Errors:
+401 → AUTH_REQUIRED, 403 → FORBIDDEN, 404 → NOT_FOUND, 429 → SERVER ("Doppler rate limited the request; retry in N s" from
+`Retry-After`), other 4xx → CONFIGURATION, 5xx → SERVER, I/O → NETWORK. Doppler's `messages` are shown, joined and capped at 300
+characters; a message about a locked config becomes CONFIGURATION "the config is locked in Doppler: …" whatever the status.
+
+### Sign-in
+
+| Method | Flow | Credentials |
+|---|---|---|
+| **Browser sign-in** (default) | The Doppler CLI's `doppler login` flow: `generate_2` with the computer's name (`EnvBridge (<host>)`, the token's name in the user's Doppler token list), open `auth_url` in the system browser, show "check that Doppler shows the code `<code>`, then approve" as the progress text, poll `authorize` every 2 s (or the server's `poll_interval`), stop on cancel, give up after 5 minutes. Pending = 409 / 202 / a success without a token / a 400 saying "pending"; any other 4xx = declined or expired (AUTH_REQUIRED) | The CLI token in `SLOT_SESSION` (PasswordSafe), revoked on sign-out (local copy forgotten first, so a failed revoke never keeps it) |
+| **Token** | A pasted personal (`dp.pt.`), service account (`dp.sa.`) or service token (`dp.st.`), checked with `/v3/me` on *Sign In* | A secret option (PasswordSafe). Sign-out forgets it, never revokes it (the user's own) |
+
+The session slot also caches what `/v3/me` said (workplace, token type, user), keyed to the token, so listings ask once. A
+browser session Doppler refuses (401) is forgotten, so the UI offers to sign in again; there is nothing to refresh. The
+`auth_url` is opened only if it is `https` (or loopback, for tests).
+
+**Service tokens** are bound to one config and may not list projects. When `/v3/me` reports a service token (or, if it reports no
+type, the token starts with `dp.st.`), or listing projects is FORBIDDEN, `listProjects` offers just the token's project with its
+one config: from `/v3/me` if it names them, else from that config's own `DOPPLER_PROJECT` / `DOPPLER_CONFIG` (a secrets read
+without `project` / `config`, which Doppler answers for the token's config). Projects whose configs a token may not list are
+shown without configs.
+
+### Writes
+
+All writes go through `SecretsService` (so *Read-only* and the prod guard apply) and are explicit user actions.
+
+- **Names** must match `[A-Z_][A-Z0-9_]*` (Doppler's rule: uppercase letters, digits, underscores); checked before any request,
+  with a suggested name (`db-url` → `DB_URL`).
+- **Create** reads the config first and refuses an existing key ("edit it instead"); **update** refuses a missing one (NOT_FOUND).
+  Both send one `POST /v3/configs/config/secrets`. Doppler's `change_requests` form isn't used (it needs the same permission and
+  adds nothing here). A key that the config only inherits counts as existing (the listing doesn't tell them apart).
+- **Notes**: a non-empty comment on create, or a changed comment on update, sets the secret's note. The value is written first;
+  if the note then fails, the error says the value was saved. Notes are per project, so editing one in `dev` changes it for every
+  config.
+- **Delete**: `DELETE …/secret`, one request per key; a missing key is NOT_FOUND.
+- **Move** between configs (and projects): checks every key exists and is readable in the source and, without *overwrite*, is
+  absent from the destination (else nothing happens); copies the **raw** values (so `${…}` references keep referring) in one
+  request; carries notes over when the project changes; then deletes each key from the source. A key whose deletion fails stays in
+  both configs and is reported in `MoveResult.notRemoved`: a failure never loses a secret.
+- **New environment** creates a **branch config**. Doppler names a branch config after its environment (`dev_feature` in `dev`);
+  the dialog's slug may use hyphens (`dev-feature`), which become underscores. The longest existing environment that prefixes the
+  name is used; otherwise CONFIGURATION with the allowed prefixes. The dialog's display name isn't used (a config has only a name).
+  New Doppler environments (as opposed to configs) are created in the dashboard.
+- **Locked configs**, config inheritance and access rules are Doppler's to enforce; their refusals come back as CONFIGURATION or
+  FORBIDDEN with Doppler's message. A read-only service token gets FORBIDDEN on writes.
+
+### Project file
+
+`readProjectFile` reads the Doppler CLI's repository file `doppler.yaml` (also `doppler.yml`), looked up in the project directory
+and its parents, so the binding picks up the project and config that `doppler setup` would. `setup:` may be one `{project,
+config}` or a list of them with a `path` (relative to the file); the entry whose path is the project directory wins, then one for
+the file's own directory, then the first. SnakeYAML's `SafeConstructor`, files over 256 KB ignored. The user's
+`~/.doppler/.doppler.yaml` (which holds the CLI's tokens and scoped settings) is never read.
+
+### Dashboard
+
+`https://dashboard.doppler.com/workplace/<workplace>/projects/<project>/configs/<config>`, the workplace from `/v3/me`; without it
+the dashboard's start page. For another API address, `api.<domain>` becomes `dashboard.<domain>`.
+
+### Tests
+
+- `DopplerGrammarTest`: keys, `config:` prefixes, `*` / `**`, `?project=` / `?connection=` round trips, folders refused,
+  building short references; `doppler.yaml` in both forms, nested directories, malformed files.
+- `MockDoppler`: a JDK HttpServer with `/v3/me`, projects, configs (one project forbidden), secrets with computed `${KEY}`
+  values and the `DOPPLER_*` metadata, writes, delete, notes, branch configs, the browser sign-in (409 until approved after N
+  polls, or declined), revocation, service tokens bound to one config, locked configs, failing deletions and a 429 with
+  `Retry-After`.
+- `DopplerPlatformTest`: registration; listings with each token type (service token offered alone, without listing projects);
+  the browser sign-in round trip (code in the progress text, polling code only in bodies, token only in the header, never in
+  exceptions or `toString`, revoked on sign-out), declined, cancelled and timed-out sign-ins, a revoked session; error mapping
+  (401, 403, 404, 429); create / update / note / delete; name validation; a locked config; *Read-only*; move with a partial
+  failure, conflicts and a cross-project note; branch configs; launches through `LaunchSecretResolver` with a binding (bound
+  config, `config:` prefix, `?project=`, scope import without metadata, fail closed, *Only use the bound project*); `doppler.yaml`.
+
+### Known limits and unverified assumptions
+
+developer.doppler.com / docs.doppler.com could not be reached while this was written, so request and response shapes come from
+the public API reference and the Doppler CLI's source **as remembered**, and are checked only against the mock. Parsers are
+lenient (missing fields are skipped). Specifically unverified:
+
+- The browser sign-in: the endpoint name `generate_2` (the CLI's current one; `generate` is tried on 404 / 405), its request
+  fields, the `polling_code` field (the shown `code` is polled when it is absent), the optional `poll_interval`, and that
+  `authorize` answers **409** while pending (202, 425, a tokenless success and a 400 saying "pending" are treated alike).
+- `/v3/me` field names (`type` values such as `service_token`, `workplace.slug`, `user.email`) and whether it can name a service
+  token's project and config (if not, the config's metadata secrets are used).
+- The note endpoint's shape (`project` sent both as query parameter and in the body).
+- That a service token may read secrets without `project` / `config` parameters (the CLI relies on this).
+- That `workplace.slug` is what the dashboard's `/workplace/<…>` path takes.
+- Branch config names with digits and underscores only (hyphens become underscores); Doppler may allow more.
+- No retry on 429: the error says when to retry. Pagination stops at a short page (≤ 2 000 projects or configs).
+- `INFISICAL_ENVIRONMENT` on a run configuration still picks the config (the core's override variable); `DOPPLER_CONFIG` /
+  `DOPPLER_PROJECT` / `DOPPLER_TOKEN` in the IDE's or run configuration's environment are not read.
+
 ## Threat model (summary)
 
 | Threat | Mitigation |
@@ -488,6 +641,7 @@ against a live account or a real `op` binary** while writing this; the tests use
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
 | Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
 | Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; values written go on stdin as item JSON (never `field=value` assignments); argv carries names and flags only; inherited `OP_*` credentials are removed. |
+| Phishing of a device-code style sign-in (Doppler) | The IDE shows the code it asked for and tells the user to approve only if the browser shows the same one; the polling code never leaves the IDE except to Doppler, in a request body; only an `https` sign-in address is opened. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 
 ## Milestones

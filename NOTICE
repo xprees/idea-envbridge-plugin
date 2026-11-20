@@ -14,5 +14,10 @@ used only to describe the service this plugin works with. The plugin contains no
 it runs the 1Password CLI installed by the user, talks to the documented 1Password Connect API and reads 1Password's documented
 secret reference syntax.
 
+It is likewise not affiliated with, endorsed by or sponsored by Doppler Inc. "Doppler" is a trademark of Doppler Inc., used
+only to describe the service this plugin works with. The plugin contains no Doppler logos, brand assets or source code; it talks
+to the documented Doppler API and reimplements documented behaviour of the Doppler CLI (Apache-2.0 licensed,
+https://github.com/DopplerHQ/cli): the browser sign-in (`doppler login`) and the doppler.yaml repository file.
+
 The plugin bundles no third-party libraries. At run time it uses libraries that ship with the IntelliJ Platform (Gson,
 SnakeYAML, the JDK's HTTP server), under their own licenses.
