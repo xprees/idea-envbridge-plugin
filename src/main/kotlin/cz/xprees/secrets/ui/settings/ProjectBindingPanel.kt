@@ -38,11 +38,20 @@ internal class ProjectBindingPanel(private val project: Project) {
     /** A drop-down entry: [value] is what gets stored (null = automatic). */
     data class Choice(val value: String?, val label: String)
 
-    private val automatic = Choice(null, SecretsBundle.message("settings.binding.auto.short"))
+    /**
+     * "Automatic" for the chosen connection: the provider's project file (`.infisical.yaml`) when it has one, else the
+     * connection's default (a Vault connection's namespace).
+     */
+    private val automatic: Choice
+        get() {
+            val connection = connectionToUse()
+            val file = connection?.let { SecretProvider.byId(it.providerId)?.projectFileName }
+            return Choice(null, SecretsBundle.message("settings.binding.auto.short", file ?: SecretsBundle.message("settings.binding.auto.default")))
+        }
     private val enterId = Choice(ENTER_ID, SecretsBundle.message("settings.binding.enter.id"))
 
     private val connectionCombo = ComboBox<SecretConnection?>().apply {
-        renderer = textListCellRenderer { c: SecretConnection? -> c?.name ?: SecretsBundle.message("settings.binding.auto.short") }
+        renderer = textListCellRenderer { c: SecretConnection? -> c?.name ?: SecretsBundle.message("settings.binding.auto.connection") }
     }
     private val projectCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
     private val environmentCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
@@ -85,7 +94,13 @@ internal class ProjectBindingPanel(private val project: Project) {
         }
         row { comment(SecretsBundle.message("settings.binding.comment")) }
 
-        connectionCombo.addActionListener { if (updating == 0) loadProjects(force = false) }
+        connectionCombo.addActionListener {
+            if (updating > 0) return@addActionListener
+            // Projects and environments belong to a connection: another connection starts from Automatic
+            setProjects(emptyList(), keep = null)
+            fillEnvironments(keep = null)
+            loadProjects(force = false)
+        }
         projectCombo.addActionListener {
             if (updating > 0) return@addActionListener
             if ((projectCombo.selectedItem as? Choice)?.value == ENTER_ID) askForProjectId() else fillEnvironments(keep = null)
@@ -186,11 +201,12 @@ internal class ProjectBindingPanel(private val project: Project) {
         status.text = SecretsBundle.message("settings.binding.loading")
         background({ SecretsService.getInstance().projects(connection, fresh = force) }) { result ->
             result.onSuccess { loaded ->
-                setProjects(loaded, keep = selectedProjectId() ?: settings.state.projectId)
-                fillEnvironments(keep = selectedEnvironment() ?: settings.state.environment)
+                setProjects(loaded, keep = selectedProjectId() ?: storedFor(connection) { projectId })
+                fillEnvironments(keep = selectedEnvironment() ?: storedFor(connection) { environment })
                 status.text = SecretsBundle.message("settings.binding.projects.loaded", loaded.size, connection.name)
             }.onFailure { error ->
-                setProjects(emptyList(), keep = selectedProjectId() ?: settings.state.projectId)
+                setProjects(emptyList(), keep = selectedProjectId() ?: storedFor(connection) { projectId })
+                fillEnvironments(keep = selectedEnvironment() ?: storedFor(connection) { environment })
                 status.text = when ((error as? SecretProviderException)?.kind) {
                     SecretProviderException.Kind.FORBIDDEN -> SecretsBundle.message("settings.binding.projects.forbidden")
                     SecretProviderException.Kind.AUTH_REQUIRED -> SecretsBundle.message("settings.binding.sign.in.first", connection.name)
@@ -200,10 +216,17 @@ internal class ProjectBindingPanel(private val project: Project) {
         }
     }
 
+    /** A stored binding value, only when the stored binding is for [connection] (not another connection's project). */
+    private fun storedFor(connection: SecretConnection, value: ProjectSecretsSettings.ProjectState.() -> String?): String? {
+        val state = settings.state
+        return if (state.connectionId == null || state.connectionId == connection.id) state.value() else null
+    }
+
     private fun setProjects(loaded: List<ProviderProject>, keep: String?) {
         projects = loaded
         updating++
         try {
+            val automatic = automatic
             projectCombo.removeAllItems()
             projectCombo.addItem(automatic)
             loaded.forEach { projectCombo.addItem(Choice(it.id, it.name)) }
@@ -220,6 +243,7 @@ internal class ProjectBindingPanel(private val project: Project) {
         val environments = projects.firstOrNull { it.id == projectId }?.environments.orEmpty()
         updating++
         try {
+            val automatic = automatic
             environmentCombo.removeAllItems()
             environmentCombo.addItem(automatic)
             environments.forEach { environmentCombo.addItem(Choice(it.slug, "${it.name}  (${it.slug})")) }
@@ -276,7 +300,8 @@ internal class ProjectBindingPanel(private val project: Project) {
         val defaults = fileBinding()
         return SecretScope(
             projectId = projectId,
-            environment = selectedEnvironment() ?: defaults?.environment ?: SecretBindingService.DEFAULT_ENVIRONMENT,
+            environment = selectedEnvironment() ?: defaults?.environment
+                ?: connectionToUse()?.let { c -> SecretProvider.byId(c.providerId)?.defaultEnvironment(c) } ?: SecretBindingService.DEFAULT_ENVIRONMENT,
             path = SecretScope.normalizePath(selectedPath() ?: defaults?.path),
         )
     }

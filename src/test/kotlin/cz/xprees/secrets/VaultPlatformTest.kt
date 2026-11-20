@@ -82,7 +82,7 @@ class VaultPlatformTest : BasePlatformTestCase() {
     fun `test provider is registered with its grammar`() {
         val provider = SecretProvider.byScheme("vault")
         assertThat(provider).isInstanceOf(VaultProvider::class.java)
-        assertThat(provider!!.supportsWrites).isFalse()
+        assertThat(provider!!.supportsWrites).isTrue()
         assertThat(cz.xprees.secrets.core.reference.SecretReference.parse("vault://secret/app/db#password", listOf("vault"))!!.path).isEqualTo("/app/db")
     }
 
@@ -308,10 +308,126 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(binding.projectId).isNull()
     }
 
-    fun `test writes are refused for vault connections`() {
+    fun `test fields are created, changed and deleted with check-and-set, keeping the other fields`() {
         val connection = appRole()
-        assertThat(SecretsService.getInstance().writesAllowed(connection)).isFalse()
-        assertThatThrownBy { SecretsService.getInstance().createSecret(connection, SecretScope("secret", "root", "/app"), "K", SecretValue("v")) }
-            .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("read-only")
+        val service = SecretsService.getInstance()
+        val api = SecretScope("secret", "root", "/app/api")
+
+        service.createSecret(connection, api, "token", SecretValue("t1"))
+        var fields = client(connection).listSecrets(api).associate { it.key to it.value.reveal() }
+        // the JSON field stays JSON (not turned into text by the rewrite)
+        assertThat(fields).containsEntry("token", "t1").containsEntry("key", "root-api-key").containsEntry("limits", """{"rps":10}""")
+        val written = mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }
+        assertThat(written.body).contains("\"cas\":1").contains("\"limits\":{\"rps\":10")
+
+        service.updateSecret(connection, api, "token", SecretValue("t2"))
+        assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }.body).contains("\"cas\":2")
+        fields = client(connection).listSecrets(api).associate { it.key to it.value.reveal() }
+        assertThat(fields).containsEntry("token", "t2")
+
+        assertThat(service.deleteSecrets(connection, api, listOf("token")).getValue("token").isSuccess).isTrue()
+        assertThat(client(connection).listSecrets(api).map { it.key }).containsExactlyInAnyOrder("key", "limits")
+
+        // a new secret path: check-and-set 0 (only if it doesn't exist)
+        service.createSecret(connection, SecretScope("secret", "root", "/app/new"), "first", SecretValue("1"))
+        assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/new" }.body).contains("\"cas\":0")
+    }
+
+    fun `test refused writes say why`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        assertThatThrownBy { service.createSecret(connection, SecretScope("secret", "root", "/app/db"), "password", SecretValue("x")) }
+            .hasMessageContaining("already has a field password")
+        assertThatThrownBy { service.updateSecret(connection, SecretScope("secret", "root", "/app/db"), "missing", SecretValue("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.NOT_FOUND)
+        assertThatThrownBy { service.createSecret(connection, SecretScope("secret", "root", "/"), "K", SecretValue("x")) }
+            .hasMessageContaining("Choose a secret path")
+        mock.readOnlyMounts += "secret"
+        assertThatThrownBy { service.createSecret(connection, SecretScope("secret", "root", "/app/db"), "other", SecretValue("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+        assertThatThrownBy { service.createEnvironment(connection, "secret", "Team B", "team-b") }.hasMessageContaining("Vault administrator")
+    }
+
+    fun `test a change made meanwhile is refused, not overwritten`() {
+        val connection = appRole()
+        val scope = SecretScope("secret", "root", "/app/db")
+        client(connection).listProjects()
+        // Someone else writes a new version between our read and our write
+        mock.versions["root:secret/app/db"] = 5
+        val api = cz.xprees.secrets.vault.VaultApi(cz.xprees.secrets.vault.VaultHttp(mock.baseUrl))
+        val token = TokenSetAccess.token(connection)
+        val stale = api.readVersioned(token, "root", "secret", "/app/db").copy(version = 4)
+        assertThatThrownBy { api.write(token, "root", "secret", "/app/db", stale.fields, stale.version) }
+            .hasMessageContaining("changed meanwhile")
+        // the client itself reads the current version, so its own writes go through
+        SecretsService.getInstance().updateSecret(connection, scope, "user", SecretValue("other-user"))
+        assertThat(client(connection).listSecrets(scope).first { it.key == "user" }.value.reveal()).isEqualTo("other-user")
+    }
+
+    fun `test moving fields between secrets and namespaces`() {
+        val connection = appRole(mapOf(VaultAuthMethods.OPTION_NAMESPACES to "team-a"))
+        val service = SecretsService.getInstance()
+        val source = SecretScope("secret", "root", "/app/db")
+        val entries = client(connection).listSecrets(source)
+
+        val moved = service.moveSecrets(connection, source, entries.filter { it.key == "user" }, SecretScope("secret", "team-a", "/app/db"), overwrite = false)
+        assertThat(moved.moved).containsExactly("user")
+        assertThat(client(connection).listSecrets(source).map { it.key }).containsExactly("password")
+        assertThat(client(connection).listSecrets(SecretScope("secret", "team-a", "/app/db")).map { it.key }).containsExactlyInAnyOrder("password", "user")
+
+        // an existing field at the destination is kept unless overwriting
+        val clash = service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "team-a", "/app/db"), overwrite = false)
+        assertThat(clash.moved).isEmpty()
+        assertThat(clash.notRemoved).containsKey("password")
+        assertThat(client(connection).listSecrets(source).single().value.reveal()).isEqualTo("root-db-pass")
+
+        // moving the last field away deletes the source's latest version (restorable in Vault)
+        val all = service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "root", "/app/archive"), overwrite = false)
+        assertThat(all.moved).containsExactly("password")
+        assertThat(client(connection).listSecrets(source)).isEmpty()
+        assertThat(mock.requests.any { it.method == "DELETE" && it.path == "/v1/secret/data/app/db" }).isTrue()
+        // and the path can be written again (check-and-set names the deleted version)
+        service.createSecret(connection, source, "password", SecretValue("again"))
+        assertThat(client(connection).listSecrets(source).single().value.reveal()).isEqualTo("again")
+    }
+
+    fun `test a failed removal is reported and the copy kept`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val source = SecretScope("secret", "root", "/app/db")
+        val entries = client(connection).listSecrets(source).filter { it.key == "user" }
+        // The destination accepts the copy; the source refuses the removal
+        mock.readOnlyMounts.clear()
+        val result = run {
+            mock.versions.remove("root:secret/app/db")
+            val destination = SecretScope("secret", "root", "/app/copy")
+            // make the source read-only only after the copy: a second mount stands in for a read-only source
+            mock.secrets.getValue("root")["ro/app/db"] = mapOf("user" to "app")
+            mock.readOnlyMounts += "ro"
+            service.moveSecrets(connection, SecretScope("ro", "root", "/app/db"), entries, destination, overwrite = false)
+        }
+        assertThat(result.moved).isEmpty()
+        assertThat(result.notRemoved.getValue("user")).contains("copied, but not removed")
+        assertThat(client(connection).listSecrets(SecretScope("secret", "root", "/app/copy")).single().key).isEqualTo("user")
+        assertThat(client(connection).listSecrets(SecretScope("ro", "root", "/app/db")).single().key).isEqualTo("user")
+    }
+
+    fun `test read-only in the settings stops vault writes before they are sent`() {
+        val connection = appRole()
+        cz.xprees.secrets.core.settings.SecretsAppSettings.getInstance().state.readOnly = true
+        try {
+            assertThat(SecretsService.getInstance().writesAllowed(connection)).isFalse()
+            assertThatThrownBy { SecretsService.getInstance().createSecret(connection, SecretScope("secret", "root", "/app/db"), "K", SecretValue("v")) }
+                .hasMessageContaining("Read-only")
+            assertThat(mock.requests.none { it.method == "POST" && it.path.contains("/data/") }).isTrue()
+        } finally {
+            cz.xprees.secrets.core.settings.SecretsAppSettings.getInstance().state.readOnly = false
+        }
+        assertThat(SecretsService.getInstance().writesAllowed(connection)).isTrue()
+    }
+
+    private object TokenSetAccess {
+        fun token(connection: SecretConnection): String =
+            cz.xprees.secrets.core.auth.TokenSet.fromJson(CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)!!)!!.accessToken
     }
 }

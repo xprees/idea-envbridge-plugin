@@ -69,6 +69,46 @@ class VaultApi(val http: VaultHttp) {
         return data.asJsonObject.entrySet().associate { (key, value) -> key to textOf(value) }
     }
 
+    /** A secret as stored: its fields as JSON (types kept) and its current version (0 when it never existed). */
+    data class Versioned(val fields: JsonObject, val version: Int)
+
+    /**
+     * The latest version of the secret at [path] with its fields as they are stored, for a write that keeps every other field
+     * (and its type) as it is. A deleted latest version reads as no fields, with its version number (writes must name it).
+     */
+    fun readVersioned(token: String, namespace: String, mount: String, path: String): Versioned {
+        val response = http.send("GET", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace)
+        if (!response.isSuccess && response.status != 404) throw VaultHttp.failure(response, "Reading $mount${displayPath(path)}")
+        val data = runCatching { response.json().asJsonObject.obj("data") }.getOrNull()
+        val version = data?.obj("metadata")?.get("version")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+        val fields = data?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
+        return Versioned(fields.deepCopy(), version)
+    }
+
+    /**
+     * Writes [fields] as a new version of the secret at [path], only if its current version is still [expectedVersion]
+     * (check-and-set; 0 = only if it doesn't exist): a change made meanwhile by someone else is refused, not overwritten.
+     */
+    fun write(token: String, namespace: String, mount: String, path: String, fields: JsonObject, expectedVersion: Int) {
+        val body = JsonObject().apply {
+            add("options", JsonObject().apply { addProperty("cas", expectedVersion) })
+            add("data", fields)
+        }
+        val response = http.send("POST", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace, json = body.toString())
+        if (response.isSuccess) return
+        val failure = VaultHttp.failure(response, "Writing $mount${displayPath(path)}")
+        if (response.status == 400 && failure.message.orEmpty().contains("check-and-set", ignoreCase = true)) {
+            throw SecretProviderException(Kind.CONFIGURATION, "$mount${displayPath(path)} was changed meanwhile; refresh and try again")
+        }
+        throw failure
+    }
+
+    /** Deletes the latest version of the secret at [path] (KV v2 soft delete: older versions stay and can be restored). */
+    fun deleteLatest(token: String, namespace: String, mount: String, path: String) {
+        val response = http.send("DELETE", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace)
+        if (!response.isSuccess && response.status != 404) throw VaultHttp.failure(response, "Deleting $mount${displayPath(path)}")
+    }
+
     // ---- Tokens ----------------------------------------------------------------------------------------------------
 
     /** Checks [token] and describes it: the session to store. */

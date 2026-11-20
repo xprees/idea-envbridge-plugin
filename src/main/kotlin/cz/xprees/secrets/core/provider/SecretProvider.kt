@@ -30,6 +30,9 @@ interface SecretProvider {
     /** How this provider's references are written (default: `scheme://[env:][folder/…/]KEY`). */
     val referenceGrammar: ReferenceGrammar get() = PathGrammar
 
+    /** Name of the provider's project file read by [readProjectFile] (shown in the UI as the source of "Automatic"), or null. */
+    val projectFileName: String? get() = null
+
     /** Environment used when neither the binding nor a project file names one. */
     fun defaultEnvironment(connection: SecretConnection): String = "dev"
 

@@ -42,6 +42,16 @@ class MockVault : AutoCloseable {
     @Volatile
     var mountsEndpoint = true
 
+    /** Current version of each written secret ("namespace:mount/path"); seeded secrets are at version 1. */
+    val versions = ConcurrentHashMap<String, Int>()
+    private val deletedVersions = ConcurrentHashMap<String, Int>()
+
+    /** Secrets written ("namespace:mount/path"), in order. */
+    val writes = CopyOnWriteArrayList<String>()
+
+    /** Mounts the token may read but not write. */
+    val readOnlyMounts: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     /** Answer invalid tokens as OpenBao does: only "permission denied", without Vault's "invalid token". */
     @Volatile
     var openBaoErrors = false
@@ -173,10 +183,47 @@ class MockVault : AutoCloseable {
                 requireToken() ?: return
                 val mount = path.removePrefix("/v1/").substringBefore("/data/")
                 if (mount == "forbidden") return respond(exchange, 403, """{"errors":["1 error occurred:\n\t* permission denied\n\n"]}""")
-                val fields = secrets[ns].orEmpty()["$mount/${path.substringAfter("/data/").trim('/')}"]
-                    ?: return respond(exchange, 404, """{"errors":[]}""")
-                val data = com.google.gson.Gson().toJson(fields)
-                respond(exchange, 200, """{"data":{"data":$data,"metadata":{"version":1}}}""")
+                val id = "$mount/${path.substringAfter("/data/").trim('/')}"
+                val versionKey = "$ns:$id"
+                val version = versions[versionKey] ?: if (secrets[ns].orEmpty().containsKey(id)) 1 else 0
+                when (exchange.requestMethod) {
+                    "POST" -> {
+                        if (readOnlyMounts.contains(mount)) return respond(exchange, 403, """{"errors":["permission denied"]}""")
+                        val cas = json.getAsJsonObject("options")?.get("cas")?.asInt
+                        if (cas != null && cas != version) {
+                            return respond(exchange, 400, """{"errors":["check-and-set parameter did not match the current version"]}""")
+                        }
+                        // Keep integers integers (the default would make 10 into 10.0)
+                        val gson = com.google.gson.GsonBuilder().setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE).create()
+                        val fields = gson.fromJson<Map<String, Any?>>(json.getAsJsonObject("data"), Map::class.java)
+                        secrets.getOrPut(ns) { ConcurrentHashMap() }[id] = fields
+                        versions[versionKey] = version + 1
+                        writes += "$ns:$id"
+                        respond(exchange, 200, """{"data":{"version":${version + 1}}}""")
+                    }
+
+                    "DELETE" -> {
+                        if (readOnlyMounts.contains(mount)) return respond(exchange, 403, """{"errors":["permission denied"]}""")
+                        secrets[ns]?.remove(id)
+                        deletedVersions[versionKey] = version
+                        versions[versionKey] = version
+                        respond(exchange, 204, null)
+                    }
+
+                    else -> {
+                        val fields = secrets[ns].orEmpty()[id]
+                        if (fields == null) {
+                            // A deleted latest version still reports its metadata
+                            return if (deletedVersions.containsKey(versionKey)) {
+                                respond(exchange, 404, """{"data":{"data":null,"metadata":{"version":$version,"deletion_time":"2026-01-01T00:00:00Z"}}}""")
+                            } else {
+                                respond(exchange, 404, """{"errors":[]}""")
+                            }
+                        }
+                        val data = com.google.gson.Gson().toJson(fields)
+                        respond(exchange, 200, """{"data":{"data":$data,"metadata":{"version":$version}}}""")
+                    }
+                }
             }
 
             else -> respond(exchange, 404, """{"errors":["no handler for route"]}""")
