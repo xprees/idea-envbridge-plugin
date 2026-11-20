@@ -354,7 +354,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 is ConnectionNode -> {
                     icon = SecretsIcons.PROVIDER
                     append(value.connection.name)
-                    append("  ${value.connection.baseUrl.removePrefix("https://")}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    if (cz.xprees.secrets.core.provider.usesBaseUrl(value.connection)) {
+                        append("  ${value.connection.baseUrl.removePrefix("https://")}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    }
                     if (!value.signedIn) append("  " + SecretsBundle.message("toolwindow.signed.out"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
                 }
 

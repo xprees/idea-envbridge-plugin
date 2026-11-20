@@ -73,8 +73,9 @@ class ConnectionDialog(
 
     override fun createCenterPanel(): JComponent = panel {
         row(SecretsBundle.message("connection.name")) { cell(nameField).align(AlignX.FILL) }
-        row(SecretsBundle.message("connection.instance")) { cell(instanceCombo).align(AlignX.FILL) }
-            .rowComment(SecretsBundle.message("connection.instance.comment"))
+        val instanceUsed = UsesBaseUrl()
+        row(SecretsBundle.message("connection.instance")) { cell(instanceCombo).align(AlignX.FILL) }.visibleIf(instanceUsed)
+        row { comment(SecretsBundle.message("connection.instance.comment"), maxLineLength = 70) }.visibleIf(instanceUsed)
         row(SecretsBundle.message("connection.method")) { cell(methodCombo).align(AlignX.FILL) }
         for (method in provider.authMethods) {
             val visible = MethodSelected(method)
@@ -96,9 +97,25 @@ class ConnectionDialog(
         }
     }
 
+    /** Whether the selected method talks to the instance address (a method going through a local CLI doesn't). */
+    private inner class UsesBaseUrl : ComponentPredicate() {
+        override fun invoke() = selectedMethod.usesBaseUrl
+        override fun addListener(listener: (Boolean) -> Unit) {
+            methodCombo.addActionListener { listener(invoke()) }
+        }
+    }
+
+    /**
+     * The base URL to save: the one entered, or for a method that doesn't use it whatever valid address there is (the
+     * previous one, else the provider's first preset), so the connection stays valid if the method is changed later.
+     */
+    private fun baseUrlToSave(): String? = SecretConnection.normalizeBaseUrl(instanceUrl())
+        ?: if (selectedMethod.usesBaseUrl) null
+        else existing?.baseUrl ?: provider.instancePresets.firstNotNullOfOrNull { SecretConnection.normalizeBaseUrl(it.second) }
+
     override fun doValidate(): ValidationInfo? {
         if (nameField.text.isBlank()) return ValidationInfo(SecretsBundle.message("connection.validation.name"), nameField)
-        if (SecretConnection.normalizeBaseUrl(instanceUrl()) == null) {
+        if (baseUrlToSave() == null) {
             return ValidationInfo(SecretsBundle.message("connection.validation.url"), instanceCombo)
         }
         val method = selectedMethod
@@ -127,7 +144,7 @@ class ConnectionDialog(
             id = existing?.id ?: UUID.randomUUID().toString(),
             providerId = provider.id,
             name = nameField.text.trim(),
-            baseUrl = SecretConnection.normalizeBaseUrl(instanceUrl())!!,
+            baseUrl = baseUrlToSave()!!,
             authMethodId = method.id,
             options = optionFields.getValue(method.id).mapValues { it.value.text.trim() }.filterValues { it.isNotEmpty() },
         )
