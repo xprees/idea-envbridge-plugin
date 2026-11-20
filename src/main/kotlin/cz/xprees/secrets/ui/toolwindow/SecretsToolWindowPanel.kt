@@ -308,7 +308,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     /** The binding the tool window is limited to, or null when everything may be shown. Off the EDT. */
     private fun restrictedBinding(): SecretBindingService.Binding? {
         if (showAll || !ProjectSecretsSettings.getInstance(project).state.restrictToBoundProject) return null
-        val provider = SecretProvider.all().firstOrNull() ?: return null
+        val provider = SecretBindingService.getInstance(project).boundProvider() ?: return null
         return SecretBindingService.getInstance(project).bindingOrNull(provider)?.takeIf { it.projectId != null }
     }
 
@@ -488,7 +488,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         // Drag secrets onto a folder or environment of the same project
         DnDSupport.createBuilder(tree)
             .setBeanProvider { info ->
-                if (!SecretsService.getInstance().writesAllowed) return@setBeanProvider null
+                if (!SecretsService.getInstance().writesAllowed(selectedNode()?.connection)) return@setBeanProvider null
                 val path = tree.getPathForLocation(info.point.x, info.point.y) ?: return@setBeanProvider null
                 if (path.lastPathComponent !is SecretNode) return@setBeanProvider null
                 movable(selectedNodes())?.let { DnDDragStartBean(it) }
@@ -561,9 +561,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
     }
 
-    /** False (with the reason as the description) while *Read-only* is on in the settings. */
+    /** False (with the reason as the description) while *Read-only* is on, or for a provider that can't write. */
     private fun writable(e: AnActionEvent): Boolean {
-        val allowed = SecretsService.getInstance().writesAllowed
+        val allowed = SecretsService.getInstance().writesAllowed(selectedNode()?.connection)
         if (!allowed) e.presentation.description = SecretsBundle.message("action.read.only.disabled")
         return allowed
     }
@@ -698,17 +698,10 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             is EnvironmentNode -> node.scope to null
             else -> return null
         }
-        // Leave out what the project binding already says (the folder is absolute: written unless it is the root)
-        val sameProject = binding?.projectId == scope.projectId
-        val sameEnv = sameProject && binding?.environment == scope.environment
-        return SecretReference(
-            scheme = provider.referenceScheme,
-            key = key,
-            environment = if (sameEnv) null else scope.environment,
-            path = scope.path.takeIf { it != "/" },
-            projectId = if (sameProject) null else scope.projectId,
-            connectionId = if (binding != null) null else connection.name,
-        )
+        // Leave out what the project binding already says, as far as the provider's grammar allows
+        val defaults = binding?.projectId?.let { SecretReference.Defaults(it, binding.environment) }
+        return provider.referenceGrammar.build(provider.referenceScheme, scope, key, defaults)
+            .copy(connectionId = if (binding != null) null else connection.name)
     }
 
     private fun selectedNodes(): List<SecretsNode> = tree.selectionPaths.orEmpty().mapNotNull { it.lastPathComponent as? SecretsNode }

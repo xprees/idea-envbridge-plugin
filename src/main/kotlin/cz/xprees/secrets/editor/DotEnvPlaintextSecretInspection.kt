@@ -39,7 +39,7 @@ class DotEnvPlaintextSecretInspection : LocalInspectionTool() {
                 for (line in DotEnvLines.parse(file.text)) {
                     if (line.name !in keys || line.binding != null || line.value.isBlank()) continue
                     if (resolver.hasReferences(mapOf(line.name to line.value))) continue
-                    val reference = SecretReference(snapshot.scheme, line.name).format()
+                    val reference = snapshot.reference(line.name)
                     holder.registerProblem(
                         file,
                         SecretsBundle.message("dotenv.plaintext", line.name, snapshot.boundEnvironment, snapshot.path),
@@ -92,7 +92,7 @@ class DotEnvBindIntention : IntentionAction {
         val lineRange = TextRange(document.getLineStartOffset(lineNumber), document.getLineEndOffset(lineNumber))
         val line = DotEnvLines.parse(document.text).firstOrNull { lineRange.containsOffset(it.valueRange.startOffset) } ?: return null
         if (line.binding != null || line.value.isNotBlank() || line.name !in snapshot.boundKeys) return null
-        return line to SecretReference(snapshot.scheme, line.name).format()
+        return line to snapshot.reference(line.name)
     }
 }
 

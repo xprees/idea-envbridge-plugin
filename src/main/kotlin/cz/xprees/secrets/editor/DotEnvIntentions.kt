@@ -88,7 +88,7 @@ class DotEnvBindToSecretIntention : IntentionAction {
                     })
                     .setNamerForFiltering { "${it.key} ${it.path}" }
                     .setItemChosenCallback { choice ->
-                        val reference = SecretReference(snapshot.scheme, choice.key, path = choice.path.takeIf { it != "/" }).format()
+                        val reference = snapshot.reference(choice.key, choice.path)
                         if (!isPlaintext(project, line)) rebind(project, editor!!, line.name, reference, keepValue = true) else chooseValueHandling(project, editor!!, line, reference)
                     }
                     .createPopup()
@@ -127,7 +127,8 @@ class DotEnvExtractToSecretIntention : IntentionAction {
         val line = lineAtCaret(editor, file) ?: return false
         if (line.binding != null || !isPlaintext(project, line)) return false
         // Read-only (settings): no writes, so no extracting
-        return SecretsService.getInstance().writesAllowed && KeysIndex.getInstance(project).current() != null
+        val snapshot = KeysIndex.getInstance(project).current() ?: return false
+        return SecretsService.getInstance().writesAllowed(snapshot.providerId)
     }
 
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
@@ -144,11 +145,7 @@ class DotEnvExtractToSecretIntention : IntentionAction {
         ) { location, outcome ->
             // Bind only to a secret that exists; a pending change request would make launches fail
             if (outcome != WriteOutcome.APPLIED || location.key == null) return@NewSecretDialog
-            val reference = SecretReference(
-                snapshot.scheme, location.key,
-                environment = location.environment.takeIf { it != binding.environment },
-                path = location.path.takeIf { it != "/" },
-            ).format()
+            val reference = snapshot.reference(location.key, location.path, location.environment)
             rebind(project, editor!!, line.name, reference, keepValue = false)
         }.show()
     }

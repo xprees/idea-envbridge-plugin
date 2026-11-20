@@ -163,7 +163,25 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
     private fun selectedConnection(): SecretConnection? = connectionList.selectedValue ?: connectionModel.items.singleOrNull()
 
     private fun addConnection() {
-        val dialog = ConnectionDialog(project, null)
+        // Several providers: ask which one first
+        val providers = cz.xprees.secrets.core.provider.SecretProvider.all()
+        if (providers.size > 1) {
+            com.intellij.openapi.ui.popup.JBPopupFactory.getInstance().createPopupChooserBuilder(providers)
+                .setTitle(SecretsBundle.message("settings.add.connection.provider"))
+                .setRenderer(com.intellij.ui.SimpleListCellRenderer.create { label, provider, _ ->
+                    label.text = provider.displayName
+                    label.icon = provider.icon
+                })
+                .setItemChosenCallback { addConnection(it) }
+                .createPopup()
+                .showInFocusCenter()
+        } else {
+            addConnection(providers.firstOrNull() ?: return)
+        }
+    }
+
+    private fun addConnection(provider: cz.xprees.secrets.core.provider.SecretProvider) {
+        val dialog = ConnectionDialog(project, null, provider)
         if (!dialog.showAndGet()) return
         val connection = dialog.result ?: return
         app.addOrUpdate(connection)

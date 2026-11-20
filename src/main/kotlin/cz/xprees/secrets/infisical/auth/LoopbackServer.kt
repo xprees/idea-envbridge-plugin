@@ -185,11 +185,11 @@ class BrowserSessionCallback(baseUrl: String) {
  * Receives the redirect of an OAuth 2.0 authorization code flow: `GET /callback?code=…&state=…`. Only the expected
  * [state] is accepted (constant-time comparison); errors from the authorization server end the attempt.
  */
-class OAuthRedirectCallback(private val state: String) {
+class OAuthRedirectCallback(private val state: String, private val path: String = PATH) {
     val result = CompletableFuture<String>()
 
     fun handle(exchange: HttpExchange) {
-        if (exchange.requestMethod != "GET" || exchange.requestURI.path != PATH) {
+        if (exchange.requestMethod != "GET" || exchange.requestURI.path != path) {
             LoopbackServer.respond(exchange, 404)
             return
         }

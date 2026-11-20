@@ -70,22 +70,36 @@ class SecretBindingService(private val project: Project) {
         val settings = ProjectSecretsSettings.getInstance(project).state
         val file = projectFile(provider)
         val connection = chooseConnection(provider, settings.connectionId, file, connectionIdOrName)
+        // The IDE binding belongs to one connection: its project and environment mean nothing to another provider's
+        val ide = settings.takeIf { it.connectionId.isNullOrBlank() || it.connectionId == connection.id }
         val (environment, source) = when {
             !environmentOverride.isNullOrBlank() -> environmentOverride to "run configuration"
-            !settings.environment.isNullOrBlank() -> settings.environment!! to "IDE"
+            !ide?.environment.isNullOrBlank() -> ide.environment!! to "IDE"
             !file?.branchEnvironment.isNullOrBlank() -> file.branchEnvironment!! to "Git branch"
             !file?.environment.isNullOrBlank() -> file.environment!! to file.file.fileName.toString()
-            else -> DEFAULT_ENVIRONMENT to "default"
+            else -> provider.defaultEnvironment(connection) to "default"
         }
         return Binding(
             provider = provider,
             connection = connection,
-            projectId = settings.projectId?.takeIf { it.isNotBlank() } ?: file?.projectId,
+            projectId = ide?.projectId?.takeIf { it.isNotBlank() } ?: file?.projectId,
             environment = environment,
-            path = SecretScope.normalizePath(settings.path?.takeIf { it.isNotBlank() } ?: file?.path),
+            path = SecretScope.normalizePath(ide?.path?.takeIf { it.isNotBlank() } ?: file?.path),
             environmentSource = source,
             projectFile = file,
         )
+    }
+
+    /**
+     * The provider the project uses: the one of the bound connection (This Project), else the first provider that has a
+     * connection, else the first provider.
+     */
+    fun boundProvider(): SecretProvider? {
+        val app = SecretsAppSettings.getInstance()
+        app.connection(ProjectSecretsSettings.getInstance(project).state.connectionId)
+            ?.let { SecretProvider.byId(it.providerId) }?.let { return it }
+        val providers = SecretProvider.all()
+        return providers.firstOrNull { app.connectionsOf(it.id).isNotEmpty() } ?: providers.firstOrNull()
     }
 
     /** Like [binding], but null instead of an exception when nothing is configured. */

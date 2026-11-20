@@ -108,10 +108,10 @@ private class AddSecretsDialog(private val project: Project) : DialogWrapper(pro
 
     override fun doOKAction() {
         val settings = configurationCombo.selectedItem as? RunnerAndConfigurationSettings ?: return
-        val scheme = snapshot?.scheme ?: return
+        val snapshot = snapshot ?: return
         val additions = LinkedHashMap<String, String>()
-        if (wholeFolder.isSelected) additions[AddSecretsToRunConfigurationAction.SCOPE_VARIABLE] = SecretReference(scheme, null).format()
-        selectedKeys().forEach { additions[it] = SecretReference(scheme, it).format() }
+        if (wholeFolder.isSelected) additions[AddSecretsToRunConfigurationAction.SCOPE_VARIABLE] = snapshot.reference(null)
+        selectedKeys().forEach { additions[it] = snapshot.reference(it) }
         val skipped = AddSecretsToRunConfigurationAction.addTo(project, settings, additions)
         SecretsNotifications.info(
             project,

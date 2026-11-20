@@ -145,7 +145,8 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
             assertThatThrownBy { service.createSecret(connection, scope, "NEW", SecretValue("x")) }.hasMessageContaining("Read-only")
             assertThatThrownBy { service.updateSecret(connection, scope, "API_KEY", SecretValue("x")) }.hasMessageContaining("Read-only")
             assertThatThrownBy { service.createEnvironment(connection, "p1", "QA", "qa") }.hasMessageContaining("Read-only")
-            assertThat(mock.requests).hasSize(before)
+            // Nothing but reads after `before`: the background keys index may still be reading, but no write reached the server
+            assertThat(mock.requests.drop(before).filter { it.method != "GET" }).isEmpty()
             // Reading is unaffected
             assertThat(service.secrets(connection, scope, fresh = true).map { it.key }).contains("API_KEY")
         } finally {
