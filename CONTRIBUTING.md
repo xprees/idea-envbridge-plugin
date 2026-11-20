@@ -65,7 +65,8 @@ credential storage work for it without changes.
 ```shell
 ./gradlew runIde          # a sandbox IDE with the plugin (the oldest supported IDE)
 ./gradlew runIdeLatest    # the same in the newest IDE the verifier checks
-./gradlew test            # all tests
+./gradlew test            # all tests (without the integration tests)
+./gradlew integrationTest # against real servers, after scripts/integration/start.sh
 ./gradlew buildPlugin     # build/distributions/secrets-for-infisical-<version>.zip
 ./gradlew verifyPlugin    # JetBrains Plugin Verifier against the IDEs in gradle.properties
 ```
@@ -75,8 +76,19 @@ credential storage work for it without changes.
 Every change in behaviour needs a test that fails without it.
 
 - Pure logic (`core/model`, `core/reference`, `core/resolve/EnvResolution`, API parsing, project files) is tested with plain JUnit.
-- Code that needs the platform extends `BasePlatformTestCase`. Network code is tested against `MockInfisical`, never against a
-  real instance.
+- Code that needs the platform extends `BasePlatformTestCase`. Network code is unit-tested against fakes (`MockInfisical`,
+  `MockVault`), never against a real instance.
+- **Integration tests** (`src/test/kotlin/.../integration/`, classes ending in `IntegrationTest`) run the providers and the launch
+  path against real servers in Docker: HashiCorp Vault, OpenBao and a self-hosted Infisical, seeded with throwaway test data.
+  `./gradlew test` leaves them out; CI runs them in the *Integration tests* job. Locally:
+
+  ```shell
+  scripts/integration/start.sh     # starts and seeds the servers (Docker), writes build/integration.env
+  ./gradlew integrationTest
+  scripts/integration/stop.sh
+  ```
+
+  A behaviour a fake can't prove (an endpoint's real shape, an error a real server sends) belongs in an integration test too.
 - Security behaviour (callback hardening, URL checks, masking, run configuration isolation) has tests. Keep them.
 - **Assert exact results**, and **don't skip, disable or loosen a failing test.** Find the cause.
 

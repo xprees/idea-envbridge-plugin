@@ -10,6 +10,15 @@
   passwords only in the IDE's password storage, renewable tokens renewed before they expire. Mounts are listed from the server or
   set on the connection. Creating and changing Vault secrets comes later; those actions are off for Vault connections
 - Choosing the secret manager when adding a connection, once there are several
+- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
+  (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
+
+### Fixed
+
+- Changing secrets (and other requests with a body) on Infisical instances served over plain `http://` (a local self-hosted one)
+  failed with HTTP 405: such requests now use HTTP/1.1 instead of an HTTP/2 upgrade
+- OpenBao: an expired or revoked token is recognised although the server only says "permission denied", so the plugin signs in
+  again instead of reporting missing permissions
 
 ### Changed
 

@@ -42,6 +42,10 @@ class MockVault : AutoCloseable {
     @Volatile
     var mountsEndpoint = true
 
+    /** Answer invalid tokens as OpenBao does: only "permission denied", without Vault's "invalid token". */
+    @Volatile
+    var openBaoErrors = false
+
     @Volatile
     var tokenTtl = 3600L
 
@@ -98,7 +102,7 @@ class MockVault : AutoCloseable {
 
         fun requireToken(): Token? {
             val known = token?.let { tokens[it] ?: staticTokens[it]?.let { name -> Token(0, false, name) } }
-            if (known == null) respond(exchange, 403, """{"errors":["permission denied","invalid token"]}""")
+            if (known == null) respond(exchange, 403, if (openBaoErrors) """{"errors":["permission denied"]}""" else """{"errors":["permission denied","invalid token"]}""")
             return known
         }
 

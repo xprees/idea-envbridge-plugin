@@ -74,7 +74,13 @@ class VaultApi(val http: VaultHttp) {
     /** Checks [token] and describes it: the session to store. */
     fun lookupSelf(token: String, namespace: String): TokenSet {
         val response = http.send("GET", "auth/token/lookup-self", token, namespace)
-        if (!response.isSuccess) throw VaultHttp.failure(response, "Checking the token")
+        if (!response.isSuccess) {
+            val failure = VaultHttp.failure(response, "Checking the token")
+            // Every valid token may look itself up (default policy): a refusal means the token is invalid, revoked or
+            // expired. OpenBao says only "permission denied" then, without Vault's "invalid token".
+            if (failure.kind == Kind.FORBIDDEN) throw SecretProviderException(Kind.AUTH_REQUIRED, "Checking the token: the token is not valid any more")
+            throw failure
+        }
         val data = response.json().asJsonObject.obj("data") ?: throw SecretProviderException(Kind.SERVER, "Checking the token: no data")
         val ttl = data.get("ttl")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0
         return TokenSet(

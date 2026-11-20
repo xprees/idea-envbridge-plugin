@@ -67,6 +67,9 @@ class InfisicalHttp(val baseUrl: String) {
         val target = url(path)
         val client = java.net.http.HttpClient.newBuilder()
             .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+            // HTTP/1.1: over plain http:// the default (HTTP/2) sends an h2c upgrade with every request, which servers such
+            // as Infisical's answer with 405 for requests with a body (PATCH, DELETE)
+            .version(java.net.http.HttpClient.Version.HTTP_1_1)
             .connectTimeout(java.time.Duration.ofMillis(CONNECT_TIMEOUT_MS.toLong()))
             .proxy(java.net.ProxySelector.getDefault() ?: java.net.ProxySelector.of(null))
             .apply { runCatching { com.intellij.util.net.ssl.CertificateManager.getInstance().sslContext }.getOrNull()?.let(::sslContext) }
