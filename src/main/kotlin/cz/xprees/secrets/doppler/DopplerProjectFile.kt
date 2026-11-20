@@ -28,9 +28,9 @@ import java.nio.file.Path
  *     path: web/
  * ```
  *
- * Looked up in the project directory and its parents. Of a list, the entry whose `path` is the project directory wins, else one
- * for the file's own directory (`.` or no path), else the first. The user's `~/.doppler/.doppler.yaml` (which holds the CLI's
- * tokens) is never read.
+ * Looked up in the project directory and its parents. Of a list, the deepest entry whose directory holds the project directory
+ * wins (an entry also covers its subdirectories; `.` or no path is the file's own directory); when none does, the file binds
+ * nothing. The user's `~/.doppler/.doppler.yaml` (which holds the CLI's tokens) is never read.
  */
 data class DopplerProjectFile(val file: Path, val project: String?, val config: String?) {
 
@@ -74,9 +74,9 @@ data class DopplerProjectFile(val file: Path, val project: String?, val config: 
 
         private fun choose(entries: List<Map<*, *>>, fileDir: Path, projectDir: Path): Map<*, *>? {
             fun dirOf(entry: Map<*, *>): Path = fileDir.resolve(entry["path"].str() ?: ".").normalize()
-            return entries.firstOrNull { dirOf(it) == projectDir }
-                ?: entries.firstOrNull { dirOf(it) == fileDir }
-                ?: entries.firstOrNull()
+            // The deepest entry whose directory holds the project (an entry covers its subdirectories, as `doppler setup`
+            // scopes do); none: no binding from the file (rather than another app's project)
+            return entries.filter { projectDir.startsWith(dirOf(it)) }.maxByOrNull { dirOf(it).nameCount }
         }
 
         private fun Any?.str(): String? = this?.toString()?.trim()?.takeIf { it.isNotEmpty() }

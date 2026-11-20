@@ -149,12 +149,12 @@ class ConnectionDialog(
             options = optionFields.getValue(method.id).mapValues { it.value.text.trim() }.filterValues { it.isNotEmpty() },
         )
         val secrets = secretFields.getValue(method.id).mapValues { (_, field) -> field.password.also { field.text = "" } }
-        val methodOrInstanceChanged = existing != null && (existing.authMethodId != method.id || existing.baseUrl != connection.baseUrl)
+        val sessionStale = sessionStale(existing, connection, secretsEntered = secrets.values.any { it.isNotEmpty() })
         val allSecretKeys = provider.authMethods.flatMap { m -> m.secretOptions.map { it.key } }.toSet()
         // Synchronously (under a short modal progress, off the EDT): a sign-in started right after OK must find the secrets
         ProgressManager.getInstance().runProcessWithProgressSynchronously({
             // A session belongs to the instance and method it was created for
-            if (methodOrInstanceChanged) CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
+            if (sessionStale) CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
             if (existing != null && existing.authMethodId != method.id) {
                 (allSecretKeys - method.secretOptions.map { it.key }.toSet()).forEach {
                     CredentialVault.remove(connection.id, CredentialVault.secretOptionSlot(it))
@@ -172,4 +172,17 @@ class ConnectionDialog(
     private fun instanceUrl(): String = (instanceCombo.editor.item ?: instanceCombo.selectedItem)?.toString().orEmpty().trim()
 
     override fun getPreferredFocusedComponent(): JComponent = nameField
+
+    companion object {
+        /**
+         * Whether [existing]'s stored session must be dropped when it is saved as [updated]: a session was created from the
+         * method, instance, options and secrets, so any change makes it stale (a newly pasted token or password must be used
+         * right away, not after the old session expires).
+         */
+        fun sessionStale(existing: SecretConnection?, updated: SecretConnection, secretsEntered: Boolean): Boolean =
+            existing != null && (
+                existing.authMethodId != updated.authMethodId || existing.baseUrl != updated.baseUrl ||
+                    existing.options != updated.options || secretsEntered
+                )
+    }
 }
