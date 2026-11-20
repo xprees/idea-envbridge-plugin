@@ -73,8 +73,9 @@ class DotEnvBindToSecretIntention : IntentionAction {
                     .secrets(binding.connection, SecretScope(projectId, binding.environment, "/", recursive = true))
                     .filter { it.origin != SecretOrigin.IMPORTED }
                     .map { DotEnvLines.KeyChoice(it.key, it.path, it.comment) }
-                val bound = snapshot.boundKeys.values.map { DotEnvLines.KeyChoice(it.key, binding.path, it.comment) }
-                choices = DotEnvLines.rankChoices(line.name, binding.path, (bound + everywhere).distinctBy { it.key to it.path })
+                // The root as a bare reference reads it (imports included)
+                val root = snapshot.boundKeys.values.map { DotEnvLines.KeyChoice(it.key, "/", it.comment) }
+                choices = DotEnvLines.rankChoices(line.name, "/", (root + everywhere).distinctBy { it.key to it.path })
             }
 
             override fun onSuccess() {
@@ -87,7 +88,7 @@ class DotEnvBindToSecretIntention : IntentionAction {
                     })
                     .setNamerForFiltering { "${it.key} ${it.path}" }
                     .setItemChosenCallback { choice ->
-                        val reference = SecretReference(snapshot.scheme, choice.key, path = choice.path.takeIf { it != binding.path }).format()
+                        val reference = SecretReference(snapshot.scheme, choice.key, path = choice.path.takeIf { it != "/" }).format()
                         if (!isPlaintext(project, line)) rebind(project, editor!!, line.name, reference, keepValue = true) else chooseValueHandling(project, editor!!, line, reference)
                     }
                     .createPopup()
@@ -143,11 +144,10 @@ class DotEnvExtractToSecretIntention : IntentionAction {
         ) { location, outcome ->
             // Bind only to a secret that exists; a pending change request would make launches fail
             if (outcome != WriteOutcome.APPLIED || location.key == null) return@NewSecretDialog
-            val sameScope = location.environment == binding.environment && location.path == binding.path
             val reference = SecretReference(
                 snapshot.scheme, location.key,
-                environment = if (sameScope) null else location.environment,
-                path = if (sameScope) null else location.path,
+                environment = location.environment.takeIf { it != binding.environment },
+                path = location.path.takeIf { it != "/" },
             ).format()
             rebind(project, editor!!, line.name, reference, keepValue = false)
         }.show()

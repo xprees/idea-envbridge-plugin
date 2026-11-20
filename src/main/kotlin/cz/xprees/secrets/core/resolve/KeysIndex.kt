@@ -32,7 +32,7 @@ class KeysIndex(private val project: Project) : Disposable {
         val path: String,
         /** The environment references fall back to. */
         val boundEnvironment: String,
-        /** Environment slug -> keys of the bound folder there (environments that failed to load are missing). */
+        /** Environment slug -> keys of its root folder (what a bare reference reads; environments that failed to load are missing). */
         val environments: Map<String, Map<String, KeyInfo>>,
         val loadedAt: Long,
         /** Folder path -> keys defined there, for every folder of the bound environment (root and subfolders). */
@@ -101,7 +101,7 @@ class KeysIndex(private val project: Project) : Disposable {
         } ?: listOf(binding.environment)
         val keys = LinkedHashMap<String, Map<String, KeyInfo>>()
         for (environment in (listOf(binding.environment) + environments).distinct()) {
-            val secrets = runCatching { service.secrets(binding.connection, SecretScope(projectId, environment, binding.path)) }.getOrNull() ?: continue
+            val secrets = runCatching { service.secrets(binding.connection, SecretScope(projectId, environment, "/")) }.getOrNull() ?: continue
             keys[environment] = secrets.associate { it.key to KeyInfo(it.key, it.comment, it.origin, it.path) }
         }
         // Every folder of the bound environment, so completion and the editor can tell same-named keys of different folders apart
@@ -116,7 +116,8 @@ class KeysIndex(private val project: Project) : Disposable {
             scheme = provider.referenceScheme,
             connectionName = binding.connection.name,
             projectId = projectId,
-            path = binding.path,
+            // References are absolute: a bare one reads the root folder
+            path = "/",
             boundEnvironment = binding.environment,
             environments = keys,
             loadedAt = System.currentTimeMillis(),

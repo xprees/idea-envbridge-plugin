@@ -108,7 +108,7 @@ add a connection for that instance yourself, if you trust it.
 
 ### Environment resolution for a launch (CLI-compatible)
 
-1. An explicit environment in the reference (`infisical://prod/…`) or the run configuration's Infisical section
+1. An explicit environment in the reference (`infisical://prod:…`) or the run configuration's Infisical section
 2. `INFISICAL_ENVIRONMENT` set on the run configuration
 3. The environment picked in the IDE (status bar / binding)
 4. `.infisical.yaml` git-branch override (last segment of the branch name)
@@ -120,11 +120,12 @@ add a connection for that instance yourself, if you trust it.
 Opt-in per run configuration, inside the run configuration's own **Environment variables** (no new dialog):
 
 - **Per-variable references**: `DB_PASSWORD=infisical://DB_PASSWORD`. The full syntax is
-  `infisical://[<env>/][<folder>/…/]<KEY>[?project=<id>&connection=<id>]`. With one segment, the environment and folder come from
-  the binding. With more, the first segment is the environment and the middle ones the folder. A path can also be passed as
-  `?path=/backend` and the environment as `?env=prod`.
+  `infisical://[<env>:][<folder>/…/]<KEY>[?project=<id>&connection=<id>]`. Folders are absolute from the environment's root (no
+  folder: the root), so the reference alone says which secret it is; the environment comes from the binding unless written before
+  the colon. `?path=/backend` and `?env=prod` are accepted too. The binding's folder is only a default for new secrets and the
+  tool window.
 - **Whole scope**: a variable whose value ends with `/*` (`/**` for subfolders too) imports every secret of that scope. Its key is
-  only a label and is not passed on, e.g. `INFISICAL=infisical://*` or `INFISICAL=infisical://staging/backend/**`.
+  only a label and is not passed on, e.g. `INFISICAL=infisical://*` or `INFISICAL=infisical://staging:backend/**`.
 - **Precedence**: plain values set on the run configuration > per-variable references > whole-scope imports.
 
 Only the references are stored, in the run configuration's normal settings and `.run/*.xml` files, so they can be shared.

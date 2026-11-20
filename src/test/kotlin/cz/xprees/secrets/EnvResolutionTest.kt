@@ -39,7 +39,7 @@ class EnvResolutionTest {
         val result = resolve(
             linkedMapOf(
                 "INFISICAL" to "infisical://*",
-                "PASSWORD" to "infisical://prod/A",
+                "PASSWORD" to "infisical://prod:A",
                 "SHARED" to "explicit",
             ),
         )
@@ -53,7 +53,7 @@ class EnvResolutionTest {
 
     @Test
     fun `empty values are passed on with a warning and named in the console summary`() {
-        val result = resolve(linkedMapOf("URL" to "infisical://prod/EMPTY", "PASSWORD" to "infisical://prod/A", "PLAIN" to "x"))
+        val result = resolve(linkedMapOf("URL" to "infisical://prod:EMPTY", "PASSWORD" to "infisical://prod:A", "PLAIN" to "x"))
         assertThat(result.environment).containsEntry("URL", "")
         assertThat(result.warnings).singleElement().asString().contains("URL").contains("EMPTY").contains("prod:/")
         val summary = result.summary()!!
@@ -70,7 +70,7 @@ class EnvResolutionTest {
 
     @Test
     fun `missing secrets and malformed references fail closed with every problem listed`() {
-        assertThatThrownBy { resolve(mapOf("X" to "infisical://NOPE", "Y" to "infisical://prod/NOPE2")) }
+        assertThatThrownBy { resolve(mapOf("X" to "infisical://NOPE", "Y" to "infisical://prod:NOPE2")) }
             .isInstanceOf(SecretProviderException::class.java)
             .hasMessageContaining("NOPE").hasMessageContaining("NOPE2")
         assertThatThrownBy { resolve(mapOf("X" to "infisical://a/*/b")) }
@@ -80,10 +80,10 @@ class EnvResolutionTest {
 
     @Test
     fun `hidden values fail references and are skipped with a warning in scope imports`() {
-        val result = resolve(mapOf("ALL" to "infisical://dev/hidden/*"))
+        val result = resolve(mapOf("ALL" to "infisical://dev:hidden/*"))
         assertThat(result.environment).containsOnlyKeys("V")
         assertThat(result.warnings).hasSize(1)
-        assertThatThrownBy { resolve(mapOf("X" to "infisical://dev/hidden/H")) }
+        assertThatThrownBy { resolve(mapOf("X" to "infisical://dev:hidden/H")) }
             .hasMessageContaining("no permission")
     }
 

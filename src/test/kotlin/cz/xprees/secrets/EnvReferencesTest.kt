@@ -29,12 +29,12 @@ class EnvReferencesTest {
 
     @Test
     fun `secret references and ranges`() {
-        val text = """DB=infisical://prod/backend/DB_PASSWORD"""
+        val text = """DB=infisical://prod:backend/DB_PASSWORD"""
         val found = EnvReferences.find(text, schemes).single()
         assertThat(found.kind).isEqualTo(EnvReferences.Kind.REFERENCE)
         assertThat(found.name).isEqualTo("DB_PASSWORD")
         assertThat(found.reference!!.environment).isEqualTo("prod")
-        assertThat(text.substring(found.start, found.end)).isEqualTo("infisical://prod/backend/DB_PASSWORD")
+        assertThat(text.substring(found.start, found.end)).isEqualTo("infisical://prod:backend/DB_PASSWORD")
         // scope imports name no key
         assertThat(names("X=infisical://*")).isEmpty()
         assertThat(names("not.process.env")).isEmpty()
@@ -47,7 +47,7 @@ class EnvReferencesTest {
         assertThat(prefix("""process.env.""")).isEqualTo("")
         assertThat(prefix("""os.environ["""")).isEqualTo("")
         assertThat(prefix("""url: ${'$'}{""")).isEqualTo("")
-        assertThat(prefix("""DB=infisical://prod/backend/DB""")).isEqualTo("DB")
+        assertThat(prefix("""DB=infisical://prod:backend/DB""")).isEqualTo("DB")
         assertThat(prefix("""DB=infisical://""")).isEqualTo("")
         assertThat(prefix("""val x = "DB_""")).isNull()
         assertThat(prefix("""System.getenv("DB_PASSWORD")""")).isNull()

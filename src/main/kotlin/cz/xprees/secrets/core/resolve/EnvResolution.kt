@@ -136,13 +136,13 @@ object EnvResolution {
      *
      * @param defaults the project binding a reference falls back to (per reference, as references can name other connections)
      * @param fetch the secrets of a scope, with imports applied. Called at most once per distinct (reference target, scope).
-     * @param locate for a key missing from its scope: the other folders of that environment that define it (for the message)
+     * @param suggest for a key missing from its scope: a hint for the message (where the key is, or what was probably meant)
      * @throws SecretProviderException with every problem listed when anything cannot be resolved (fail closed)
      */
     fun resolve(
         plan: Plan,
         defaults: (SecretReference) -> SecretReference.Defaults,
-        locate: (SecretReference, SecretScope) -> List<String> = { _, _ -> emptyList() },
+        suggest: (SecretReference, SecretScope) -> String? = { _, _ -> null },
         fetch: (SecretReference, SecretScope) -> List<SecretEntry>,
     ): Result {
         val problems = plan.errors.map { (name, message) -> "$name: $message" }.toMutableList()
@@ -151,8 +151,16 @@ object EnvResolution {
         }
 
         val fetched = HashMap<Pair<Target, SecretScope>, List<SecretEntry>>()
+        // A folder that doesn't exist holds no secrets: reported per variable (with a hint) instead of failing the whole launch
         fun secretsOf(reference: SecretReference, scope: SecretScope): List<SecretEntry> =
-            fetched.getOrPut(Target.of(reference) to scope) { fetch(reference, scope) }
+            fetched.getOrPut(Target.of(reference) to scope) {
+                try {
+                    fetch(reference, scope)
+                } catch (e: SecretProviderException) {
+                    if (e.kind != SecretProviderException.Kind.NOT_FOUND) throw e
+                    emptyList()
+                }
+            }
 
         val environment = LinkedHashMap<String, String>()
         val sources = LinkedHashMap<String, Source>()
@@ -173,12 +181,8 @@ object EnvResolution {
             val scope = reference.scope(defaults(reference))
             val secret = secretsOf(reference, scope).firstOrNull { it.key == reference.key }
             if (secret == null) {
-                // A bare reference reads only the bound folder: say where the key is, and how to point at it
-                val elsewhere = runCatching { locate(reference, scope) }.getOrDefault(emptyList()).filter { it != scope.path }
-                problems += "$name: no secret ${reference.key} in ${describe(scope)}" + when {
-                    elsewhere.isEmpty() -> ""
-                    else -> "; it is in " + elsewhere.joinToString { folder -> "$folder (${reference.copy(path = folder).format()})" }
-                }
+                val hint = runCatching { suggest(reference, scope) }.getOrNull()
+                problems += "$name: no secret ${reference.key} in ${describe(scope)}" + (hint?.let { "; $it" } ?: "")
                 continue
             }
             if (secret.valueHidden) {

@@ -38,7 +38,7 @@ data class SecretLocation(
                 connectionId = binding.connection.id,
                 projectId = projectId,
                 environment = reference?.environment ?: binding.environment,
-                path = reference?.path ?: binding.path,
+                path = reference?.path ?: "/",
                 key = reference?.key ?: key,
             )
         }

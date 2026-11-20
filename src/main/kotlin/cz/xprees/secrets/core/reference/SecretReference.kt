@@ -9,17 +9,19 @@ import java.nio.charset.StandardCharsets
  * A reference to one secret, or to every secret of a folder, written as the value of an environment variable:
  *
  * ```
- * infisical://KEY                        KEY from the bound environment and folder
- * infisical://prod/KEY                   KEY from the root folder of environment prod
- * infisical://prod/backend/api/KEY       KEY from folder /backend/api of prod
- * infisical://(star)                     every secret of the bound environment and folder (scope import)
- * infisical://staging/backend/(star)(star)  every secret of /backend in staging, subfolders included
- * infisical://KEY?env=prod&path=/backend&project=<id>&connection=<id>
+ * infisical://KEY                        KEY in the root folder of the bound environment
+ * infisical://workers/KEY                KEY in folder /workers of the bound environment
+ * infisical://prod:KEY                   KEY in the root folder of environment prod
+ * infisical://prod:backend/api/KEY       KEY in folder /backend/api of prod
+ * infisical://(star)                     every secret of the root folder (scope import)
+ * infisical://staging:backend/(star)(star)  every secret of /backend in staging, subfolders included
+ * infisical://KEY?project=<id>&connection=<name>
  * ```
  *
- * With a single segment the environment and folder come from the project binding. With more, the first segment is the
- * environment and the segments between it and the key form the folder (root when there are none). Query parameters
- * override the parsed parts. (star) stands for `*`, which can't be written after a slash in a Kotlin comment. The scheme is the provider's ([cz.xprees.secrets.core.provider.SecretProvider.referenceScheme]).
+ * Folders are absolute from the environment's root, so the reference alone says where the secret is; only the environment
+ * comes from the project binding when it isn't written as `env:` before the first segment. (`?env=` and `?path=` are
+ * accepted too.) (star) stands for `*`, which can't be written after a slash in a Kotlin comment. The scheme is the
+ * provider's ([cz.xprees.secrets.core.provider.SecretProvider.referenceScheme]).
  */
 data class SecretReference(
     val scheme: String,
@@ -27,7 +29,7 @@ data class SecretReference(
     val key: String?,
     /** Environment slug, or null for the bound one. */
     val environment: String? = null,
-    /** Absolute folder path, or null for the bound one. */
+    /** Absolute folder path, or null for the root folder. */
     val path: String? = null,
     /** Scope imports only: include subfolders (last segment `**`). */
     val recursive: Boolean = false,
@@ -36,11 +38,11 @@ data class SecretReference(
 ) {
     val isScope: Boolean get() = key == null
 
-    /** The scope this reference reads from, filling what it leaves open from [binding]. */
+    /** The scope this reference reads from: the environment (and project) left open come from [binding]; no folder is the root. */
     fun scope(binding: Defaults): SecretScope = SecretScope(
         projectId = projectId ?: binding.projectId,
         environment = environment ?: binding.environment,
-        path = SecretScope.normalizePath(path ?: binding.path),
+        path = SecretScope.normalizePath(path ?: "/"),
         recursive = recursive,
     )
 
@@ -48,36 +50,29 @@ data class SecretReference(
     fun format(): String = buildString {
         append(scheme).append("://")
         val segments = mutableListOf<String>()
-        val folder = path?.let(SecretScope::normalizePath)
-        // Positional form only when it can express the parts; otherwise query parameters.
-        val positional = environment != null && environment.none { it == '/' }
-        if (positional) {
-            segments += environment!!
-            folder?.split('/')?.filter { it.isNotEmpty() }?.let { segments += it }
-        }
+        SecretScope.normalizePath(path ?: "/").split('/').filter { it.isNotEmpty() }.let { segments += it }
         segments += when {
             key != null -> key
             recursive -> "**"
             else -> "*"
         }
+        // An environment slug can always be written as the prefix (slugs have no ':' or '/'); anything else as ?env=
+        val prefixed = environment != null && environment.none { it == ':' || it == '/' || it == '?' }
+        if (prefixed) append(environment).append(':')
         append(segments.joinToString("/") { encodeSegment(it) })
         val query = buildList {
-            if (!positional) {
-                environment?.let { add("env" to it) }
-                folder?.let { add("path" to it) }
-            }
+            if (environment != null && !prefixed) add("env" to environment)
             projectId?.let { add("project" to it) }
             connectionId?.let { add("connection" to it) }
         }
         if (query.isNotEmpty()) {
-            // Slashes stay readable (`?path=/backend`); the parser takes them either way
             append('?').append(query.joinToString("&") { (k, v) -> "$k=${URLEncoder.encode(v, StandardCharsets.UTF_8).replace("%2F", "/")}" })
         }
     }
 
     override fun toString(): String = format()
 
-    /** Values a reference takes from the project binding when it does not name them itself. */
+    /** Values a reference takes from the project binding when it does not name them itself (the folder never: it is absolute). */
     data class Defaults(val projectId: String, val environment: String, val path: String = "/")
 
     companion object {
@@ -104,17 +99,24 @@ data class SecretReference(
             require(segments.isNotEmpty()) { "Reference '$text' names no secret: add a key, or * for every secret" }
             require(segments.none { it.isBlank() || it.any(Char::isWhitespace) }) { "Reference '$text' contains whitespace" }
 
-            val last = segments.last()
-            val isScope = last == "*" || last == "**"
-            require(segments.dropLast(1).none { it == "*" || it == "**" }) { "In '$text', * and ** may only be the last segment" }
+            // `env:` before the first segment names the environment; every other segment is a folder from the root
             var environment: String? = null
-            var path: String? = null
-            if (segments.size > 1) {
-                environment = segments.first()
-                path = "/" + segments.subList(1, segments.size - 1).joinToString("/")
+            val parts = segments.toMutableList()
+            val colon = parts.first().indexOf(':')
+            if (colon >= 0) {
+                environment = parts.first().substring(0, colon)
+                require(environment.isNotEmpty()) { "In '$text', the environment before ':' is empty" }
+                val rest = parts.first().substring(colon + 1)
+                if (rest.isEmpty()) parts.removeAt(0) else parts[0] = rest
+                require(parts.isNotEmpty()) { "Reference '$text' names no secret: add a key, or * for every secret" }
             }
+            val last = parts.last()
+            val isScope = last == "*" || last == "**"
+            require(parts.dropLast(1).none { it == "*" || it == "**" }) { "In '$text', * and ** may only be the last segment" }
+            var path: String? = parts.dropLast(1).takeIf { it.isNotEmpty() }?.joinToString("/", prefix = "/")
             query["env"]?.let { environment = it.ifBlank { null } }
             query["path"]?.let { path = SecretScope.normalizePath(it) }
+            if (path == "/") path = null
             val unknown = query.keys - setOf("env", "path", "project", "connection")
             require(unknown.isEmpty()) { "Unknown parameter(s) ${unknown.joinToString()} in '$text'" }
             return SecretReference(

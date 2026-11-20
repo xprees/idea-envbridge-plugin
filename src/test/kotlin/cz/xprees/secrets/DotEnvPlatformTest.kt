@@ -80,12 +80,25 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
         myFixture.configureByText(".env", "X=infisical://BACKEND<caret>\n")
         myFixture.completeBasic()
         // The only match is inserted right away, with its folder
-        assertThat(myFixture.editor.document.text).isEqualTo("X=infisical://BACKEND_ONLY?path=/backend\n")
+        assertThat(myFixture.editor.document.text).isEqualTo("X=infisical://backend/BACKEND_ONLY\n")
         // ...and the qualified reference is known to the editor, so it isn't reported as missing
         myFixture.enableInspections(cz.xprees.secrets.editor.MissingSecretInspection::class.java)
         assertThat(myFixture.doHighlighting(HighlightSeverity.WARNING).filter { it.description?.contains("BACKEND_ONLY") == true }).isEmpty()
-        myFixture.configureByText(".env.local", "X=infisical://BACKEND_ONLY?path=/nowhere\n")
+        myFixture.configureByText(".env.local", "X=infisical://nowhere/BACKEND_ONLY\n")
         assertThat(myFixture.doHighlighting(HighlightSeverity.WARNING).filter { it.description?.contains("BACKEND_ONLY") == true }).isNotEmpty()
+    }
+
+    fun `test completion shows each key's folder and lists a typed folder's keys`() {
+        myFixture.configureByText(".env", "X=infisical://<caret>\n")
+        val items = myFixture.completeBasic().orEmpty().associate { element ->
+            val presentation = com.intellij.codeInsight.lookup.LookupElementPresentation.renderElement(element)
+            element.lookupString to presentation.tailText.orEmpty()
+        }
+        assertThat(items.getValue("DB_PASSWORD")).startsWith("  /")
+        assertThat(items.getValue("backend/BACKEND_ONLY")).startsWith("  /backend")
+        myFixture.configureByText(".env.local", "X=infisical://backend/<caret>\n")
+        // Only that folder's keys, inserted as plain keys (the folder is already typed)
+        assertThat(myFixture.completeBasic()?.map { it.lookupString }).containsExactly("BACKEND_ONLY")
     }
 
     fun `test the comment above a variable is found for extracting`() {

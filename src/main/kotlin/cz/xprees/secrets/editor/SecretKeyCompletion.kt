@@ -27,34 +27,32 @@ class SecretKeyCompletionContributor : CompletionContributor(), DumbAware {
         val snapshot = KeysIndex.getInstance(parameters.originalFile.project).current() ?: return
         val matching = result.withPrefixMatcher(prefix)
         val linePrefix = linePrefix(editor, parameters.offset)
-        // Right after `infisical://` (no environment or folder typed): keys of every folder, each with its folder
-        val bareReference = EditorReferences.schemes().any { Regex("(?i)\\b${Regex.escape(it)}://[A-Za-z0-9_.\\-]*$").containsMatchIn(linePrefix) }
-        for (info in snapshot.boundKeys.values) {
-            val elsewhere = bareReference && snapshot.foldersOf(info.key).any { it != snapshot.path }
-            matching.addElement(
-                LookupElementBuilder.create(info.key)
-                    .withIcon(SecretsIcons.PROVIDER)
-                    .withTypeText(SecretsBundle.message("completion.type", snapshot.boundEnvironment) + if (elsewhere) "  ${snapshot.path}" else "", true)
-                    .withTailText(info.comment.lines().firstOrNull()?.takeIf { it.isNotBlank() }?.let { "  $it" }, true)
-                    .withItemTextItalic(info.origin == SecretOrigin.IMPORTED),
-            )
+        // Inside a reference: what is typed before the key (environment prefix and folders)
+        val typed = EditorReferences.schemes().firstNotNullOfOrNull { scheme ->
+            Regex("(?i)\\b${Regex.escape(scheme)}://(?:([A-Za-z0-9_.\\-]+):)?((?:[^\\s\"'?/:]+/)*)[A-Za-z0-9_.\\-]*$").find(linePrefix)
         }
-        if (bareReference) {
+        val typedEnvironment = typed?.groupValues?.get(1)?.takeIf { it.isNotEmpty() }
+        val typedFolder = typed?.groupValues?.get(2)?.trimEnd('/')?.let { if (it.isEmpty()) null else "/$it" }
+        val inBoundEnvironment = typedEnvironment == null || typedEnvironment == snapshot.boundEnvironment
+        if (typed != null && typedFolder != null) {
+            // infisical://workers/… : the keys of that folder only
+            if (inBoundEnvironment) {
+                snapshot.folders[typedFolder].orEmpty().values.forEach { info -> matching.addElement(keyElement(info.key, info.comment, typedFolder, snapshot)) }
+            }
+            return
+        }
+        // The root (what a bare reference reads), each key with its folder
+        for (info in snapshot.environments[typedEnvironment ?: snapshot.boundEnvironment].orEmpty().values) {
+            matching.addElement(keyElement(info.key, info.comment, "/", snapshot, typedEnvironment, info.origin == SecretOrigin.IMPORTED))
+        }
+        if (typed != null && inBoundEnvironment) {
+            // Keys of the other folders, inserted with their folder: infisical://workers/KEY
             for ((folder, keys) in snapshot.folders) {
-                if (folder == snapshot.path) continue
-                for (info in keys.values) {
-                    // Inserts KEY?path=/folder: the reference then names its folder and can't pick up a same-named key elsewhere
-                    matching.addElement(
-                        LookupElementBuilder.create("${info.key}?path=$folder")
-                            .withPresentableText(info.key)
-                            .withLookupString(info.key)
-                            .withIcon(SecretsIcons.PROVIDER)
-                            .withTailText("  $folder", true)
-                            .withTypeText(SecretsBundle.message("completion.type", snapshot.boundEnvironment) + "  $folder", true),
-                    )
-                }
+                if (folder == "/") continue
+                keys.values.forEach { info -> matching.addElement(keyElement(info.key, info.comment, folder, snapshot, insertFolder = true)) }
             }
         }
+        if (typed != null) return
         // Keys that exist only in other environments, so a typo and a missing secret look different
         val bound = snapshot.boundKeys.keys
         snapshot.environments.filterKeys { it != snapshot.boundEnvironment }.values.flatMap { it.keys }.toSet()
@@ -66,6 +64,23 @@ class SecretKeyCompletionContributor : CompletionContributor(), DumbAware {
                 )
             }
     }
+
+    /** A key with its folder (and environment) shown; [insertFolder] inserts `folder/KEY` instead of the key alone. */
+    private fun keyElement(
+        key: String,
+        comment: String,
+        folder: String,
+        snapshot: KeysIndex.Snapshot,
+        environment: String? = null,
+        italic: Boolean = false,
+        insertFolder: Boolean = false,
+    ) = LookupElementBuilder.create(if (insertFolder) folder.trimStart('/') + "/" + key else key)
+        .withLookupString(key)
+        .withPresentableText(key)
+        .withIcon(SecretsIcons.PROVIDER)
+        .withTailText("  $folder" + (comment.lines().firstOrNull()?.takeIf { it.isNotBlank() }?.let { "  $it" } ?: ""), true)
+        .withTypeText(SecretsBundle.message("completion.type", environment ?: snapshot.boundEnvironment), true)
+        .withItemTextItalic(italic)
 
     companion object {
         fun linePrefix(editor: Editor, offset: Int): String {

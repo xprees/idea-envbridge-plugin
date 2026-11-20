@@ -19,7 +19,7 @@ handed to the process in memory. Nothing is written to disk.</p>
       Run, Debug, Coverage and Profile</li>
   <li><b><code>.env</code> files with references</b>: keep a committed <code>.env</code> that holds <code>infisical://</code>
       references instead of secrets: attach it to the run configuration, or let Nuxt, Vite and Next.js read it as usual. Or bind a
-      variable with a comment, <code>API_URL=http://localhost:8090 # infisical://prod/API_URL</code>: tools outside the IDE read
+      variable with a comment, <code>API_URL=http://localhost:8090 # infisical://prod:API_URL</code>: tools outside the IDE read
       the plain value, launches from the IDE get the secret, and the editor shows its masked value. Plaintext secrets in
       <code>.env</code> files are marked, and Alt+Enter binds them</li>
   <li><b>Terminal</b>: <i>New Terminal Tab with Infisical Secrets</i> opens a tab with the secrets; <i>Load Infisical Secrets
@@ -74,7 +74,7 @@ Rider and DataGrip in CI. It declares no upper build limit.
 
    ```
    DB_PASSWORD=infisical://DB_PASSWORD
-   STRIPE_KEY=infisical://prod/payments/STRIPE_KEY
+   STRIPE_KEY=infisical://prod:payments/STRIPE_KEY
    INFISICAL=infisical://*
    ```
 
@@ -87,12 +87,18 @@ A reference is the value of an environment variable:
 
 | Reference | Means |
 |---|---|
-| `infisical://KEY` | `KEY` from the bound environment and folder |
-| `infisical://prod/KEY` | `KEY` from the root folder of environment `prod` |
-| `infisical://prod/backend/api/KEY` | `KEY` from folder `/backend/api` of `prod` |
-| `infisical://*` | every secret of the bound environment and folder. The variable's own name is only a label and is not passed on |
-| `infisical://staging/backend/**` | every secret of `/backend` in `staging`, subfolders included |
-| `infisical://KEY?env=prod&path=/backend&project=<id>&connection=<name>` | parts given as parameters (any combination) |
+| `infisical://KEY` | `KEY` from the root folder of the bound environment |
+| `infisical://workers/KEY` | `KEY` from folder `/workers` of the bound environment |
+| `infisical://prod:KEY` | `KEY` from the root folder of environment `prod` |
+| `infisical://prod:backend/api/KEY` | `KEY` from folder `/backend/api` of `prod` |
+| `infisical://*` | every secret of the root folder of the bound environment. The variable's own name is only a label and is not passed on |
+| `infisical://staging:backend/**` | every secret of `/backend` in `staging`, subfolders included |
+| `infisical://KEY?project=<id>&connection=<name>` | another project or connection (`?env=` and `?path=` are accepted too) |
+
+Folders are absolute from the environment's root, so a reference alone says which secret it is; only the environment comes from
+the binding unless written before a colon. The folder in *This Project* is a default for new secrets and the tool window, not for
+references. A reference written the old way (`infisical://prod/KEY`, environment first) now names folder `/prod`; a launch with it
+stops and says to write `infisical://prod:KEY`.
 
 - **Precedence**: values typed into the run configuration win over references, and references win over whole-folder imports.
   Among imports, later ones win.
@@ -111,7 +117,7 @@ A reference is the value of an environment variable:
 | Python: scripts, modules, pytest, Django, FastAPI, Flask | *Environment variables* |
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
-| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. **Binding comments**: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod/KEY` keeps the file valid for tools outside the IDE (they read the plain value) while IDE launches get the secret. An inspection marks plaintext values of secrets in `.env` files; Alt+Enter binds them (clearing the value or keeping it as a local fallback), and *Bind to Infisical* binds an empty `KEY=` line |
+| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. **Binding comments**: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod:KEY` keeps the file valid for tools outside the IDE (they read the plain value) while IDE launches get the secret. An inspection marks plaintext values of secrets in `.env` files; Alt+Enter binds them (clearing the value or keeping it as a local fallback), and *Bind to Infisical* binds an empty `KEY=` line |
 | Rider: .NET Project, .NET Executable (ASP.NET Core included) | *Environment variables* of the configuration. *Launch profile* configurations take their variables from `launchSettings.json`, which the plugin can't intercept: use a .NET Project configuration with references instead |
 | Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
 | Terminal | **New Terminal Tab with Infisical Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). **Load Infisical Secrets into This Terminal** puts them into the shell of the current tab instead, in that shell's own syntax, decided from the tab's shell: PowerShell, cmd, bash / zsh / sh (also Git Bash and WSL on Windows) or fish. The values go through a short-lived owner-only file the shell loads and deletes, so they appear neither on screen nor in the shell history. Typing `export KEY=infisical://…` yourself does nothing: nothing resolves references inside a running shell |
@@ -120,11 +126,11 @@ A reference is the value of an environment variable:
 
 | Feature | Where |
 |---|---|
-| Folders | A bare `infisical://KEY` reads the bound folder only. After `infisical://`, completion offers the keys of every folder, each with its folder, and inserts `KEY?path=/folder` for other folders; masked hints show the folder (`dev:/workers ••••••`); a launch that misses a key names the folders that have it |
+| Folders | References name their folder: `infisical://workers/KEY` (a bare `infisical://KEY` is the root). After `infisical://`, completion lists the keys of every folder, each with its folder, and inserts `workers/KEY` for other folders; after `infisical://workers/` it lists that folder; masked hints show the folder (`dev:/workers ••••••`); a launch that misses a key names the folders that have it |
 | Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
 | Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
 | Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
-| `.env` intentions | *Bind to Infisical secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://KEY?path=/folder`; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
+| `.env` intentions | *Bind to Infisical secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
 | Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it) and the comment of a secret defined in that folder. Same permissions, prod guard and change requests as creating |
 | Moving secrets | *Move…*, Cut / Paste (the IDE's shortcuts) and drag and drop onto a folder or environment in the tool window, always through a confirmation where destination folder (with completion), environment and overwriting can be changed. Value, comment, tags and metadata are copied first; the originals are removed only after that worked |
 | Deleting secrets | *Delete…* (or the Delete key): type the key to confirm (*Copy Name* copies it), or the number of secrets for several |
