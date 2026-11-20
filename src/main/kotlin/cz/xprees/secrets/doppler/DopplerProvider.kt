@@ -61,6 +61,18 @@ class DopplerProvider : SecretProvider {
         const val API_URL = "https://api.doppler.com"
         const val DASHBOARD_URL = "https://dashboard.doppler.com"
 
+        /**
+         * The API address requests are built on: [baseUrl] without an API path, so an endpoint pasted as the address
+         * (`https://api.doppler.com/v3/workplace`, `…/v3`) works like `https://api.doppler.com`.
+         */
+        fun apiOrigin(baseUrl: String): String {
+            val trimmed = baseUrl.trimEnd('/')
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
+            val path = uri.rawPath.orEmpty()
+            val api = Regex("""/v\d+(/.*)?$""").find(path) ?: return trimmed
+            return trimmed.removeSuffix(path) + path.substring(0, api.range.first)
+        }
+
         /** The dashboard of an API address: `https://api.doppler.com` -> `https://dashboard.doppler.com`; others as they are. */
         fun dashboardBase(baseUrl: String): String {
             val uri = runCatching { URI(baseUrl) }.getOrNull() ?: return DASHBOARD_URL
@@ -95,7 +107,7 @@ object DopplerAuthMethods {
 
 /** [SecretsClient] for one Doppler connection. */
 class DopplerClient(private val connection: SecretConnection) : SecretsClient {
-    private val api = DopplerApi(DopplerHttp(connection.baseUrl))
+    private val api = DopplerApi(DopplerHttp(DopplerProvider.apiOrigin(connection.baseUrl)))
     private val auth = DopplerAuth(connection, api)
 
     override fun signIn(interaction: SignInInteraction): String = auth.signIn(interaction)
