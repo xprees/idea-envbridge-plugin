@@ -65,7 +65,7 @@ class DopplerHttp(val baseUrl: String) {
             Response(response.statusCode(), response.body().orEmpty(), response.headers().map())
         } catch (e: IOException) {
             LOG.debug("Request to ${target.substringBefore('?')} failed: ${e.javaClass.simpleName}")
-            throw SecretProviderException(Kind.NETWORK, "Cannot reach $baseUrl: ${e.message ?: e.javaClass.simpleName}", e)
+            throw SecretProviderException(Kind.NETWORK, cz.xprees.secrets.core.provider.NetworkErrors.describe(baseUrl, e), e)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             throw SecretProviderException(Kind.CANCELLED, "Cancelled", e)

@@ -24,7 +24,7 @@ handed to the process in memory. Nothing is written to disk.</p>
       variable with a comment, <code>API_URL=http://localhost:8090 # infisical://prod:API_URL</code>: tools outside the IDE read
       the plain value, launches from the IDE get the secret, and the editor shows its masked value. Plaintext secrets in
       <code>.env</code> files are marked, and Alt+Enter binds them</li>
-  <li><b>Terminal</b>: <i>New Terminal Tab with Secrets</i> opens a tab with the secrets; <i>Load Infisical Secrets
+  <li><b>Terminal</b>: <i>New Terminal Tab with Secrets</i> opens a tab with the secrets; <i>Load Secrets
       into This Terminal</i> sets them in the current tab, in its shell's syntax (PowerShell, cmd, bash, zsh, fish, Git Bash,
       WSL), without showing them or leaving them in the history; opt in to give every new tab of the project the secrets</li>
   <li><b>In the editor</b>, in every language: completion of secret keys where code reads environment variables

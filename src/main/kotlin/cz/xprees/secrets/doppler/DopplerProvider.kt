@@ -34,6 +34,7 @@ class DopplerProvider : SecretProvider {
     override val displayName: String = "Doppler"
     override val icon: Icon get() = SecretsIcons.PROVIDER
     override val referenceScheme: String = "doppler"
+    override val projectFileName: String = "doppler.yaml"
     override val referenceGrammar: ReferenceGrammar get() = DopplerGrammar
 
     // Doppler is a hosted service; the address stays editable (tests, a proxy in front of the API)
