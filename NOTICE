@@ -9,5 +9,10 @@ plugin works with. The plugin contains no Infisical logos, other brand assets or
 documented Infisical REST API and reimplements documented behaviour of the Infisical CLI (MIT licensed,
 https://github.com/Infisical/cli): the browser sign-in callback and the .infisical.yaml / .infisical.json project files.
 
+It is likewise not affiliated with, endorsed by or sponsored by AgileBits Inc. "1Password" is a trademark of AgileBits Inc.,
+used only to describe the service this plugin works with. The plugin contains no 1Password logos, brand assets or source code;
+it runs the 1Password CLI installed by the user, talks to the documented 1Password Connect API and reads 1Password's documented
+secret reference syntax.
+
 The plugin bundles no third-party libraries. At run time it uses libraries that ship with the IntelliJ Platform (Gson,
 SnakeYAML, the JDK's HTTP server), under their own licenses.
