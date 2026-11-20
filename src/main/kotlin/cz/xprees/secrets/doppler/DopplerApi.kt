@@ -82,15 +82,12 @@ class DopplerApi(val http: DopplerHttp) {
 
     /** Starts a browser sign-in. [hostname] names the token in the user's Doppler token list. */
     fun generateAuthCode(hostname: String, os: String, arch: String): AuthCode {
-        val body = JsonObject().apply {
-            addProperty("hostname", hostname)
-            addProperty("version", "envbridge")
-            addProperty("os", os)
-            addProperty("arch", arch)
-        }.toString()
-        // The current CLI calls generate_2 (with a separate polling code); generate is the older form of the same call
-        var response = http.send("POST", "/v3/auth/cli/generate_2", json = body)
-        if (response.status == 404 || response.status == 405) response = http.send("POST", "/v3/auth/cli/generate", json = body)
+        // As the Doppler CLI does (pkg/http/api.go GenerateAuthCode): GET with the machine's details, no token
+        val response = http.send(
+            "GET",
+            "/v3/auth/cli/generate/2",
+            query = mapOf("hostname" to hostname, "version" to "envbridge", "os" to os, "arch" to arch),
+        )
         if (!response.isSuccess) throw DopplerHttp.failure(response, "Starting the Doppler sign-in")
         val o = response.json().asJsonObject
         val code = o.str("code") ?: throw SecretProviderException(Kind.SERVER, "Doppler's sign-in answer has no code")
@@ -120,14 +117,19 @@ class DopplerApi(val http: DopplerHttp) {
             )
         }
         val o = response.json().asJsonObject
+        // A finished but failed sign-in answers 200 with an error (the CLI stops there too)
+        o.get("error")?.takeIf { !it.isJsonNull }?.let { error ->
+            val text = if (error.isJsonPrimitive) error.asString else error.toString()
+            throw SecretProviderException(Kind.AUTH_REQUIRED, "The Doppler sign-in failed: ${text.take(300)}")
+        }
         val token = o.str("token") ?: return Poll.Pending
         val workplace = o.obj("workplace")
         return Poll.Authorized(token, o.str("name"), workplace?.str("slug") ?: workplace?.str("id"), workplace?.str("name"))
     }
 
-    /** Revokes [token] on the server (sign-out of a browser session). */
+    /** Revokes [token] on the server (sign-out of a browser session; the CLI's `POST /v3/auth/cli/revoke`). */
     fun revoke(token: String) {
-        val response = http.send("POST", "/v3/auth/revoke", token, json = JsonObject().apply { addProperty("token", token) }.toString())
+        val response = http.send("POST", "/v3/auth/cli/revoke", json = JsonObject().apply { addProperty("token", token) }.toString())
         // Already revoked or expired: nothing left to do
         if (!response.isSuccess && response.status != 401) throw DopplerHttp.failure(response, "Revoking the Doppler token")
     }
@@ -166,7 +168,7 @@ class DopplerApi(val http: DopplerHttp) {
             addProperty("environment", environment)
             addProperty("name", name)
         }.toString()
-        val response = http.send("POST", "/v3/configs", token, json = body)
+        val response = http.send("POST", "/v3/configs", token, mapOf("project" to project), json = body)
         if (!response.isSuccess) throw DopplerHttp.failure(response, "Creating config $name in $project")
         return Config(name = name, environment = environment, root = false, locked = false)
     }
@@ -206,14 +208,20 @@ class DopplerApi(val http: DopplerHttp) {
             addProperty("config", config)
             add("secrets", JsonObject().apply { secrets.forEach { (k, v) -> addProperty(k, v) } })
         }.toString()
-        val response = http.send("POST", "/v3/configs/config/secrets", token, json = body)
+        val response = http.send("POST", "/v3/configs/config/secrets", token, mapOf("project" to project, "config" to config), json = body)
         if (!response.isSuccess) {
             throw DopplerHttp.failure(response, "Saving ${secrets.keys.joinToString()} in $project/$config")
         }
     }
 
+    /** Deletes secret [name]: the same update call with the value null (what `doppler secrets delete` sends). */
     fun deleteSecret(token: String, project: String, config: String, name: String) {
-        val response = http.send("DELETE", "/v3/configs/config/secret", token, mapOf("project" to project, "config" to config, "name" to name))
+        val body = JsonObject().apply {
+            addProperty("project", project)
+            addProperty("config", config)
+            add("secrets", JsonObject().apply { add(name, com.google.gson.JsonNull.INSTANCE) })
+        }.toString()
+        val response = http.send("POST", "/v3/configs/config/secrets", token, mapOf("project" to project, "config" to config), json = body)
         if (!response.isSuccess) throw DopplerHttp.failure(response, "Deleting $name from $project/$config")
     }
 

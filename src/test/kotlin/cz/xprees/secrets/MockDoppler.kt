@@ -123,7 +123,11 @@ class MockDoppler : AutoCloseable {
 
         // ---- Sign-in (no token) ----
         when (path) {
-            "/v3/auth/cli/generate_2" -> {
+            "/v3/auth/cli/generate/2" -> {
+                // The CLI's call: GET with the machine's details as query parameters
+                if (method != "GET" || query["hostname"].isNullOrBlank() || query["os"].isNullOrBlank()) {
+                    return respond(exchange, 405, error("Use GET /v3/auth/cli/generate/2?hostname&version&os&arch"))
+                }
                 val code = "word-word-${issued.incrementAndGet()}"
                 val polling = "polling-secret-${System.nanoTime()}"
                 pending[polling] = code
@@ -142,7 +146,12 @@ class MockDoppler : AutoCloseable {
                 pending.remove(polling)
                 val token = "dp.ct.cli-${issued.incrementAndGet()}"
                 tokens[token] = Token("cli", "EnvBridge", email = "alice@example.com")
-                return respond(exchange, 200, """{"token":"$token","name":"EnvBridge","workplace":{"slug":"wp-1","name":"Acme"},"success":true}""")
+                return respond(exchange, 200, """{"token":"$token","name":"EnvBridge","dashboard_url":"https://dashboard.doppler.com","success":true}""")
+            }
+            "/v3/auth/cli/revoke" -> {
+                revoked += json.get("token")?.asString ?: ""
+                tokens.remove(json.get("token")?.asString)
+                return respond(exchange, 200, """{"success":true}""")
             }
         }
 
@@ -165,12 +174,6 @@ class MockDoppler : AutoCloseable {
                 respond(exchange, 200, o.toString())
             }
 
-            path == "/v3/auth/revoke" && method == "POST" -> {
-                revoked += json.get("token")?.asString ?: ""
-                tokens.remove(json.get("token")?.asString)
-                respond(exchange, 200, """{"success":true}""")
-            }
-
             path == "/v3/projects" -> {
                 if (token.type == "service_token") return respond(exchange, 403, error("Service tokens can't list projects"))
                 val list = configs.keys.sorted().joinToString(",") { """{"id":"$it","slug":"$it","name":"${it.replaceFirstChar(Char::uppercase)}"}""" }
@@ -188,7 +191,7 @@ class MockDoppler : AutoCloseable {
             }
 
             path == "/v3/configs" && method == "POST" -> {
-                val project = json.get("project").asString
+                val project = query["project"] ?: return respond(exchange, 400, error("Missing project"))
                 val environment = json.get("environment").asString
                 val name = json.get("name").asString
                 val list = configs[project] ?: return respond(exchange, 404, error("Could not find requested project"))
@@ -222,24 +225,19 @@ class MockDoppler : AutoCloseable {
             }
 
             path == "/v3/configs/config/secrets" && method == "POST" -> {
-                val project = json.get("project").asString
-                val config = json.get("config").asString
+                val project = query["project"] ?: return respond(exchange, 400, error("Missing project"))
+                val config = query["config"] ?: return respond(exchange, 400, error("Missing config"))
                 if (!allowed(project, config)) return respond(exchange, 403, error("This token does not have access to requested config"))
                 if ("$project/$config" in lockedConfigs) return respond(exchange, 400, error("This config is locked and cannot be modified"))
                 val target = secrets["$project/$config"] ?: return respond(exchange, 404, error("Could not find requested config"))
-                json.getAsJsonObject("secrets").entrySet().forEach { (k, v) -> target[k] = v.asString }
+                val changes = json.getAsJsonObject("secrets").entrySet()
+                // A null value deletes the secret (what `doppler secrets delete` sends)
+                changes.filter { it.value.isJsonNull }.forEach { (k, _) ->
+                    if ("$project/$config/$k" in undeletable) return respond(exchange, 500, error("Internal error"))
+                    if (!target.containsKey(k)) return respond(exchange, 404, error("Could not find requested secret"))
+                }
+                changes.forEach { (k, v) -> if (v.isJsonNull) target.remove(k) else target[k] = v.asString }
                 respond(exchange, 200, """{"secrets":{},"success":true}""")
-            }
-
-            path == "/v3/configs/config/secret" && method == "DELETE" -> {
-                val project = query.getValue("project")
-                val config = query.getValue("config")
-                val name = query.getValue("name")
-                if (!allowed(project, config)) return respond(exchange, 403, error("This token does not have access to requested config"))
-                if ("$project/$config/$name" in undeletable) return respond(exchange, 500, error("Internal error"))
-                val target = secrets["$project/$config"] ?: return respond(exchange, 404, error("Could not find requested config"))
-                if (target.remove(name) == null) return respond(exchange, 404, error("Could not find requested secret"))
-                respond(exchange, 200, """{"success":true}""")
             }
 
             path == "/v3/projects/project/note" && method == "POST" -> {

@@ -134,6 +134,13 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         assertThat(provider.dashboardUrl(connection.copy(baseUrl = DopplerProvider.API_URL), null)).isEqualTo("https://dashboard.doppler.com")
     }
 
+    fun `test an endpoint pasted as the connection address reaches the API`() {
+        val connection = personal().let { it.copy(baseUrl = it.baseUrl + "/v3/workplace") }
+        SecretsAppSettings.getInstance().setConnections(listOf(connection))
+        assertThat(client(connection).listProjects().map { it.id }).contains("backend")
+        assertThat(mock.requests.none { it.path.startsWith("/v3/workplace/") }).isTrue()
+    }
+
     fun `test a service token offers just its project and config`() {
         val connection = connection(DopplerAuthMethods.TOKEN, "dp.st.backend-prd")
         val client = client(connection)
@@ -172,8 +179,10 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         // the user compares the code in the IDE with the one in the browser
         assertThat(interaction.statuses).anyMatch { it.contains(mock.lastCode!!) }
         assertThat(mock.polls.get()).isEqualTo(3)
-        val generate = mock.requests.single { it.path == "/v3/auth/cli/generate_2" }
-        assertThat(generate.body).contains("\"hostname\":\"EnvBridge")
+        val generate = mock.requests.single { it.path == "/v3/auth/cli/generate/2" }
+        assertThat(generate.method).isEqualTo("GET")
+        assertThat(generate.query.getValue("hostname")).startsWith("EnvBridge")
+        assertThat(generate.authorization).isNull()
         // the polling code goes in the body only
         assertThat(mock.requests.filter { it.path == "/v3/auth/cli/authorize" }).allMatch { it.query.isEmpty() && it.body.contains("polling-secret-") }
 
@@ -259,7 +268,11 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         assertThat(deleted.getValue("NEW_KEY").getOrThrow()).isEqualTo(WriteOutcome.APPLIED)
         assertThat((deleted.getValue("NOT_THERE").exceptionOrNull() as SecretProviderException).kind).isEqualTo(Kind.NOT_FOUND)
         assertThat(mock.secrets.getValue("backend/dev")).doesNotContainKey("NEW_KEY")
-        assertThat(mock.requests.last { it.method == "DELETE" }.query).containsEntry("name", "NOT_THERE")
+        // deleting is the update call with a null value, as `doppler secrets delete` does
+        val delete = mock.requests.last { it.method == "POST" && it.path == "/v3/configs/config/secrets" }
+        assertThat(delete.body).contains("\"NOT_THERE\":null")
+        assertThat(delete.query).containsEntry("project", "backend").containsEntry("config", "dev")
+        assertThat(mock.requests.none { it.method == "DELETE" }).isTrue()
     }
 
     fun `test secret names must be uppercase`() {

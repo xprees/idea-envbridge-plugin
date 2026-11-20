@@ -110,4 +110,14 @@ class DopplerGrammarTest {
         }
         assertThat(DopplerProjectFile.parse(Path.of("doppler.yaml"), "setup: {}", Path.of("."))).isNull()
     }
+
+    @Test
+    fun `an API endpoint pasted as the address works like the API address`() {
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("https://api.doppler.com")).isEqualTo("https://api.doppler.com")
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("https://api.doppler.com/")).isEqualTo("https://api.doppler.com")
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("https://api.doppler.com/v3/workplace")).isEqualTo("https://api.doppler.com")
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("https://api.doppler.com/v3/")).isEqualTo("https://api.doppler.com")
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("http://127.0.0.1:8123/proxy/v3/me")).isEqualTo("http://127.0.0.1:8123/proxy")
+        assertThat(cz.xprees.secrets.doppler.DopplerProvider.apiOrigin("http://127.0.0.1:8123")).isEqualTo("http://127.0.0.1:8123")
+    }
 }

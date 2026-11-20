@@ -527,12 +527,12 @@ and means `*`. Config names (lowercase, digits, `_`) always fit the `config:` pr
 | Projects | `GET /v3/projects?page&per_page=100` → `projects[] {slug, name}` (paged, ≤ 20 pages) |
 | Configs of a project | `GET /v3/configs?project&page&per_page=100` → `configs[] {name, environment, root, locked}` |
 | Secrets of a config | `GET /v3/configs/config/secrets?project&config&include_dynamic_secrets=false` → `secrets {KEY: {raw, computed, note, computedVisibility}}` |
-| Create / change secrets | `POST /v3/configs/config/secrets` `{project, config, secrets: {KEY: VALUE}}` |
-| Delete a secret | `DELETE /v3/configs/config/secret?project&config&name` |
+| Create / change secrets | `POST /v3/configs/config/secrets?project&config` `{secrets: {KEY: VALUE}}` (project and config also in the body) |
+| Delete a secret | The same call with the value null, `{secrets: {KEY: null}}`, as `doppler secrets delete` sends |
 | Secret note | `POST /v3/projects/project/note?project` `{project, secret, note}` (a note belongs to the project, shared by its configs) |
-| New branch config | `POST /v3/configs` `{project, environment, name}` |
-| Browser sign-in | `POST /v3/auth/cli/generate_2` (fallback `generate`) `{hostname, version, os, arch}` → `{code, polling_code, auth_url}`; `POST /v3/auth/cli/authorize` `{code: polling_code}` until `{token, name, workplace}` |
-| Sign-out | `POST /v3/auth/revoke` `{token}` |
+| New branch config | `POST /v3/configs?project` `{environment, name}` |
+| Browser sign-in | `GET /v3/auth/cli/generate/2?hostname&version&os&arch` (no token) → `{code, polling_code, auth_url}`; `POST /v3/auth/cli/authorize` `{code: polling_code}` every 2 s while it answers **409**, until `{token, name, dashboard_url}` (a 200 with `error` = failed) |
+| Sign-out | `POST /v3/auth/cli/revoke` `{token}` (`/v3/auth/revoke` is for service account identity tokens) |
 
 `DopplerHttp` uses the JDK HttpClient like `VaultHttp`: IDE proxy and certificates, no redirects, HTTP/1.1, 10 s / 30 s timeouts;
 the token only ever goes in the `Authorization` header, the polling code only in a request body, and no body is logged. Errors:
@@ -611,15 +611,15 @@ the dashboard's start page. For another API address, `api.<domain>` becomes `das
 
 ### Known limits and unverified assumptions
 
-developer.doppler.com / docs.doppler.com could not be reached while this was written, so request and response shapes come from
-the public API reference and the Doppler CLI's source **as remembered**, and are checked only against the mock. Parsers are
-lenient (missing fields are skipped). Specifically unverified:
+docs.doppler.com could not be reached from the build environment. The endpoints above were **checked against the Doppler CLI's
+source** (`DopplerHQ/cli`, `pkg/http/api.go`, `pkg/http/http.go`, `pkg/models/api.go`, `pkg/cmd/login.go`, `pkg/cmd/secrets.go`):
+the browser sign-in (`GET …/generate/2`, `authorize` with the polling code, 409 = pending, `POST /v3/auth/cli/revoke`), the
+`/v3/me` fields (`workplace {name, slug}`, `type`, `name`, `token_preview`, `slug`), projects (`id, name, description`), configs
+(`name, environment, root, locked, inheritable`), secrets (`secrets {KEY: {raw, computed, rawVisibility, computedVisibility,
+note}}`), deleting with a null value, notes and error bodies (`messages`). The mock follows that wire format. Still unverified:
 
-- The browser sign-in: the endpoint name `generate_2` (the CLI's current one; `generate` is tried on 404 / 405), its request
-  fields, the `polling_code` field (the shown `code` is polled when it is absent), the optional `poll_interval`, and that
-  `authorize` answers **409** while pending (202, 425, a tokenless success and a 400 saying "pending" are treated alike).
-- `/v3/me` field names (`type` values such as `service_token`, `workplace.slug`, `user.email`) and whether it can name a service
-  token's project and config (if not, the config's metadata secrets are used).
+- Whether `/v3/me` names a service token's project and config (the CLI's model has no such fields; the config's metadata secrets
+  are used).
 - The note endpoint's shape (`project` sent both as query parameter and in the body).
 - That a service token may read secrets without `project` / `config` parameters (the CLI relies on this).
 - That `workplace.slug` is what the dashboard's `/workplace/<…>` path takes.
