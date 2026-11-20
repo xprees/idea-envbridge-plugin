@@ -20,7 +20,7 @@ import java.nio.file.Path
  * provider's project file. Environment precedence (highest first), as in the Infisical CLI:
  *
  * 1. an explicit environment in a reference (handled by the reference itself)
- * 2. `INFISICAL_ENVIRONMENT` set on the run configuration ([environmentOverride])
+ * 2. `ENVBRIDGE_ENVIRONMENT` (or the older `INFISICAL_ENVIRONMENT`) set on the run configuration ([environmentOverride])
  * 3. the environment picked in the IDE
  * 4. the project file's mapping for the current Git branch
  * 5. the project file's default environment
@@ -139,7 +139,15 @@ class SecretBindingService(private val project: Project) {
 
     companion object {
         const val DEFAULT_ENVIRONMENT = "dev"
-        const val ENVIRONMENT_VARIABLE = "INFISICAL_ENVIRONMENT"
+        /** Set on a run configuration, picks the environment its references read (any provider). */
+        const val ENVIRONMENT_VARIABLE = "ENVBRIDGE_ENVIRONMENT"
+
+        /** The first name of [ENVIRONMENT_VARIABLE], still read (it loses when both are set). */
+        const val LEGACY_ENVIRONMENT_VARIABLE = "INFISICAL_ENVIRONMENT"
+
+        /** The environment override a run configuration's variables ask for, if any. */
+        fun environmentOverride(variables: Map<String, String>): String? =
+            variables[ENVIRONMENT_VARIABLE]?.takeIf { it.isNotBlank() } ?: variables[LEGACY_ENVIRONMENT_VARIABLE]?.takeIf { it.isNotBlank() }
 
         fun getInstance(project: Project): SecretBindingService = project.service()
 

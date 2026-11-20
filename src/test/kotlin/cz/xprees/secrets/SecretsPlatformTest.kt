@@ -105,8 +105,15 @@ class SecretsPlatformTest : BasePlatformTestCase() {
         assertThat(result.environment).containsEntry("DB_PASSWORD", "dev-pass").containsEntry("API_KEY", "dev-key")
             .containsEntry("PROD_DB", "prod-pass").containsEntry("PLAIN", "x").doesNotContainKey("ALL")
 
-        val overridden = resolver.resolve(resolver.plan(mapOf("DB" to "infisical://DB_PASSWORD", "INFISICAL_ENVIRONMENT" to "prod")))
+        val overridden = resolver.resolve(resolver.plan(mapOf("DB" to "infisical://DB_PASSWORD", "ENVBRIDGE_ENVIRONMENT" to "prod")))
         assertThat(overridden.environment).containsEntry("DB", "prod-pass")
+        // the first name of the variable still works, and loses when both are set
+        assertThat(resolver.resolve(resolver.plan(mapOf("DB" to "infisical://DB_PASSWORD", "INFISICAL_ENVIRONMENT" to "prod"))).environment)
+            .containsEntry("DB", "prod-pass")
+        assertThat(
+            resolver.resolve(resolver.plan(mapOf("DB" to "infisical://DB_PASSWORD", "INFISICAL_ENVIRONMENT" to "prod", "ENVBRIDGE_ENVIRONMENT" to "dev")))
+                .environment,
+        ).containsEntry("DB", "dev-pass")
 
         assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "infisical://staging:DB_PASSWORD"))) }
             .isInstanceOf(SecretProviderException::class.java)

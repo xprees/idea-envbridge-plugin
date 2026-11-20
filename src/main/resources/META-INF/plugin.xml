@@ -32,7 +32,7 @@
     <resource-bundle>messages.SecretsBundle</resource-bundle>
 
     <extensionPoints>
-        <!-- Secret managers (Infisical is the first one) -->
+        <!-- Secret managers: Infisical, HashiCorp Vault / OpenBao, 1Password, Doppler -->
         <extensionPoint qualifiedName="cz.xprees.secrets.provider" interface="cz.xprees.secrets.core.provider.SecretProvider"
                         dynamic="true"/>
         <!-- Reading and replacing the environment variables of one kind of run configuration -->

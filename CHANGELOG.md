@@ -43,6 +43,9 @@
 
 ### Changed
 
+- The run configuration variable that picks the environment is `ENVBRIDGE_ENVIRONMENT` (for every secret manager);
+  `INFISICAL_ENVIRONMENT` keeps working
+- Intention and inspection descriptions no longer assume Infisical
 - Actions and messages shared by every secret manager no longer say "Infisical": *Run with Secrets Environment…*, *Add Secrets
   to Run Configuration…*, *New Terminal Tab with Secrets*, *Load Secrets into This Terminal*, *Bind to Secret…*, *Extract Value
   to Secret Manager…*

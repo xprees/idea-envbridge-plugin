@@ -119,7 +119,7 @@ stops and says to write `infisical://prod:KEY`.
   Among imports, later ones win.
 - Secret imports and `${…}` references inside Infisical are resolved like the Infisical CLI resolves them (folder secrets win over
   imported ones). Personal overrides are applied.
-- The environment comes from (highest first): the reference → `INFISICAL_ENVIRONMENT` set on the run configuration → the
+- The environment comes from (highest first): the reference → `ENVBRIDGE_ENVIRONMENT` (or the older `INFISICAL_ENVIRONMENT`) set on the run configuration → the
   environment picked in the IDE → `.infisical.yaml`'s Git branch mapping → its default environment → `dev`.
 
 ## Where references work
