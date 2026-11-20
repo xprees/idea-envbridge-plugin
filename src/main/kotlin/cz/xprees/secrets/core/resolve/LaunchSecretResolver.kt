@@ -55,13 +55,34 @@ class LaunchSecretResolver(private val project: Project) {
                 }
             },
             fetch = { reference, scope -> service.secrets(bindingOf(reference).connection, scope, fresh) },
-            locate = { reference, scope ->
-                service.secrets(bindingOf(reference).connection, SecretScope(scope.projectId, scope.environment, "/", recursive = true))
-                    .filter { it.key == reference.key && it.origin != cz.xprees.secrets.core.model.SecretOrigin.IMPORTED }
-                    .map { it.path }.distinct().sorted()
-            },
+            suggest = { reference, scope -> suggestion(reference, scope, bindingOf(reference).connection) },
         )
         return if (plan.hasSecrets) result.withOverrides(LocalOverrides.getInstance(project).all()) else result
+    }
+
+    /**
+     * A hint for a key missing from [scope]: references written the old way (`infisical://prod/KEY` with the environment as the first segment) now
+     * name folder /prod, so say what was probably meant; otherwise name the folders of the environment that define the key.
+     */
+    private fun suggestion(reference: SecretReference, scope: SecretScope, connection: cz.xprees.secrets.core.model.SecretConnection): String? {
+        val service = SecretsService.getInstance()
+        val firstFolder = scope.path.split('/').firstOrNull { it.isNotEmpty() }
+        if (reference.environment == null && firstFolder != null) {
+            val environments = runCatching { service.projects(connection).firstOrNull { it.id == scope.projectId }?.environments?.map { it.slug } }
+                .getOrNull().orEmpty()
+            if (firstFolder in environments) {
+                val rest = scope.path.split('/').filter { it.isNotEmpty() }.drop(1).joinToString("/", prefix = "/")
+                val meant = reference.copy(environment = firstFolder, path = rest.takeIf { it != "/" })
+                return "$firstFolder is an environment: write ${meant.format()} (the environment goes before a colon)"
+            }
+        }
+        val folders = runCatching {
+            service.secrets(connection, SecretScope(scope.projectId, scope.environment, "/", recursive = true))
+                .filter { it.key == reference.key && it.origin != cz.xprees.secrets.core.model.SecretOrigin.IMPORTED }
+                .map { it.path }.distinct().sorted().filter { it != scope.path }
+        }.getOrDefault(emptyList())
+        if (folders.isEmpty()) return null
+        return "it is in " + folders.joinToString { folder -> "$folder (${reference.copy(path = folder.takeIf { it != "/" }).format()})" }
     }
 
     /**

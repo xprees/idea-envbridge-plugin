@@ -6,7 +6,7 @@ package cz.xprees.secrets.core.resolve
  * ` #` comments after unquoted values. Lines that are not assignments are ignored.
  *
  * **Bindings:** a comment at the end of an assignment that is a reference of one of the given schemes, such as
- * `URL= # infisical://prod/URL` or `URL=http://localhost # infisical://URL`, replaces the value. Tools outside the IDE read
+ * `URL= # infisical://prod:URL` or `URL=http://localhost # infisical://URL`, replaces the value. Tools outside the IDE read
  * the plain value (empty or a local fallback); launches from the IDE get the secret.
  */
 object DotEnv {

@@ -82,14 +82,14 @@ private class SecretGutter(private val key: String, private val reference: Secre
     override fun isNavigateAction(): Boolean = true
 
     override fun getPopupMenuActions(): ActionGroup = DefaultActionGroup(
-        action("editor.action.reveal") { e -> e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment) } },
-        action("editor.action.copy") { e -> SecretValueActions.copy(e.project!!, key, environment) },
+        action("editor.action.reveal") { e -> e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment, reference?.path) } },
+        action("editor.action.copy") { e -> SecretValueActions.copy(e.project!!, key, environment, reference?.path) },
         action("editor.action.override") { e -> SecretValueActions.editOverride(e.project!!, key) },
         action("editor.action.show") { e -> ShowSecretInToolWindow.show(e.project!!, key, reference) },
     )
 
     override fun getClickAction(): AnAction = action("editor.action.reveal") { e ->
-        e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment) }
+        e.getData(CommonDataKeys.EDITOR)?.let { SecretValueActions.reveal(e.project!!, it, key, environment, reference?.path) }
     }
 
     override fun equals(other: Any?) = other is SecretGutter && other.key == key && other.reference == reference

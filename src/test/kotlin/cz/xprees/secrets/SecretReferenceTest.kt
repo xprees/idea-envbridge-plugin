@@ -18,27 +18,29 @@ class SecretReferenceTest {
     }
 
     @Test
-    fun `key only uses the binding`() {
+    fun `a bare key takes the environment from the binding and reads the root folder`() {
         val ref = parse("infisical://DB_PASSWORD")!!
         assertThat(ref.key).isEqualTo("DB_PASSWORD")
         assertThat(ref.environment).isNull()
         assertThat(ref.path).isNull()
+        // The binding's folder is a UI default only: references are absolute
         val scope = ref.scope(SecretReference.Defaults("p1", "dev", "/backend"))
         assertThat(scope.projectId).isEqualTo("p1")
         assertThat(scope.environment).isEqualTo("dev")
-        assertThat(scope.path).isEqualTo("/backend")
+        assertThat(scope.path).isEqualTo("/")
+        assertThat(parse("infisical://workers/KEY")!!.scope(SecretReference.Defaults("p1", "dev", "/backend")).path).isEqualTo("/workers")
     }
 
     @Test
     fun `environment and folder segments`() {
-        val ref = parse("infisical://prod/backend/api/DB_PASSWORD")!!
+        val ref = parse("infisical://prod:backend/api/DB_PASSWORD")!!
         assertThat(ref.environment).isEqualTo("prod")
         assertThat(ref.path).isEqualTo("/backend/api")
         assertThat(ref.key).isEqualTo("DB_PASSWORD")
 
-        val root = parse("infisical://prod/KEY")!!
+        val root = parse("infisical://prod:KEY")!!
         assertThat(root.environment).isEqualTo("prod")
-        assertThat(root.path).isEqualTo("/")
+        assertThat(root.path).describedAs("the root is no folder").isNull()
     }
 
     @Test
@@ -46,7 +48,7 @@ class SecretReferenceTest {
         val all = parse("infisical://*")!!
         assertThat(all.isScope).isTrue()
         assertThat(all.recursive).isFalse()
-        val deep = parse("infisical://staging/backend/**")!!
+        val deep = parse("infisical://staging:backend/**")!!
         assertThat(deep.isScope).isTrue()
         assertThat(deep.recursive).isTrue()
         assertThat(deep.environment).isEqualTo("staging")
@@ -79,10 +81,10 @@ class SecretReferenceTest {
     fun `format round-trips`() {
         for (text in listOf(
             "infisical://KEY",
-            "infisical://prod/KEY",
-            "infisical://prod/backend/api/KEY",
+            "infisical://prod:KEY",
+            "infisical://prod:backend/api/KEY",
             "infisical://*",
-            "infisical://staging/backend/**",
+            "infisical://staging:backend/**",
             "infisical://KEY?project=abc&connection=Work",
             "infisical://KEY?path=%2Fbackend",
             "infisical://KEY?path=/backend/api",
@@ -90,7 +92,14 @@ class SecretReferenceTest {
             val ref = parse(text)!!
             assertThat(parse(ref.format())).describedAs(text).isEqualTo(ref)
         }
-        assertThat(parse("infisical://prod/backend/KEY")!!.format()).isEqualTo("infisical://prod/backend/KEY")
-        assertThat(SecretReference("infisical", "KEY", path = "/backend/api").format()).isEqualTo("infisical://KEY?path=/backend/api")
+        assertThat(parse("infisical://prod:backend/KEY")!!.format()).isEqualTo("infisical://prod:backend/KEY")
+        assertThat(SecretReference("infisical", "KEY", path = "/backend/api").format()).isEqualTo("infisical://backend/api/KEY")
+        assertThat(SecretReference("infisical", "KEY", environment = "prod", path = "/backend").format()).isEqualTo("infisical://prod:backend/KEY")
+        // Old-style query forms still parse
+        assertThat(parse("infisical://KEY?env=prod&path=/workers")).isEqualTo(parse("infisical://prod:workers/KEY"))
+        // Folders are absolute and the root is no folder at all
+        assertThat(parse("infisical://workers/KEY")!!.path).isEqualTo("/workers")
+        assertThat(parse("infisical://KEY")!!.path).isNull()
+        assertThat(parse("infisical://prod:*")!!.let { it.environment to it.isScope }).isEqualTo("prod" to true)
     }
 }

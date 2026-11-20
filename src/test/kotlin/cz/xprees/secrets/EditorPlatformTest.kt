@@ -76,7 +76,7 @@ class EditorPlatformTest : BasePlatformTestCase() {
         myFixture.enableInspections(MissingSecretInspection::class.java)
         myFixture.configureByText(
             "config.txt",
-            "A=infisical://NOPE\nB=infisical://DB_PASSWORD\nC=process.env.PROD_ONLY\nD=process.env.PATH\nE=infisical://prod/PROD_ONLY\n",
+            "A=infisical://NOPE\nB=infisical://DB_PASSWORD\nC=process.env.PROD_ONLY\nD=process.env.PATH\nE=infisical://prod:PROD_ONLY\n",
         )
         val warnings = myFixture.doHighlighting(HighlightSeverity.WARNING).mapNotNull(HighlightInfo::getDescription)
         assertThat(warnings).hasSize(2)

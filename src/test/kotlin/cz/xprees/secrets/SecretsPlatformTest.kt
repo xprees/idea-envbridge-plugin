@@ -100,7 +100,7 @@ class SecretsPlatformTest : BasePlatformTestCase() {
     fun `test launch resolution uses the binding and run configuration environment override`() {
         val resolver = LaunchSecretResolver.getInstance(project)
         val result = resolver.resolve(
-            resolver.plan(linkedMapOf("ALL" to "infisical://*", "PROD_DB" to "infisical://prod/DB_PASSWORD", "PLAIN" to "x")),
+            resolver.plan(linkedMapOf("ALL" to "infisical://*", "PROD_DB" to "infisical://prod:DB_PASSWORD", "PLAIN" to "x")),
         )
         assertThat(result.environment).containsEntry("DB_PASSWORD", "dev-pass").containsEntry("API_KEY", "dev-key")
             .containsEntry("PROD_DB", "prod-pass").containsEntry("PLAIN", "x").doesNotContainKey("ALL")
@@ -108,7 +108,7 @@ class SecretsPlatformTest : BasePlatformTestCase() {
         val overridden = resolver.resolve(resolver.plan(mapOf("DB" to "infisical://DB_PASSWORD", "INFISICAL_ENVIRONMENT" to "prod")))
         assertThat(overridden.environment).containsEntry("DB", "prod-pass")
 
-        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "infisical://staging/DB_PASSWORD"))) }
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "infisical://staging:DB_PASSWORD"))) }
             .isInstanceOf(SecretProviderException::class.java)
     }
 

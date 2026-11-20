@@ -698,15 +698,14 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             is EnvironmentNode -> node.scope to null
             else -> return null
         }
-        // Leave out what the project binding already says
+        // Leave out what the project binding already says (the folder is absolute: written unless it is the root)
         val sameProject = binding?.projectId == scope.projectId
         val sameEnv = sameProject && binding?.environment == scope.environment
-        val samePath = sameEnv && binding?.path == scope.path
         return SecretReference(
             scheme = provider.referenceScheme,
             key = key,
-            environment = if (samePath) null else scope.environment,
-            path = if (samePath) null else scope.path,
+            environment = if (sameEnv) null else scope.environment,
+            path = scope.path.takeIf { it != "/" },
             projectId = if (sameProject) null else scope.projectId,
             connectionId = if (binding != null) null else connection.name,
         )

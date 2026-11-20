@@ -92,7 +92,7 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
     fun `test locations follow the binding and what a reference names`() {
         val bound = SecretLocation.of(project, "DB_PASSWORD")!!
         assertThat(bound).isEqualTo(SecretLocation(connection.id, "p1", "dev", "/", "DB_PASSWORD"))
-        val explicit = SecretLocation.of(project, null, SecretReference.parse("infisical://prod/backend/X", listOf("infisical")))!!
+        val explicit = SecretLocation.of(project, null, SecretReference.parse("infisical://prod:backend/X", listOf("infisical")))!!
         assertThat(explicit).isEqualTo(SecretLocation(connection.id, "p1", "prod", "/backend", "X"))
         assertThat(SecretLocation.decode(explicit.encode())).isEqualTo(explicit)
         assertThat(SecretLocation.decode("garbage")).isNull()
@@ -284,7 +284,10 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
     fun `test a launch names the folder where a missing key is`() {
         val resolver = LaunchSecretResolver.getInstance(project)
         assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("B" to "infisical://BACKEND_ONLY"))) }
-            .hasMessageContaining("no secret BACKEND_ONLY in dev:/").hasMessageContaining("it is in /backend (infisical://BACKEND_ONLY?path=/backend)")
-        assertThat(resolver.resolve(resolver.plan(mapOf("B" to "infisical://BACKEND_ONLY?path=/backend"))).environment).containsEntry("B", "b")
+            .hasMessageContaining("no secret BACKEND_ONLY in dev:/").hasMessageContaining("it is in /backend (infisical://backend/BACKEND_ONLY)")
+        assertThat(resolver.resolve(resolver.plan(mapOf("B" to "infisical://backend/BACKEND_ONLY"))).environment).containsEntry("B", "b")
+        // Written the old way (environment first): now folder /prod, which doesn't exist; the message says what was meant
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("P" to "infisical://prod/DB_PASSWORD"))) }
+            .hasMessageContaining("prod is an environment: write infisical://prod:DB_PASSWORD")
     }
 }

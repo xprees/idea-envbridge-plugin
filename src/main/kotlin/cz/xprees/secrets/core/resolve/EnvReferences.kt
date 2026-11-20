@@ -80,8 +80,8 @@ object EnvReferences {
     fun completionPrefix(linePrefix: String, schemes: Collection<String>): String? {
         for (pattern in COMPLETION_PATTERNS) pattern.find(linePrefix)?.let { return it.groupValues[1] }
         for (scheme in schemes) {
-            // infisical://partial or infisical://env/folder/partial: complete the last segment
-            Regex("""(?i)\b${Regex.escape(scheme)}://(?:[^\s"'?/]+/)*([A-Za-z0-9_.\-]*)$""").find(linePrefix)?.let { return it.groupValues[1] }
+            // infisical://partial, infisical://folder/partial, infisical://env:folder/partial: complete the key
+            Regex("""(?i)\b${Regex.escape(scheme)}://(?:[A-Za-z0-9_.\-]+:)?(?:[^\s"'?/:]+/)*([A-Za-z0-9_.\-]*)$""").find(linePrefix)?.let { return it.groupValues[1] }
         }
         return null
     }

@@ -82,7 +82,7 @@ class RunTargetsPlatformTest : BasePlatformTestCase() {
         val settings = com.intellij.execution.RunManager.getInstance(project).createConfiguration(template, template.factory!!)
         val (patcher, initial) = EnvPatcher.find(template)!!
         val stored = settings.configuration
-        val withReference = patcher.copyWith(stored, initial + ("URL" to "infisical://prod/URL")) as RunConfiguration
+        val withReference = patcher.copyWith(stored, initial + ("URL" to "infisical://prod:URL")) as RunConfiguration
         val runner = com.intellij.execution.runners.ProgramRunner.getRunner(com.intellij.execution.executors.DefaultRunExecutor.EXECUTOR_ID, withReference)
         assertThat(runner).isInstanceOf(cz.xprees.secrets.run.SecretsProgramRunner::class.java)
         // The settings the IDE's npm launch state reads its environment from
