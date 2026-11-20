@@ -1,12 +1,14 @@
 package cz.xprees.secrets.infisical
 
+import cz.xprees.secrets.core.provider.MoveResult
+
 import cz.xprees.secrets.core.model.ProviderEnvironment
 
 import cz.xprees.secrets.core.provider.SecretProviderException
 
 import cz.xprees.secrets.core.model.SecretValue
 
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.core.provider.WriteOutcome
 
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderProject
@@ -127,9 +129,49 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
 
     override fun listSecrets(scope: SecretScope): List<SecretEntry> = auth.withToken { api.listSecrets(it, scope) }
 
-    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): CreateOutcome {
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
         checkWritable("secrets")
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
+    }
+
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+        checkWritable("secrets")
+        return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
+    }
+
+    override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
+        checkWritable("secrets")
+        require(secrets.all { it.id.isNotEmpty() }) { "Secrets without an ID can't be moved; refresh and try again" }
+        val moved = mutableListOf<String>()
+        val awaiting = mutableListOf<String>()
+        val notRemoved = linkedMapOf<String, String>()
+        // Duplicate takes at most 50 secrets per request
+        for (chunk in secrets.chunked(50)) {
+            val copied = auth.withToken { api.duplicateSecrets(it, source, chunk.map(SecretEntry::id), destination, overwrite) }
+            for (secret in chunk) {
+                // The answer lists approvals; without a result entry the copy went through directly
+                if (copied[secret.key] == true || copied[secret.id] == true) {
+                    awaiting += secret.key
+                    continue
+                }
+                try {
+                    // With a change policy on the source folder the removal itself waits for approval: both copies exist until then
+                    if (auth.withToken { api.deleteSecret(it, source, secret.key) } == WriteOutcome.APPROVAL_REQUESTED) {
+                        notRemoved[secret.key] = "removal from ${source.environment}:${source.path} waits for approval"
+                        continue
+                    }
+                    moved += secret.key
+                } catch (e: SecretProviderException) {
+                    notRemoved[secret.key] = e.message ?: e.kind.name
+                }
+            }
+        }
+        return MoveResult(moved, awaiting, notRemoved)
+    }
+
+    override fun deleteSecret(scope: SecretScope, key: String): WriteOutcome {
+        checkWritable("secrets")
+        return auth.withToken { api.deleteSecret(it, scope, key) }
     }
 
     override fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment {
@@ -143,7 +185,7 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         throw SecretProviderException(
             SecretProviderException.Kind.CONFIGURATION,
             "OAuth connections are read-only (scope ${InfisicalAuthMethods.OAUTH_SCOPE}). Use browser sign-in or a machine identity " +
-                "with write permission to create $what.",
+                "with write permission to create, change, move or delete $what.",
         )
     }
 }

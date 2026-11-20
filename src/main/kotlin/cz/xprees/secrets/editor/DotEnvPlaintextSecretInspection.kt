@@ -145,16 +145,42 @@ object DotEnvLines {
     }
 
     /**
-     * [keys] in the order a chooser offers them for the variable [name]: the same name, then names sharing words with it
-     * (most shared first), then the rest alphabetically.
+     * The comment block directly above [line] in [text]: consecutive `#` lines without a blank line in between, `#` and
+     * surrounding spaces removed, joined with spaces. Commented-out assignments (`# OLD=1`) end the block. Empty when none.
      */
-    fun rankKeys(name: String, keys: Collection<String>): List<String> {
+    fun commentAbove(text: String, line: Line): String {
+        val lineStart = text.lastIndexOf('\n', line.afterEquals.startOffset - 1) + 1
+        val above = text.substring(0, lineStart).removeSuffix("\n").removeSuffix("\r").split('\n')
+        val block = ArrayDeque<String>()
+        for (raw in above.asReversed()) {
+            val trimmed = raw.trim()
+            if (!trimmed.startsWith("#")) break
+            val content = trimmed.trimStart('#').trim()
+            if (ASSIGNMENT.matches(content)) break
+            block.addFirst(content)
+        }
+        return block.filter { it.isNotEmpty() }.joinToString(" ")
+    }
+
+    private val ASSIGNMENT = Regex("""(?:export\s+)?[A-Za-z_][A-Za-z0-9_.\-]*\s*=.*""")
+
+    /** A secret the key chooser offers: its key, the folder it is in, and its comment. */
+    data class KeyChoice(val key: String, val path: String, val comment: String = "")
+
+    /**
+     * [choices] in the order the chooser offers them for the variable [name]: the same name, then names sharing words with
+     * it (most shared first); within that, the bound folder ([boundPath]) first, then shallower folders, then by key.
+     */
+    fun rankChoices(name: String, boundPath: String, choices: Collection<KeyChoice>): List<KeyChoice> {
         fun words(s: String) = s.split('_', '-', '.').filter { it.isNotEmpty() }.map(String::lowercase).toSet()
         val wanted = words(name)
-        return keys.sortedWith(
-            compareByDescending<String> { it.equals(name, ignoreCase = true) }
-                .thenByDescending { (words(it) intersect wanted).size }
-                .thenBy { it.lowercase() },
+        return choices.sortedWith(
+            compareByDescending<KeyChoice> { it.key.equals(name, ignoreCase = true) }
+                .thenByDescending { (words(it.key) intersect wanted).size }
+                .thenByDescending { it.path == boundPath }
+                .thenBy { it.path.count { c -> c == '/' } - (if (it.path == "/") 1 else 0) }
+                .thenBy { it.key.lowercase() }
+                .thenBy { it.path },
         )
     }
 

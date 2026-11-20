@@ -1,6 +1,17 @@
 package cz.xprees.secrets.ui.toolwindow
 
-import cz.xprees.secrets.core.provider.CreateOutcome
+import cz.xprees.secrets.ui.secrets.DeleteSecretsDialog
+
+import cz.xprees.secrets.ui.secrets.MoveSecretsDialog
+
+import com.intellij.openapi.actionSystem.IdeActions
+
+import com.intellij.ide.dnd.DnDDragStartBean
+
+import com.intellij.ide.dnd.DnDSupport
+
+import cz.xprees.secrets.core.provider.WriteOutcome
+import cz.xprees.secrets.ui.secrets.EditSecretDialog
 import cz.xprees.secrets.ui.secrets.NewEnvironmentDialog
 import cz.xprees.secrets.ui.secrets.NewSecretDialog
 
@@ -65,6 +76,12 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     private val model = DefaultTreeModel(root)
     val tree = Tree(model)
 
+    /** Secrets cut with Cut, waiting for Paste on a folder or environment (kept here only, never on the system clipboard). */
+    private var cutSecrets: List<SecretNode> = emptyList()
+
+    private val moveAction = MoveSecretsAction()
+    private val deleteAction = DeleteSecretsAction()
+
     init {
         tree.isRootVisible = false
         tree.showsRootHandles = true
@@ -87,9 +104,10 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             }
         })
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
+        installMoving()
 
         val actions = DefaultActionGroup(
-            RefreshAction(), NewSecretAction(), NewEnvironmentAction(), Separator.create(), RevealAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
+            RefreshAction(), NewSecretAction(), EditSecretAction(), moveAction, deleteAction, NewEnvironmentAction(), Separator.create(), RevealAction(), CopyKeyAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
             CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
             ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
@@ -360,7 +378,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 is SecretNode -> {
                     val entry = value.entry
                     icon = AllIcons.Nodes.Property
-                    append(entry.key, if (entry.origin == SecretOrigin.IMPORTED) SimpleTextAttributes.GRAY_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
+                    val cut = cutSecrets.any { it.connection.id == value.connection.id && it.scope == value.scope && it.entry.key == entry.key }
+                    append(entry.key, if (entry.origin == SecretOrigin.IMPORTED || cut) SimpleTextAttributes.GRAY_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                     append("  ")
                     when {
                         entry.valueHidden -> append(SecretsBundle.message("toolwindow.value.hidden"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
@@ -409,6 +428,167 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
     }
 
+    // ---- Moving and deleting secrets: Move…, Delete…, cut and paste, drag and drop -------------------------------------
+
+    /** Secrets that can be moved or deleted from here: defined in their folder (not imported or personal), all in one folder. */
+    private fun movable(nodes: List<SecretsNode>): List<SecretNode>? {
+        val secrets = nodes.filterIsInstance<SecretNode>()
+        if (secrets.isEmpty() || secrets.size != nodes.size) return null
+        if (secrets.any { it.entry.origin != SecretOrigin.LOCAL }) return null
+        val first = secrets.first()
+        return secrets.takeIf { all -> all.all { it.connection.id == first.connection.id && sourceOf(it) == sourceOf(first) } }
+    }
+
+    /** The folder a secret is defined in (a recursive listing can show secrets of subfolders). */
+    private fun sourceOf(node: SecretNode): SecretScope =
+        SecretScope(node.scope.projectId, node.entry.environment.ifBlank { node.scope.environment }, node.entry.path)
+
+    /** The folder a node stands for as a destination: an environment's root, a folder, or a secret's folder. */
+    private fun destinationOf(node: SecretsNode?): SecretScope? = when (node) {
+        is EnvironmentNode -> node.scope
+        is FolderNode -> node.scope
+        is SecretNode -> node.scope
+        else -> null
+    }?.let { SecretScope(it.projectId, it.environment, it.path) }
+
+    private fun environmentsOf(node: SecretsNode): List<String> =
+        TreeUtil.findObjectInPath(TreePath(node.path), ProjectNode::class.java)?.project?.environments?.map { it.slug }.orEmpty()
+
+    /** Opens the confirmation for moving [secrets] to [destination] (it can still be changed there). */
+    private fun confirmMove(secrets: List<SecretNode>, destination: SecretScope) {
+        val first = secrets.first()
+        val source = sourceOf(first)
+        if (destination.projectId != source.projectId) return
+        MoveSecretsDialog(project, first.connection, source, secrets.map { it.entry }, environmentsOf(first), destination) { target, _ ->
+            cutSecrets = emptyList()
+            reloadFolder(first.connection.id, source)
+            reloadFolder(first.connection.id, target)
+        }.show()
+    }
+
+    /** Reads a folder again if it is in the tree already (after a move or delete). */
+    private fun reloadFolder(connectionId: String, scope: SecretScope) {
+        var node: SecretsNode? = root.children().asSequence().filterIsInstance<ConnectionNode>().firstOrNull { it.connection.id == connectionId }
+        node = node?.let { c -> childrenOf<ProjectNode>(c).firstOrNull { it.project.id == scope.projectId } }
+        node = node?.let { p -> childrenOf<EnvironmentNode>(p).firstOrNull { it.environment.slug == scope.environment } }
+        for (segment in scope.path.split('/').filter(String::isNotEmpty)) {
+            node = node?.let { n -> childrenOf<FolderNode>(n).firstOrNull { it.name == segment } }
+        }
+        (node as? LazyNode)?.takeIf { it.loaded && !it.loading }?.let { load(it, force = true) }
+    }
+
+    private fun installMoving() {
+        val manager = ActionManager.getInstance()
+        // The usual shortcuts: Cut, Paste and Delete of the IDE, F6 (Move) where the keymap has it
+        CutSecretsAction().registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_CUT).shortcutSet, tree, this)
+        PasteSecretsAction().registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_PASTE).shortcutSet, tree, this)
+        deleteAction.registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_DELETE).shortcutSet, tree, this)
+        manager.getAction("Move")?.shortcutSet?.let { moveAction.registerCustomShortcutSet(it, tree, this) }
+
+        // Drag secrets onto a folder or environment of the same project
+        DnDSupport.createBuilder(tree)
+            .setBeanProvider { info ->
+                if (!SecretsService.getInstance().writesAllowed) return@setBeanProvider null
+                val path = tree.getPathForLocation(info.point.x, info.point.y) ?: return@setBeanProvider null
+                if (path.lastPathComponent !is SecretNode) return@setBeanProvider null
+                movable(selectedNodes())?.let { DnDDragStartBean(it) }
+            }
+            .setTargetChecker { event ->
+                val dragged = (event.attachedObject as? List<*>)?.filterIsInstance<SecretNode>().orEmpty()
+                val target = tree.getPathForLocation(event.point.x, event.point.y)?.lastPathComponent as? SecretsNode
+                val destination = destinationOf(target)
+                val possible = dragged.isNotEmpty() && destination != null && destination.projectId == sourceOf(dragged.first()).projectId &&
+                    target?.connection?.id == dragged.first().connection.id && destination != sourceOf(dragged.first()).copy(recursive = false)
+                event.isDropPossible = possible
+                true
+            }
+            .setDropHandler { event ->
+                val dragged = (event.attachedObject as? List<*>)?.filterIsInstance<SecretNode>().orEmpty()
+                val target = tree.getPathForLocation(event.point.x, event.point.y)?.lastPathComponent as? SecretsNode
+                val destination = destinationOf(target) ?: return@setDropHandler
+                if (dragged.isNotEmpty()) ApplicationManager.getApplication().invokeLater { confirmMove(dragged, destination) }
+            }
+            .setDisposableParent(this)
+            .install()
+    }
+
+    private inner class MoveSecretsAction : PanelAction(SecretsBundle.message("action.move.secrets"), AllIcons.Actions.Forward) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = movable(selectedNodes()) != null && writable(e)
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val secrets = movable(selectedNodes()) ?: return
+            confirmMove(secrets, sourceOf(secrets.first()))
+        }
+    }
+
+    private inner class DeleteSecretsAction : PanelAction(SecretsBundle.message("action.delete.secrets"), AllIcons.General.Remove) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = movable(selectedNodes()) != null && writable(e)
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val secrets = movable(selectedNodes()) ?: return
+            val first = secrets.first()
+            val source = sourceOf(first)
+            DeleteSecretsDialog(project, first.connection, source, secrets.map { it.entry.key }) {
+                cutSecrets = cutSecrets - secrets.toSet()
+                reloadFolder(first.connection.id, source)
+            }.show()
+        }
+    }
+
+    private inner class CutSecretsAction : PanelAction(SecretsBundle.message("action.cut.secrets"), AllIcons.Actions.MenuCut) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = movable(selectedNodes()) != null && writable(e)
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            cutSecrets = movable(selectedNodes()) ?: return
+            tree.repaint()
+        }
+    }
+
+    private inner class PasteSecretsAction : PanelAction(SecretsBundle.message("action.paste.secrets"), AllIcons.Actions.MenuPaste) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = cutSecrets.isNotEmpty() && destinationOf(selectedNode()) != null && writable(e)
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val destination = destinationOf(selectedNode()) ?: return
+            if (cutSecrets.isNotEmpty()) confirmMove(cutSecrets, destination)
+        }
+    }
+
+    /** False (with the reason as the description) while *Read-only* is on in the settings. */
+    private fun writable(e: AnActionEvent): Boolean {
+        val allowed = SecretsService.getInstance().writesAllowed
+        if (!allowed) e.presentation.description = SecretsBundle.message("action.read.only.disabled")
+        return allowed
+    }
+
+    /** Changes the value and comment of the selected secret (only one defined in that folder: not imported, not personal). */
+    private inner class EditSecretAction : PanelAction(SecretsBundle.message("action.edit.secret"), AllIcons.Actions.EditSource) {
+        private fun editable(node: SecretNode?): Boolean =
+            node != null && !node.entry.valueHidden && node.entry.origin == SecretOrigin.LOCAL
+
+        override fun update(e: AnActionEvent) {
+            val node = selectedSecret()
+            e.presentation.isEnabled = editable(node) && writable(e)
+            if (node != null && !editable(node)) e.presentation.description = SecretsBundle.message("edit.secret.not.editable")
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = selectedSecret()?.takeIf(::editable) ?: return
+            // The secret may live in a subfolder of a recursive listing: change it where it is defined
+            val scope = SecretScope(node.scope.projectId, node.entry.environment.ifBlank { node.scope.environment }, node.entry.path)
+            EditSecretDialog(project, node.connection, scope, node.entry) { outcome ->
+                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(SecretLocation(node.connection.id, scope.projectId, node.scope.environment, node.scope.path, node.entry.key))
+            }.show()
+        }
+    }
+
     /** Creates a secret in the selected environment or folder (or the bound one). */
     private inner class NewSecretAction : PanelAction(SecretsBundle.message("action.new.secret"), AllIcons.General.Add) {
         private fun context(): Pair<ProjectNode, SecretScope?>? {
@@ -427,7 +607,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
 
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = context() != null
+            e.presentation.isEnabled = context() != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {
@@ -439,7 +619,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 environment = scope?.environment ?: binding?.environment ?: environments.firstOrNull() ?: return,
                 path = scope?.path ?: binding?.path ?: "/",
             ) { location, outcome ->
-                if (outcome == CreateOutcome.CREATED) refreshAndSelect(location)
+                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(location)
             }.show()
         }
     }
@@ -449,7 +629,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         private fun projectNode(): ProjectNode? = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)
 
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = projectNode() != null
+            e.presentation.isEnabled = projectNode() != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {
@@ -469,6 +649,21 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         override fun actionPerformed(e: AnActionEvent) {
             selectedSecret()?.let(::toggleReveal)
+        }
+    }
+
+    /** The keys of the selected secrets, one per line (names only, nothing secret), or null when no secret is selected. */
+    fun selectedKeysText(): String? =
+        selectedNodes().filterIsInstance<SecretNode>().map { it.entry.key }.distinct().takeIf { it.isNotEmpty() }?.joinToString("\n")
+
+    private inner class CopyKeyAction : PanelAction(SecretsBundle.message("action.copy.key"), AllIcons.Actions.Copy) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = selectedNodes().any { it is SecretNode }
+        }
+
+        // A key name isn't secret: the ordinary clipboard, without the auto-clear values get
+        override fun actionPerformed(e: AnActionEvent) {
+            selectedKeysText()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
         }
     }
 

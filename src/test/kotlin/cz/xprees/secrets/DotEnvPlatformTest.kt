@@ -76,6 +76,29 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
         assertThat(DotEnvLines.isDotEnv("environment.ts")).isFalse()
     }
 
+    fun `test completion after the scheme offers keys of every folder, qualified with their folder`() {
+        myFixture.configureByText(".env", "X=infisical://BACKEND<caret>\n")
+        myFixture.completeBasic()
+        // The only match is inserted right away, with its folder
+        assertThat(myFixture.editor.document.text).isEqualTo("X=infisical://BACKEND_ONLY?path=/backend\n")
+        // ...and the qualified reference is known to the editor, so it isn't reported as missing
+        myFixture.enableInspections(cz.xprees.secrets.editor.MissingSecretInspection::class.java)
+        assertThat(myFixture.doHighlighting(HighlightSeverity.WARNING).filter { it.description?.contains("BACKEND_ONLY") == true }).isEmpty()
+        myFixture.configureByText(".env.local", "X=infisical://BACKEND_ONLY?path=/nowhere\n")
+        assertThat(myFixture.doHighlighting(HighlightSeverity.WARNING).filter { it.description?.contains("BACKEND_ONLY") == true }).isNotEmpty()
+    }
+
+    fun `test the comment above a variable is found for extracting`() {
+        val text = "# unrelated\n\n# Base URL of the deployed Cloudflare export-zip worker.\n#   Leave empty to use the legacy local zip cron.\nEXPORT_WORKER_URL=https://export.example.app\n" +
+            "# OLD_KEY=1\nNEXT=2\nNONE=3\n"
+        val lines = DotEnvLines.parse(text).associateBy { it.name }
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("EXPORT_WORKER_URL")))
+            .isEqualTo("Base URL of the deployed Cloudflare export-zip worker. Leave empty to use the legacy local zip cron.")
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("NEXT"))).describedAs("commented-out assignment").isEmpty()
+        assertThat(DotEnvLines.commentAbove(text, lines.getValue("NONE"))).isEmpty()
+        assertThat(DotEnvLines.commentAbove("# only\nFIRST=1", DotEnvLines.parse("# only\nFIRST=1").single())).isEqualTo("only")
+    }
+
     fun `test plaintext secrets in env files are reported and bound with comments`() {
         myFixture.enableInspections(DotEnvPlaintextSecretInspection::class.java)
         myFixture.configureByText(

@@ -105,7 +105,7 @@ object TerminalSecrets {
 
             override fun onSuccess() {
                 val resolved = result ?: return
-                val guarded = resolved.environments.filter { ProdGuard.matches(it) }
+                val guarded = resolved.environments.filter { ProdGuard.needsConfirmation(project, it) }
                 if (guarded.isNotEmpty() && Messages.showYesNoDialog(
                         project,
                         SecretsBundle.message("prod.guard.message", SecretsBundle.message("terminal.tab.name"), guarded.joinToString()),

@@ -17,6 +17,15 @@ class MockInfisical : AutoCloseable {
     /** Secrets created through the API: "env:path:KEY" -> value. Listings include them. */
     val created = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Secrets duplicated through the API: "env:path:KEY". */
+    val duplicated = CopyOnWriteArrayList<String>()
+
+    /** Secrets deleted through the API: "env:path:KEY". Deleting UNDELETABLE fails. */
+    val deleted = CopyOnWriteArrayList<String>()
+
+    /** Values changed through the API: "env:path:KEY" -> new value. */
+    val updated = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** Environments created through the API: slug -> name. The project listing includes them. */
     val createdEnvironments = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -63,7 +72,7 @@ class MockInfisical : AutoCloseable {
         val token = authorization?.removePrefix("Bearer ")
         if (token == null || synchronized(validTokens) { token !in validTokens }) return respond(exchange, 401, """{"message":"Token expired"}""")
 
-        if (request.method == "POST" && request.path.startsWith("/api/v4/secrets/")) {
+        if (request.method == "POST" && request.path.startsWith("/api/v4/secrets/") && request.path != "/api/v4/secrets/duplicate") {
             val key = URLDecoder.decode(request.path.removePrefix("/api/v4/secrets/"), StandardCharsets.UTF_8)
             val json = com.google.gson.JsonParser.parseString(body).asJsonObject
             val env = json.get("environment").asString
@@ -71,6 +80,35 @@ class MockInfisical : AutoCloseable {
             if (key in listOf("DB_PASSWORD", "API_KEY") && env == "dev" && path == "/") return respond(exchange, 400, """{"message":"Secret already exist"}""")
             if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a1","status":"open"}}""")
             created["$env:$path:$key"] = json.get("secretValue").asString
+            return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
+        }
+        if (request.method == "POST" && request.path == "/api/v4/secrets/duplicate") {
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val keys = json.getAsJsonArray("secretIds").map { it.asString.removePrefix("id-") }
+            val destination = "${json.get("destinationEnvironment").asString}:${json.get("destinationSecretPath").asString}"
+            if (requireApproval) {
+                val results = keys.joinToString(",") { """{"sourceSecretId":"id-$it","sourceSecretKey":"$it","approval":{"id":"a3"}}""" }
+                return respond(exchange, 200, """{"results":[$results]}""")
+            }
+            keys.forEach { duplicated += "$destination:$it" }
+            val results = keys.joinToString(",") { """{"sourceSecretId":"id-$it","sourceSecretKey":"$it","destinationSecretId":"d-$it"}""" }
+            return respond(exchange, 200, """{"results":[$results]}""")
+        }
+        if (request.method == "DELETE" && request.path.startsWith("/api/v4/secrets/")) {
+            val key = URLDecoder.decode(request.path.removePrefix("/api/v4/secrets/"), StandardCharsets.UTF_8)
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            if (key == "UNDELETABLE") return respond(exchange, 403, """{"message":"Forbidden"}""")
+            deleted += "${json.get("environment").asString}:${json.get("secretPath").asString}:$key"
+            return respond(exchange, 200, """{"secret":{"id":"id-$key","secretKey":"$key"}}""")
+        }
+        if (request.method == "PATCH" && request.path.startsWith("/api/v4/secrets/")) {
+            val key = URLDecoder.decode(request.path.removePrefix("/api/v4/secrets/"), StandardCharsets.UTF_8)
+            val json = com.google.gson.JsonParser.parseString(body).asJsonObject
+            val env = json.get("environment").asString
+            val path = json.get("secretPath").asString
+            if (key == "MISSING") return respond(exchange, 404, """{"message":"Secret not found"}""")
+            if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a2","status":"open"}}""")
+            updated["$env:$path:$key"] = json.get("secretValue").asString
             return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
         }
         if (request.method == "POST" && request.path == "/api/v1/projects/p1/environments") {
@@ -90,12 +128,17 @@ class MockInfisical : AutoCloseable {
                 )
             }
 
-            "/api/v2/folders" -> respond(exchange, 200, """{"folders":[{"id":"f1","name":"backend"}]}""")
+            "/api/v2/folders" -> when (query["path"]) {
+                "/", null -> respond(exchange, 200, """{"folders":[{"id":"f1","name":"backend"}]}""")
+                "/backend" -> respond(exchange, 200, """{"folders":[{"id":"f2","name":"api"}]}""")
+                else -> respond(exchange, 200, """{"folders":[]}""")
+            }
             "/api/v4/secrets" -> {
                 val env = query["environment"]
                 val path = query["secretPath"]
                 val secrets = when {
-                    env == "dev" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"dev-pass","type":"shared"},{"secretKey":"API_KEY","secretValue":"dev-key","type":"shared"},{"secretKey":"ConnectionStrings__Default","secretValue":"Server=db;Password=dev","type":"shared"}"""
+                    env == "dev" && path == "/" -> """{"id":"id-DB_PASSWORD","secretKey":"DB_PASSWORD","secretValue":"dev-pass","type":"shared"},{"id":"id-API_KEY","secretKey":"API_KEY","secretValue":"dev-key","type":"shared"},{"id":"id-ConnectionStrings__Default","secretKey":"ConnectionStrings__Default","secretValue":"Server=db;Password=dev","type":"shared"}""" +
+                        (if (query["recursive"] == "true") """,{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared","secretPath":"/backend"}""" else "")
                     env == "prod" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"prod-pass","type":"shared"},{"secretKey":"PROD_ONLY","secretValue":"p","type":"shared"}"""
                     env == "dev" && path == "/backend" -> """{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared"}"""
                     else -> return respond(exchange, 404, """{"message":"Folder not found"}""")

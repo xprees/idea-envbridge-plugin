@@ -1,5 +1,7 @@
 package cz.xprees.secrets.editor
 
+import cz.xprees.secrets.core.model.SecretScope
+
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.CachedValueProvider
@@ -30,6 +32,16 @@ object EditorReferences {
         snapshot ?: return null
         val reference = found.reference
         if (reference != null && !reference.scheme.equals(snapshot.scheme, ignoreCase = true)) return null
+        // A folder of the bound environment (`?path=`): known from the folder index
+        if (reference?.path != null && (reference.environment == null || reference.environment == snapshot.boundEnvironment) &&
+            (reference.projectId == null || reference.projectId == snapshot.projectId) && reference.connectionId == null
+        ) {
+            val path = SecretScope.normalizePath(reference.path)
+            if (path != snapshot.path && snapshot.folders.isNotEmpty()) {
+                val info = snapshot.folders[path]?.get(found.name)
+                return Resolved(found, snapshot, info, if (info != null) listOf(snapshot.boundEnvironment) else emptyList(), true)
+            }
+        }
         val indexed = reference == null ||
             ((reference.environment == null || reference.environment in snapshot.environments) && reference.path == null &&
                 (reference.projectId == null || reference.projectId == snapshot.projectId) && reference.connectionId == null)

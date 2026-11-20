@@ -37,6 +37,9 @@ class ProjectSecretsSettings(private val project: Project) :
          */
         var restrictToBoundProject by property(true)
 
+        /** This project's production environments (comma-separated slugs); empty: the name pattern of the settings decides. */
+        var productionEnvironments by string()
+
         /** Whether new terminal tabs of this project get secrets (opt-in). */
         var terminalEnabled by property(false)
 
@@ -53,6 +56,9 @@ class ProjectSecretsSettings(private val project: Project) :
         if (!project.isDisposed) project.messageBus.syncPublisher(BINDING_TOPIC).bindingChanged()
     }
 
+    /** The slugs of this project's production environments, or an empty set when the name pattern decides. */
+    fun productionEnvironments(): Set<String> = parseEnvironments(state.productionEnvironments.orEmpty())
+
     fun interface BindingListener {
         fun bindingChanged()
     }
@@ -65,5 +71,8 @@ class ProjectSecretsSettings(private val project: Project) :
         val BINDING_TOPIC: Topic<BindingListener> = Topic.create("EnvBridge binding", BindingListener::class.java)
 
         fun getInstance(project: Project): ProjectSecretsSettings = project.service()
+
+        /** "prod, live" -> {prod, live}. */
+        fun parseEnvironments(text: String): Set<String> = text.split(',', ' ', ';').map(String::trim).filter(String::isNotEmpty).toSet()
     }
 }

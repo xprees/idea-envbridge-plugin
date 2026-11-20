@@ -1,5 +1,7 @@
 package cz.xprees.secrets.core.resolve
 
+import cz.xprees.secrets.core.model.SecretScope
+
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
@@ -53,6 +55,11 @@ class LaunchSecretResolver(private val project: Project) {
                 }
             },
             fetch = { reference, scope -> service.secrets(bindingOf(reference).connection, scope, fresh) },
+            locate = { reference, scope ->
+                service.secrets(bindingOf(reference).connection, SecretScope(scope.projectId, scope.environment, "/", recursive = true))
+                    .filter { it.key == reference.key && it.origin != cz.xprees.secrets.core.model.SecretOrigin.IMPORTED }
+                    .map { it.path }.distinct().sorted()
+            },
         )
         return if (plan.hasSecrets) result.withOverrides(LocalOverrides.getInstance(project).all()) else result
     }

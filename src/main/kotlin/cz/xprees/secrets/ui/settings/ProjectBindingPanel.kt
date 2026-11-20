@@ -1,5 +1,7 @@
 package cz.xprees.secrets.ui.settings
 
+import com.intellij.ui.components.JBTextField
+
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -45,6 +47,7 @@ internal class ProjectBindingPanel(private val project: Project) {
     private val projectCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
     private val environmentCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
     private val folderCombo = ComboBox<String>().apply { isEditable = true }
+    private val productionField = JBTextField()
     private val status = JBLabel().apply {
         setAllowAutoWrapping(true)
         setCopyable(true)
@@ -66,6 +69,10 @@ internal class ProjectBindingPanel(private val project: Project) {
             button(SecretsBundle.message("settings.binding.reload")) { loadProjects(force = true) }
         }
         row { cell(status).align(AlignX.FILL).resizableColumn() }
+        row(SecretsBundle.message("settings.binding.production")) {
+            cell(productionField).align(AlignX.FILL).resizableColumn()
+            button(SecretsBundle.message("settings.binding.production.choose")) { chooseProduction(it.source as JComponent) }
+        }.rowComment(SecretsBundle.message("settings.binding.production.comment"))
         row {
             checkBox(SecretsBundle.message("settings.binding.project.file.short"))
                 .bindSelected({ settings.state.useProjectFile }, { value -> settings.update { useProjectFile = value } })
@@ -101,6 +108,7 @@ internal class ProjectBindingPanel(private val project: Project) {
             folderCombo.removeAllItems()
             folderCombo.addItem("/")
             folderCombo.selectedItem = state.path ?: "/"
+            productionField.text = state.productionEnvironments.orEmpty()
         } finally {
             updating--
         }
@@ -111,7 +119,8 @@ internal class ProjectBindingPanel(private val project: Project) {
     fun isModified(): Boolean {
         val state = settings.state
         return selectedConnection()?.id != state.connectionId || selectedProjectId() != state.projectId ||
-            selectedEnvironment() != state.environment || selectedPath() != state.path
+            selectedEnvironment() != state.environment || selectedPath() != state.path ||
+            selectedProduction() != state.productionEnvironments.orEmpty()
     }
 
     fun apply() {
@@ -120,7 +129,39 @@ internal class ProjectBindingPanel(private val project: Project) {
             projectId = selectedProjectId()
             environment = selectedEnvironment()
             path = selectedPath()
+            productionEnvironments = selectedProduction().ifEmpty { null }
         }
+    }
+
+    private fun selectedProduction(): String = ProjectSecretsSettings.parseEnvironments(productionField.text).joinToString(", ")
+
+    /** A checkbox list of the chosen project's environments; the ticked ones fill the field. */
+    private fun chooseProduction(anchor: JComponent) {
+        val projectId = selectedProjectId() ?: effectiveProjectId()
+        val environments = projects.firstOrNull { it.id == projectId }?.environments.orEmpty()
+        if (environments.isEmpty()) {
+            status.text = SecretsBundle.message("settings.binding.production.none")
+            return
+        }
+        val current = ProjectSecretsSettings.parseEnvironments(productionField.text)
+        val list = com.intellij.ui.CheckBoxList<String>().apply {
+            environments.forEach { addItem(it.slug, "${it.name}  (${it.slug})", it.slug in current) }
+        }
+        val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(com.intellij.ui.components.JBScrollPane(list), list)
+            .setTitle(SecretsBundle.message("settings.binding.production.title"))
+            .setRequestFocus(true)
+            .setCancelOnClickOutside(true)
+            .addListener(object : com.intellij.openapi.ui.popup.JBPopupListener {
+                override fun onClosed(event: com.intellij.openapi.ui.popup.LightweightWindowEvent) {
+                    val ticked = (0 until list.itemsCount).mapNotNull { list.getItemAt(it) }.filter { list.isItemSelected(it) }
+                    // Keep slugs typed by hand that aren't in this project's list
+                    val others = current - environments.map { it.slug }.toSet()
+                    productionField.text = (ticked + others).joinToString(", ")
+                }
+            })
+            .createPopup()
+        popup.showUnderneathOf(anchor)
     }
 
     private fun selectedConnection(): SecretConnection? = connectionCombo.selectedItem as? SecretConnection
@@ -196,15 +237,7 @@ internal class ProjectBindingPanel(private val project: Project) {
         val scope = effectiveScope() ?: return
         val current = (folderCombo.editor.item ?: folderCombo.selectedItem)?.toString() ?: "/"
         background({
-            val service = SecretsService.getInstance()
-            val found = mutableListOf("/")
-            var level = listOf("/")
-            repeat(MAX_FOLDER_DEPTH) {
-                level = level.flatMap { parent -> service.folders(connection, SecretScope(scope.projectId, scope.environment, parent)).map { it.path } }
-                found += level
-                if (level.isEmpty() || found.size > MAX_FOLDERS) return@repeat
-            }
-            found.take(MAX_FOLDERS)
+            SecretsService.getInstance().allFolders(connection, scope.projectId, scope.environment, MAX_FOLDER_DEPTH, MAX_FOLDERS)
         }) { result ->
             result.onSuccess { folders ->
                 folderCombo.removeAllItems()

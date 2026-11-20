@@ -66,7 +66,7 @@ class SecretsStatusBarWidget(private val project: Project) : StatusBarWidget, St
 
     override fun getTooltipText(): String? = tooltip
 
-    override fun getIcon(): Icon? = environment?.let { if (ProdGuard.matches(it)) AllIcons.General.Warning else SecretsIcons.PROVIDER }
+    override fun getIcon(): Icon? = environment?.let { if (ProdGuard.isProduction(project, it)) AllIcons.General.Warning else SecretsIcons.PROVIDER }
 
     override fun getPopup(): JBPopup? {
         val snapshot = KeysIndex.getInstance(project).current()
@@ -82,7 +82,7 @@ class SecretsStatusBarWidget(private val project: Project) : StatusBarWidget, St
             override fun getIconFor(value: String): Icon? = when {
                 value == SETTINGS_ITEM -> AllIcons.General.Settings
                 value == DEFAULT_ITEM -> null
-                ProdGuard.matches(value) -> AllIcons.General.Warning
+                ProdGuard.isProduction(project, value) -> AllIcons.General.Warning
                 value == environment -> AllIcons.Actions.Checked
                 else -> null
             }

@@ -33,8 +33,14 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
         /** Environments that need a confirmation before a launch: comma-separated globs on the slug. Empty = off. */
         var prodGuardPattern by string(DEFAULT_PROD_GUARD_PATTERN)
 
+        /** Whether production environments ask for a confirmation (they stay marked either way). */
+        var prodGuardEnabled by property(true)
+
         /** Whether secret values are masked in Run and Debug consoles. */
         var maskConsoleOutput by property(true)
+
+        /** Never write to secret managers from this IDE: creating and changing secrets and environments is turned off. */
+        var readOnly by property(false)
     }
 
     class ConnectionState : BaseState() {

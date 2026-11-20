@@ -107,12 +107,20 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                     intTextField(0..3600).columns(6).bindIntText(app.state::clipboardClearSeconds)
                     label(SecretsBundle.message("settings.seconds.zero.never"))
                 }
+                row {
+                    checkBox(SecretsBundle.message("settings.prod.guard.enabled")).bindSelected(app.state::prodGuardEnabled)
+                        .comment(SecretsBundle.message("settings.prod.guard.enabled.comment"))
+                }
                 row(SecretsBundle.message("settings.prod.guard")) {
                     textField().align(AlignX.FILL).resizableColumn()
                         .bindText({ app.state.prodGuardPattern.orEmpty() }, { app.state.prodGuardPattern = it.trim() })
                 }.rowComment(SecretsBundle.message("settings.prod.guard.comment"))
                 row {
                     checkBox(SecretsBundle.message("settings.mask.console")).bindSelected(app.state::maskConsoleOutput)
+                }
+                row {
+                    checkBox(SecretsBundle.message("settings.read.only")).bindSelected(app.state::readOnly)
+                        .comment(SecretsBundle.message("settings.read.only.comment"))
                 }
             }
             group(SecretsBundle.message("settings.overrides")) {
