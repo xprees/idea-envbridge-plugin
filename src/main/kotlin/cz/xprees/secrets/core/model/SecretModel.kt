@@ -57,6 +57,8 @@ data class SecretEntry(
     val origin: SecretOrigin = SecretOrigin.LOCAL,
     /** The caller may see that the secret exists but not read its value ([value] is then empty). */
     val valueHidden: Boolean = false,
+    /** The provider's ID of the secret (for moving it); empty when unknown. */
+    val id: String = "",
 )
 
 /**

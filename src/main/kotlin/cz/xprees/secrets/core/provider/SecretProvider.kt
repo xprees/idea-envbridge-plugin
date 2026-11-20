@@ -107,10 +107,31 @@ interface SecretsClient {
     fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't change secrets")
 
+    /**
+     * Moves [secrets] (defined in the folder of [source]) to the folder of [destination], possibly in another environment.
+     * The source copy is only removed once the destination has the secret, so a failure never loses one.
+     */
+    fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't move secrets")
+
+    /** Deletes the shared secret [key] from the folder of [scope] (or opens a change request where a policy requires one). */
+    fun deleteSecret(scope: SecretScope, key: String): WriteOutcome =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't delete secrets")
+
     /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
     fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create environments")
 }
+
+/** What [SecretsClient.moveSecrets] did, per key. */
+data class MoveResult(
+    /** Now only at the destination. */
+    val moved: List<String>,
+    /** A change request was opened at the destination; the source copy was kept. */
+    val awaitingApproval: List<String> = emptyList(),
+    /** Copied to the destination, but the source copy could not be removed (key -> reason): they exist in both places. */
+    val notRemoved: Map<String, String> = emptyMap(),
+)
 
 /** What a write ([SecretsClient.createSecret], [SecretsClient.updateSecret]) did. */
 enum class WriteOutcome {

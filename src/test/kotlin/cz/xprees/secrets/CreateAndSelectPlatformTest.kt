@@ -11,6 +11,7 @@ import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
 import cz.xprees.secrets.core.resolve.KeysIndex
+import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.ProdGuard
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
@@ -222,5 +223,68 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
             settings.update { productionEnvironments = null }
             app.prodGuardEnabled = true
         }
+    }
+
+    private fun devRoot() = SecretsService.getInstance().secrets(connection, SecretScope("p1", "dev", "/"), fresh = true).associateBy { it.key }
+
+    fun `test moving copies first and removes the originals only after that worked`() {
+        val service = SecretsService.getInstance()
+        val source = SecretScope("p1", "dev", "/")
+        val secrets = devRoot().let { listOf(it.getValue("API_KEY"), it.getValue("DB_PASSWORD")) }
+        assertThat(secrets.map { it.id }).containsExactly("id-API_KEY", "id-DB_PASSWORD")
+        val result = service.moveSecrets(connection, source, secrets, SecretScope("p1", "prod", "/backend"), overwrite = false)
+        assertThat(result.moved).containsExactly("API_KEY", "DB_PASSWORD")
+        assertThat(mock.duplicated).containsExactly("prod:/backend:API_KEY", "prod:/backend:DB_PASSWORD")
+        assertThat(mock.deleted).containsExactly("dev:/:API_KEY", "dev:/:DB_PASSWORD")
+        val duplicateAt = mock.requests.indexOfFirst { it.path == "/api/v4/secrets/duplicate" }
+        val firstDelete = mock.requests.indexOfFirst { it.method == "DELETE" }
+        assertThat(duplicateAt).isLessThan(firstDelete)
+        assertThat(mock.requests.first { it.path == "/api/v4/secrets/duplicate" }.body)
+            .contains("\"shouldOverwrite\":false").contains("\"value\":true").contains("\"comment\":true").contains("\"tags\":true")
+    }
+
+    fun `test a destination waiting for approval keeps the originals, and a failed removal is reported`() {
+        val service = SecretsService.getInstance()
+        val source = SecretScope("p1", "dev", "/")
+        val apiKey = devRoot().getValue("API_KEY")
+        mock.requireApproval = true
+        val waiting = service.moveSecrets(connection, source, listOf(apiKey), SecretScope("p1", "prod", "/"), overwrite = false)
+        assertThat(waiting.awaitingApproval).containsExactly("API_KEY")
+        assertThat(mock.requests.none { it.method == "DELETE" }).isTrue()
+        mock.requireApproval = false
+
+        val undeletable = apiKey.copy(key = "UNDELETABLE", id = "id-UNDELETABLE")
+        val partial = service.moveSecrets(connection, source, listOf(undeletable), SecretScope("p1", "prod", "/"), overwrite = true)
+        assertThat(partial.moved).isEmpty()
+        assertThat(partial.notRemoved).containsKey("UNDELETABLE")
+        assertThatThrownBy { service.moveSecrets(connection, source, listOf(apiKey.copy(id = "")), SecretScope("p1", "prod", "/"), false) }
+            .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    fun `test deleting, and read-only stops moving and deleting`() {
+        val service = SecretsService.getInstance()
+        val scope = SecretScope("p1", "dev", "/")
+        val results = service.deleteSecrets(connection, scope, listOf("API_KEY", "UNDELETABLE"))
+        assertThat(results.getValue("API_KEY").getOrNull()).isEqualTo(WriteOutcome.APPLIED)
+        assertThat(results.getValue("UNDELETABLE").isFailure).isTrue()
+        assertThat(mock.deleted).containsExactly("dev:/:API_KEY")
+
+        SecretsAppSettings.getInstance().state.readOnly = true
+        try {
+            val before = mock.requests.size
+            assertThatThrownBy { service.deleteSecrets(connection, scope, listOf("DB_PASSWORD")) }.hasMessageContaining("Read-only")
+            assertThatThrownBy { service.moveSecrets(connection, scope, devRoot().values.toList(), SecretScope("p1", "prod", "/"), false) }
+                .hasMessageContaining("Read-only")
+            assertThat(mock.requests.filter { it.method != "GET" }).hasSize(mock.requests.take(before).count { it.method != "GET" })
+        } finally {
+            SecretsAppSettings.getInstance().state.readOnly = false
+        }
+    }
+
+    fun `test a launch names the folder where a missing key is`() {
+        val resolver = LaunchSecretResolver.getInstance(project)
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("B" to "infisical://BACKEND_ONLY"))) }
+            .hasMessageContaining("no secret BACKEND_ONLY in dev:/").hasMessageContaining("it is in /backend (infisical://BACKEND_ONLY?path=/backend)")
+        assertThat(resolver.resolve(resolver.plan(mapOf("B" to "infisical://BACKEND_ONLY?path=/backend"))).environment).containsEntry("B", "b")
     }
 }

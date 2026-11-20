@@ -120,11 +120,14 @@ A reference is the value of an environment variable:
 
 | Feature | Where |
 |---|---|
+| Folders | A bare `infisical://KEY` reads the bound folder only. After `infisical://`, completion offers the keys of every folder, each with its folder, and inserts `KEY?path=/folder` for other folders; masked hints show the folder (`dev:/workers ••••••`); a launch that misses a key names the folders that have it |
 | Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
 | Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
 | Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
 | `.env` intentions | *Bind to Infisical secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://KEY?path=/folder`; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
 | Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it) and the comment of a secret defined in that folder. Same permissions, prod guard and change requests as creating |
+| Moving secrets | *Move…*, Cut / Paste (the IDE's shortcuts) and drag and drop onto a folder or environment in the tool window, always through a confirmation where destination folder (with completion), environment and overwriting can be changed. Value, comment, tags and metadata are copied first; the originals are removed only after that worked |
+| Deleting secrets | *Delete…* (or the Delete key): type the key to confirm (*Copy Name* copies it), or the number of secrets for several |
 | Read-only | *Settings › Tools › EnvBridge › Read-only*: this IDE never creates or changes secrets and environments; the write actions are turned off and every write is refused before it is sent. Reading and injecting are unaffected |
 | Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
 | Creating secrets | *New Secret…* in the tool window and *Extract value to Infisical…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |

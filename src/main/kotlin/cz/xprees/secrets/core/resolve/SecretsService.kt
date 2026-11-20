@@ -1,5 +1,7 @@
 package cz.xprees.secrets.core.resolve
 
+import cz.xprees.secrets.core.provider.MoveResult
+
 import cz.xprees.secrets.core.model.ProviderEnvironment
 
 import cz.xprees.secrets.core.model.SecretValue
@@ -72,6 +74,30 @@ class SecretsService {
         return client(connection).updateSecret(scope, key, value, comment).also { invalidate(connection.id) }
     }
 
+    /** Moves secrets between folders or environments (see [SecretsClient.moveSecrets]); forgets cached values. Off the EDT. */
+    fun moveSecrets(connection: SecretConnection, source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
+        checkWritesAllowed()
+        try {
+            return client(connection).moveSecrets(source, secrets, destination, overwrite)
+        } finally {
+            invalidate(connection.id)
+        }
+    }
+
+    /**
+     * Deletes secrets of one folder, one by one; returns what happened to each (an exception's message for those that
+     * failed). Forgets cached values. Off the EDT.
+     */
+    fun deleteSecrets(connection: SecretConnection, scope: SecretScope, keys: List<String>): Map<String, Result<WriteOutcome>> {
+        checkWritesAllowed()
+        val client = client(connection)
+        try {
+            return keys.associateWith { key -> runCatching { client.deleteSecret(scope, key) } }
+        } finally {
+            invalidate(connection.id)
+        }
+    }
+
     /** Whether writing to secret managers is allowed (not turned off with *Read-only* in the settings). */
     val writesAllowed: Boolean get() = !SecretsAppSettings.getInstance().state.readOnly
 
@@ -80,7 +106,7 @@ class SecretsService {
         if (!writesAllowed) {
             throw SecretProviderException(
                 SecretProviderException.Kind.CONFIGURATION,
-                "Read-only is on (Settings › Tools › EnvBridge): this IDE doesn't create or change secrets and environments",
+                "Read-only is on (Settings › Tools › EnvBridge): this IDE doesn't create, change, move or delete secrets and environments",
             )
         }
     }

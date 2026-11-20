@@ -117,6 +117,50 @@ class InfisicalApi(val http: InfisicalHttp) {
         return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
     }
 
+    /**
+     * `POST /api/v4/secrets/duplicate`: copies secrets (value, comment, tags, metadata) of one folder into another folder or
+     * environment. Returns, per source key, whether it waits for approval at the destination.
+     */
+    fun duplicateSecrets(token: String, source: SecretScope, ids: List<String>, destination: SecretScope, overwrite: Boolean): Map<String, Boolean> {
+        val body = JsonObject().apply {
+            addProperty("projectId", source.projectId)
+            addProperty("sourceEnvironment", source.environment)
+            addProperty("sourceSecretPath", source.path)
+            addProperty("destinationEnvironment", destination.environment)
+            addProperty("destinationSecretPath", destination.path)
+            add("secretIds", JsonArray().apply { ids.forEach(::add) })
+            addProperty("shouldOverwrite", overwrite)
+            add("attributesToCopy", JsonObject().apply {
+                listOf("value", "comment", "tags", "metadata", "skipMultilineEncoding").forEach { addProperty(it, true) }
+            })
+        }
+        val response = http.postJson("/api/v4/secrets/duplicate", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            throw InfisicalHttp.failure(response, "Copying to ${destination.environment}:${destination.path}")
+        }
+        val results = runCatching { response.json().obj().array("results") }.getOrNull() ?: JsonArray()
+        return results.mapNotNull { it.asObjectOrNull() }.associate { r ->
+            (r.string("sourceSecretKey") ?: r.string("sourceSecretId").orEmpty()) to (r.get("approval")?.isJsonObject == true)
+        }
+    }
+
+    /** `DELETE /api/v4/secrets/{name}`: removes a shared secret from the folder of [scope] (or opens a change request). */
+    fun deleteSecret(token: String, scope: SecretScope, key: String): WriteOutcome {
+        val body = JsonObject().apply {
+            addProperty("projectId", scope.projectId)
+            addProperty("environment", scope.environment)
+            addProperty("secretPath", scope.path)
+            addProperty("type", "shared")
+        }
+        val response = http.sendJson("DELETE", "/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Removing $key from ${scope.environment}:${scope.path}")
+            throw if (failure.kind == Kind.FORBIDDEN) SecretProviderException(Kind.FORBIDDEN, "Not allowed to delete secrets in ${scope.environment}:${scope.path}") else failure
+        }
+        val o = runCatching { response.json().obj() }.getOrNull()
+        return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
+    }
+
     /** `POST /api/v1/projects/{id}/environments`: creates an environment. */
     fun createEnvironment(token: String, projectId: String, name: String, slug: String): ProviderEnvironment {
         val body = JsonObject().apply {
@@ -274,6 +318,7 @@ class InfisicalApi(val http: InfisicalHttp) {
                     else -> SecretOrigin.LOCAL
                 },
                 valueHidden = hidden,
+                id = o.string("id") ?: o.string("_id").orEmpty(),
             )
         }
 

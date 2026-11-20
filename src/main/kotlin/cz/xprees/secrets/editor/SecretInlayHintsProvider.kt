@@ -33,7 +33,10 @@ class SecretInlayHintsProvider : InlayHintsProvider {
                     if (found.kind == EnvReferences.Kind.REFERENCE && !dotEnv) continue
                     val resolved = EditorReferences.resolve(file.project, found, snapshot) ?: continue
                     if (resolved.info == null) continue
-                    val environment = found.reference?.environment ?: snapshot.boundEnvironment
+                    // Environment, and the folder when it isn't the root, so same-named keys of two folders can't be mixed up
+                    val folder = found.reference?.path?.let(cz.xprees.secrets.core.model.SecretScope::normalizePath)
+                        ?: if (found.reference?.environment != null) "/" else snapshot.path
+                    val environment = (found.reference?.environment ?: snapshot.boundEnvironment) + if (folder == "/") "" else ":$folder"
                     // A click opens the secret in the Secrets tool window
                     val click = SecretLocation.of(file.project, found.name, found.reference)
                         ?.let { InlayActionData(StringInlayActionPayload(it.encode()), ShowSecretInToolWindow.HANDLER_ID) }

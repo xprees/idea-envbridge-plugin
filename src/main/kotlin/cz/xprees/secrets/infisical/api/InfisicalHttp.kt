@@ -60,7 +60,10 @@ class InfisicalHttp(val baseUrl: String) {
      * HttpClient, set up like the rest: the IDE's proxy (the default [java.net.ProxySelector] the IDE installs) and its
      * trusted certificates, no redirects, the same timeouts.
      */
-    fun patchJson(path: String, json: String, bearer: String? = null): Response {
+    fun patchJson(path: String, json: String, bearer: String? = null): Response = sendJson("PATCH", path, json, bearer)
+
+    /** A request with a JSON body for methods [HttpRequests] can't send with one (PATCH, DELETE); see [patchJson]. */
+    fun sendJson(method: String, path: String, json: String, bearer: String? = null): Response {
         val target = url(path)
         val client = java.net.http.HttpClient.newBuilder()
             .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
@@ -73,7 +76,7 @@ class InfisicalHttp(val baseUrl: String) {
             .header("Accept", "application/json")
             .header("Content-Type", HttpRequests.JSON_CONTENT_TYPE)
             .apply { bearer?.let { header("Authorization", "Bearer $it") } }
-            .method("PATCH", java.net.http.HttpRequest.BodyPublishers.ofString(json))
+            .method(method, java.net.http.HttpRequest.BodyPublishers.ofString(json))
             .build()
         return try {
             val response = client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())

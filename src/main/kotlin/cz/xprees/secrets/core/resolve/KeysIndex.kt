@@ -35,7 +35,12 @@ class KeysIndex(private val project: Project) : Disposable {
         /** Environment slug -> keys of the bound folder there (environments that failed to load are missing). */
         val environments: Map<String, Map<String, KeyInfo>>,
         val loadedAt: Long,
+        /** Folder path -> keys defined there, for every folder of the bound environment (root and subfolders). */
+        val folders: Map<String, Map<String, KeyInfo>> = emptyMap(),
     ) {
+        /** The folders of the bound environment that define [key]. */
+        fun foldersOf(key: String): List<String> = folders.filterValues { key in it }.keys.sorted()
+
         val boundKeys: Map<String, KeyInfo> get() = environments[boundEnvironment].orEmpty()
 
         /** Environments whose bound folder defines [key]. */
@@ -99,7 +104,14 @@ class KeysIndex(private val project: Project) : Disposable {
             val secrets = runCatching { service.secrets(binding.connection, SecretScope(projectId, environment, binding.path)) }.getOrNull() ?: continue
             keys[environment] = secrets.associate { it.key to KeyInfo(it.key, it.comment, it.origin, it.path) }
         }
+        // Every folder of the bound environment, so completion and the editor can tell same-named keys of different folders apart
+        val folders = runCatching { service.secrets(binding.connection, SecretScope(projectId, binding.environment, "/", recursive = true)) }
+            .getOrNull().orEmpty()
+            .filter { it.origin != SecretOrigin.IMPORTED }
+            .groupBy { it.path }
+            .mapValues { (_, secrets) -> secrets.associate { it.key to KeyInfo(it.key, it.comment, it.origin, it.path) } }
         return Snapshot(
+            folders = folders,
             providerId = provider.id,
             scheme = provider.referenceScheme,
             connectionName = binding.connection.name,

@@ -26,14 +26,34 @@ class SecretKeyCompletionContributor : CompletionContributor(), DumbAware {
         val prefix = EnvReferences.completionPrefix(linePrefix(editor, parameters.offset), EditorReferences.schemes()) ?: return
         val snapshot = KeysIndex.getInstance(parameters.originalFile.project).current() ?: return
         val matching = result.withPrefixMatcher(prefix)
+        val linePrefix = linePrefix(editor, parameters.offset)
+        // Right after `infisical://` (no environment or folder typed): keys of every folder, each with its folder
+        val bareReference = EditorReferences.schemes().any { Regex("(?i)\\b${Regex.escape(it)}://[A-Za-z0-9_.\\-]*$").containsMatchIn(linePrefix) }
         for (info in snapshot.boundKeys.values) {
+            val elsewhere = bareReference && snapshot.foldersOf(info.key).any { it != snapshot.path }
             matching.addElement(
                 LookupElementBuilder.create(info.key)
                     .withIcon(SecretsIcons.PROVIDER)
-                    .withTypeText(SecretsBundle.message("completion.type", snapshot.boundEnvironment), true)
+                    .withTypeText(SecretsBundle.message("completion.type", snapshot.boundEnvironment) + if (elsewhere) "  ${snapshot.path}" else "", true)
                     .withTailText(info.comment.lines().firstOrNull()?.takeIf { it.isNotBlank() }?.let { "  $it" }, true)
                     .withItemTextItalic(info.origin == SecretOrigin.IMPORTED),
             )
+        }
+        if (bareReference) {
+            for ((folder, keys) in snapshot.folders) {
+                if (folder == snapshot.path) continue
+                for (info in keys.values) {
+                    // Inserts KEY?path=/folder: the reference then names its folder and can't pick up a same-named key elsewhere
+                    matching.addElement(
+                        LookupElementBuilder.create("${info.key}?path=$folder")
+                            .withPresentableText(info.key)
+                            .withLookupString(info.key)
+                            .withIcon(SecretsIcons.PROVIDER)
+                            .withTailText("  $folder", true)
+                            .withTypeText(SecretsBundle.message("completion.type", snapshot.boundEnvironment) + "  $folder", true),
+                    )
+                }
+            }
         }
         // Keys that exist only in other environments, so a typo and a missing secret look different
         val bound = snapshot.boundKeys.keys

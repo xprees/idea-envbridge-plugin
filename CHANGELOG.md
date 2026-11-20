@@ -45,6 +45,13 @@
   *Fix all*) bind them, clearing the value or keeping it as a local fallback. *Bind to Infisical* binds an empty `KEY=` line
 - Node.js and npm: references in the *Environment file* field, and in the `.env` / `.env.local` that Nuxt, Vite or Next.js
   read by themselves, are resolved at launch
+- **Move secrets** in the tool window: *Move…*, Cut / Paste and drag and drop onto folders or environments, with a confirmation
+  (destination folder with completion, environment, overwrite). Built on Infisical's documented duplicate + delete: the
+  original is removed only after the copy worked; a destination waiting for approval keeps it
+- **Delete secrets** in the tool window, confirmed by typing the key (with *Copy Name*) or the number of secrets
+- Completion after `infisical://` offers the keys of every folder of the bound environment, each with its folder, inserting
+  `KEY?path=/folder`; folder references get the gutter icon, the masked hint (now with the folder) and the missing-secret check
+- A launch that can't find a key in the bound folder names the folders that define it, with the reference to use
 - Prod guard: can be turned off (*Ask before secrets from production environments are used or changed*), and a project can pick
   its own production environments (*This Project › Production environments*, with a chooser) for other naming conventions
 - *New Secret…*: the folder field completes the environment's folders; *Extract value to Infisical…* prefills the comment
