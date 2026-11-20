@@ -33,7 +33,7 @@
 - Choosing the secret manager when adding a connection, once there are several
 - Opt-in integration tests against real Doppler and 1Password test accounts (run when their credentials are set as
   repository secrets)
-- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
+- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker (images pinned)
   (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
 
 ### Fixed
