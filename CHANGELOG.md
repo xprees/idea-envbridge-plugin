@@ -30,7 +30,7 @@
 
 ### Changed
 
-- New plugin and tool window icons: a suspension bridge carrying a key
+- New plugin icon: a suspension bridge carrying a key (the Secrets tool window keeps its key icon)
 - **Reference format**: folders are absolute from the environment's root and the environment goes before a colon:
   `infisical://KEY` (root), `infisical://workers/KEY`, `infisical://prod:KEY`, `infisical://prod:workers/KEY`. The binding's
   folder is only a default for new secrets and the tool window. References written the old way (`infisical://prod/KEY`) now
