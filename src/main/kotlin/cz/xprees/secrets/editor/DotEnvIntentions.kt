@@ -42,7 +42,7 @@ private fun rebind(project: Project, editor: Editor, name: String, reference: St
 }
 
 /**
- * *Bind to Infisical secret…*: pick any secret of the bound environment for this `.env` variable (same and similar names
+ * *Bind to Secret…*: pick any secret of the bound environment for this `.env` variable (same and similar names
  * first); a line with a value then asks whether to clear it or keep it as the local fallback.
  */
 class DotEnvBindToSecretIntention : IntentionAction {
@@ -113,7 +113,7 @@ class DotEnvBindToSecretIntention : IntentionAction {
 }
 
 /**
- * *Extract value to Infisical…*: creates a secret from a plaintext `.env` value (New Secret dialog, prefilled), then binds
+ * *Extract Value to Secret Manager…*: creates a secret from a plaintext `.env` value (New Secret dialog, prefilled), then binds
  * the line to it and clears the value, so the file no longer holds the secret.
  */
 class DotEnvExtractToSecretIntention : IntentionAction {

@@ -1,12 +1,12 @@
 # EnvBridge
 
 Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**,
-**HashiCorp Vault**, **OpenBao** and **1Password**.
+**HashiCorp Vault**, **OpenBao**, **1Password** and **Doppler**.
 
 <!-- Plugin description -->
 <p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company),
-the OpenBao project or AgileBits Inc. (1Password). "Infisical", "HashiCorp Vault", "OpenBao" and "1Password" are trademarks of
-their owners and are used only to say which services this plugin works with.</p>
+the OpenBao project, AgileBits Inc. (1Password) or Doppler Inc. "Infisical", "HashiCorp Vault", "OpenBao", "1Password" and
+"Doppler" are trademarks of their owners and are used only to say which services this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
 and test locally <b>without keeping secrets in <code>.env</code> files</b>. Values are fetched when a run configuration starts and
@@ -24,7 +24,7 @@ handed to the process in memory. Nothing is written to disk.</p>
       variable with a comment, <code>API_URL=http://localhost:8090 # infisical://prod:API_URL</code>: tools outside the IDE read
       the plain value, launches from the IDE get the secret, and the editor shows its masked value. Plaintext secrets in
       <code>.env</code> files are marked, and Alt+Enter binds them</li>
-  <li><b>Terminal</b>: <i>New Terminal Tab with Infisical Secrets</i> opens a tab with the secrets; <i>Load Infisical Secrets
+  <li><b>Terminal</b>: <i>New Terminal Tab with Secrets</i> opens a tab with the secrets; <i>Load Secrets
       into This Terminal</i> sets them in the current tab, in its shell's syntax (PowerShell, cmd, bash, zsh, fish, Git Bash,
       WSL), without showing them or leaving them in the history; opt in to give every new tab of the project the secrets</li>
   <li><b>In the editor</b>, in every language: completion of secret keys where code reads environment variables
@@ -54,17 +54,22 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>HashiCorp Vault and OpenBao</b> (KV v2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
       <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
-      Reading only for now</li>
+      Create, edit, move and delete fields too</li>
   <li><b>1Password</b>: your existing <code>op://vault/item/field</code> secret references work as they are, plus
       <code>op://vault/item/*</code> for every field of an item. Access through the <b>1Password app</b> (the 1Password CLI asks
       the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
-      token or a <b>1Password Connect</b> server. Reading only for now</li>
+      token or a <b>1Password Connect</b> server. New, edited, moved and deleted secrets are fields of items (a new secret at a
+      vault's root is a new password item); values reach the CLI only on its standard input, never its command line</li>
+  <li><b>Doppler</b>: <code>DB_PASSWORD=doppler://DB_PASSWORD</code> from the bound config, <code>doppler://prd:DB_PASSWORD</code>
+      from another, or <code>doppler://*</code> for every secret of a config. Sign in <b>through the system browser</b> (like
+      <code>doppler login</code>) or with a personal, service account or service token; reads the CLI's <code>doppler.yaml</code>.
+      Create, edit, move and delete secrets, and create branch configs</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
 <p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you change one yourself
-(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract value to Infisical…</i>; Infisical only).
+(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract Value to Secret Manager…</i>; Infisical, Vault and OpenBao, 1Password, Doppler).
 <i>Read-only</i> in the settings turns all writing off.</p>
 <!-- Plugin description end -->
 
@@ -127,10 +132,10 @@ stops and says to write `infisical://prod:KEY`.
 | Python: scripts, modules, pytest, Django, FastAPI, Flask | *Environment variables* |
 | Go: Go Build, Go Test | *Environment* |
 | Docker Image, Dockerfile, Docker Compose | *Environment variables* of the Docker run configuration. They become the container's environment, or for Compose the environment of `docker compose`, so `${VAR}` interpolation and `environment: [VAR]` pass-through pick them up. Nothing is written to disk |
-| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. **Binding comments**: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod:KEY` keeps the file valid for tools outside the IDE (they read the plain value) while IDE launches get the secret. An inspection marks plaintext values of secrets in `.env` files; Alt+Enter binds them (clearing the value or keeping it as a local fallback), and *Bind to Infisical* binds an empty `KEY=` line |
+| `.env` files | Any run configuration that loads env files (also the *Environment file* field of Node.js and npm): when an attached `.env` contains references, the plugin reads it, resolves the references and passes all its variables. Node.js and npm launches also resolve references in the `.env` / `.env.local` the tool reads by itself (Nuxt, Vite, Next.js): those keep process variables over the file. Values set on the configuration still win. **Binding comments**: `KEY= # infisical://KEY` or `KEY=local-fallback # infisical://prod:KEY` keeps the file valid for tools outside the IDE (they read the plain value) while IDE launches get the secret. An inspection marks plaintext values of secrets in `.env` files; Alt+Enter binds them (clearing the value or keeping it as a local fallback), and *Bind to Secret* binds an empty `KEY=` line |
 | Rider: .NET Project, .NET Executable (ASP.NET Core included) | *Environment variables* of the configuration. *Launch profile* configurations take their variables from `launchSettings.json`, which the plugin can't intercept: use a .NET Project configuration with references instead |
 | Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
-| Terminal | **New Terminal Tab with Infisical Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). **Load Infisical Secrets into This Terminal** puts them into the shell of the current tab instead, in that shell's own syntax, decided from the tab's shell: PowerShell, cmd, bash / zsh / sh (also Git Bash and WSL on Windows) or fish. The values go through a short-lived owner-only file the shell loads and deletes, so they appear neither on screen nor in the shell history. Typing `export KEY=infisical://…` yourself does nothing: nothing resolves references inside a running shell |
+| Terminal | **New Terminal Tab with Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). **Load Secrets into This Terminal** puts them into the shell of the current tab instead, in that shell's own syntax, decided from the tab's shell: PowerShell, cmd, bash / zsh / sh (also Git Bash and WSL on Windows) or fish. The values go through a short-lived owner-only file the shell loads and deletes, so they appear neither on screen nor in the shell history. Typing `export KEY=infisical://…` yourself does nothing: nothing resolves references inside a running shell |
 
 ## In the editor
 
@@ -140,18 +145,18 @@ stops and says to write `infisical://prod:KEY`.
 | Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
 | Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
 | Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
-| `.env` intentions | *Bind to Infisical secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract value to Infisical…* (creates the secret from the value, then binds the line and clears it) |
+| `.env` intentions | *Bind to Secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract Value to Secret Manager…* (creates the secret from the value, then binds the line and clears it) |
 | Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it) and the comment of a secret defined in that folder. Same permissions, prod guard and change requests as creating |
 | Moving secrets | *Move…*, Cut / Paste (the IDE's shortcuts) and drag and drop onto a folder or environment in the tool window, always through a confirmation where destination folder (with completion), environment and overwriting can be changed. Value, comment, tags and metadata are copied first; the originals are removed only after that worked |
 | Deleting secrets | *Delete…* (or the Delete key): type the key to confirm (*Copy Name* copies it), or the number of secrets for several |
 | Read-only | *Settings › Tools › EnvBridge › Read-only*: this IDE never creates or changes secrets and environments; the write actions are turned off and every write is refused before it is sent. Reading and injecting are unaffected |
 | Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
-| Creating secrets | *New Secret…* in the tool window and *Extract value to Infisical…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
+| Creating secrets | *New Secret…* in the tool window and *Extract Value to Secret Manager…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
 | Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
 | Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
 | Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |
 | Status bar | `Infisical: dev`, click to switch. Production-like environments show a warning icon |
-| *Run › Run with Infisical Environment…* | Runs the selected configuration once against another environment |
+| *Run › Run with Secrets Environment…* | Runs the selected configuration once against another environment |
 | Prod guard | Asks before a launch or terminal uses secrets from production environments, and before secrets there are created or changed. Production is the project's own pick (*This Project › Production environments*, e.g. `main, eu-live`) or else the name pattern `prod*, production*, live*` (*General*). *Ask before secrets from production environments are used or changed* turns the prompt off; production stays marked |
 | Console masking | Values handed to a running process are replaced by `••••••` in its Run / Debug console (values of at least 4 characters) |
 | Local overrides | Your own value for a secret, for this project on this computer, kept in the IDE's password storage |
@@ -188,8 +193,13 @@ TEAM_DB=vault://secret/app/db#password?namespace=team-a
 
 Every method also takes a **namespace** (where to sign in; the default environment), **more namespaces** to show, and the **KV v2
 mounts**, needed only when the token may not list secret engines. Renewable tokens are renewed before they expire; AppRole,
-userpass and LDAP sign in again by themselves; OIDC asks you to sign in again. This version reads secrets only; creating and
-changing them comes later.
+userpass and LDAP sign in again by themselves; OIDC asks you to sign in again.
+
+**Writing**: *New Secret…*, *Edit Secret…*, *Move…* and *Delete…* change one field of a KV v2 secret (the secret path is the
+folder; at least one path segment below the mount). Each write reads the secret and writes a new version with check-and-set, so
+a change someone made meanwhile is refused instead of overwritten, and the other fields keep their values and types. Removing a
+secret's last field deletes its latest version, which Vault can restore. Moves work between secrets, mounts and namespaces;
+the token's policy decides what is allowed. Namespaces themselves are not created from the IDE.
 
 ### 1Password
 
@@ -220,7 +230,52 @@ WORK_DB=op://Private/Database/password?connection=Work
 | **1Password Connect server** | The server's address (`http://localhost:8080` for one on your machine) and an access token, kept in the password storage. Sign-out forgets the token |
 
 `op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item. Values are
-cached in memory like any other secrets. This version reads secrets only.
+cached in memory like any other secrets.
+
+**Writing** (tool window *New Secret… / Edit Secret… / Move… / Delete…*, `.env` *Extract value to …*; off with *Read-only*):
+
+| Action | In an item (`/Database`, or a section `/Database/Extra`) | At the vault's root (`/`) |
+|---|---|---|
+| New secret | Adds a concealed field with that label (to the section, if given). Refused if the item already has a field with that label. A comment is added to the item's notes as `KEY: comment` | Creates a **Password** item titled with the key, the value in its `password` field (`op://Dev/KEY/password`), the comment as its notes. Refused if an item with that title exists |
+| Edit | Changes the field's value. Fields have no comments: the item's **notes** are shown as the comment, and editing it changes them | — |
+| Delete | Removes the field (a built-in one, such as a login's password, is emptied instead). **Items are never deleted** | — |
+| Move | Copies the fields into the destination item, then removes them from the source item; if that fails, you are told which now exist in both. Without *Overwrite*, a field already in the destination stops the move before anything changes | Not a destination: choose an item |
+
+Each write reads the item and saves it whole. With Connect, the item's version is sent along: if it changed meanwhile, the save
+is refused ("refresh and try again"). Through the CLI, values are handed to `op item create` / `op item edit` as the item's JSON
+on standard input, never as `field=value` arguments (which other processes could read); this needs an `op` that accepts piped
+item JSON. EnvBridge checks that the change took effect and says so if it didn't.
+
+### Doppler
+
+A Doppler **project** is a project and a **config** is an environment: `dev`, `dev_personal`, `stg`, `prd` and branch configs
+such as `dev_feature` (shown as *dev_feature (branch of dev)*). Doppler has no folders. Values are Doppler's computed ones, so
+Doppler references (`${DB_HOST}`) are resolved as `doppler run` resolves them.
+
+```
+DB_PASSWORD=doppler://DB_PASSWORD                    from the bound config
+PRD_PASSWORD=doppler://prd:DB_PASSWORD               from config prd
+DOPPLER=doppler://dev_personal:*                     every secret of config dev_personal
+WEB_URL=doppler://PUBLIC_URL?project=web&connection=Work
+```
+
+- A folder in a reference (`doppler://app/KEY`) is refused: Doppler has none.
+- Doppler's own `DOPPLER_PROJECT`, `DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` are not injected (`doppler run` sets them).
+- The CLI's `doppler.yaml` (`setup:` with `project` and `config`, or a list of them with a `path` per directory) binds the
+  project and config, as `doppler setup` does. The CLI's own `~/.doppler/.doppler.yaml`, which holds its tokens, is never read.
+- **Writes**: *New Secret…*, *Edit Secret…* (value and note; a note is shared by all configs of the project), *Move…* to another
+  config (copies the raw value, then deletes the original; a secret that can't be deleted stays in both and is reported),
+  *Delete…*, and *New Environment…*, which creates a branch config: name it after its environment, `dev_feature` or
+  `dev-feature`. Names must be uppercase letters, digits and underscores. *Read-only* turns all of it off.
+
+| Method | Setup |
+|---|---|
+| **Browser sign-in** (default) | None. **Sign In** opens Doppler in your browser and shows a code in the IDE; approve in the browser if it shows the same code, as with `doppler login`. The token is kept in the IDE's password storage and revoked on sign-out |
+| **Token** | A personal token (`dp.pt.…`), a service account token (`dp.sa.…`) or a service token (`dp.st.…`), kept in the password storage. A service token reads one config, so only that project and config are offered. Sign-out forgets the token but doesn't revoke it |
+
+Doppler is a hosted service: the API address is `https://api.doppler.com` (it can be changed, e.g. for a proxy in front of it).
+"Open in dashboard" opens the config in the Doppler dashboard. Doppler can't be self-hosted, so this integration is tested
+against a mock of its API only, not a live account.
 
 ## Security
 
@@ -257,9 +312,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and conventions.
 Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an
-IBM company), the OpenBao project or AgileBits Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
+IBM company), the OpenBao project, AgileBits Inc. or Doppler Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
 "HashiCorp" and "Vault" are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation; "1Password" is a trademark
-of AgileBits Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
+of AgileBits Inc.; "Doppler" is a trademark of Doppler Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
 to their documented APIs, runs the 1Password CLI the user installed, and reimplements documented behaviour of their CLIs
 (Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`, 1Password's secret
-reference syntax).
+reference syntax, Doppler's `doppler login` flow and `doppler.yaml`).

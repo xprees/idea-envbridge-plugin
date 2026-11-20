@@ -35,6 +35,7 @@ class InfisicalProvider : SecretProvider {
     override val displayName: String = "Infisical"
     override val icon: Icon get() = SecretsIcons.PROVIDER
     override val referenceScheme: String = "infisical"
+    override val projectFileName: String = ".infisical.yaml"
 
     override val instancePresets: List<Pair<String, String>> = listOf(
         "Infisical Cloud (US)" to US_CLOUD,

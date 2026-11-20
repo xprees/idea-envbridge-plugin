@@ -13,13 +13,15 @@ import cz.xprees.secrets.core.provider.AuthOption
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.MoveResult
+import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import javax.swing.Icon
 
 /**
  * HashiCorp Vault and OpenBao (same API): KV v2 secrets, namespaces. Projects are KV v2 mounts, environments are namespaces,
- * folders are secret paths and a secret's fields are its keys. Reading only in this version.
+ * folders are secret paths and a secret's fields are its keys. Writes change fields of KV v2 secrets with check-and-set.
  */
 class VaultProvider : SecretProvider {
     override val id: String = ID
@@ -27,7 +29,7 @@ class VaultProvider : SecretProvider {
     override val icon: Icon get() = SecretsIcons.PROVIDER
     override val referenceScheme: String = "vault"
     override val referenceGrammar: ReferenceGrammar get() = VaultGrammar
-    override val supportsWrites: Boolean get() = false
+    override val supportsWrites: Boolean get() = true
 
     // Every Vault is self-hosted or a dedicated HCP cluster: no shared instance to offer
     override val instancePresets: List<Pair<String, String>> = emptyList()
@@ -127,7 +129,11 @@ object VaultAuthMethods {
     )
 }
 
-/** [SecretsClient] for one Vault / OpenBao connection (reading only). */
+/**
+ * [SecretsClient] for one Vault / OpenBao connection. Writes change one field of a KV v2 secret: the secret is read, the field
+ * changed and the whole secret written as a new version with check-and-set, so a change made meanwhile is refused instead of
+ * lost, and every other field keeps its value and type.
+ */
 class VaultClient(private val connection: SecretConnection) : SecretsClient {
     private val api = VaultApi(VaultHttp(connection.baseUrl))
     private val auth = VaultAuth(connection, api)
@@ -190,6 +196,118 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
         }
         return result.distinct()
     }
+
+    // ---- Writes ------------------------------------------------------------------------------------------------------
+
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
+        val path = secretPath(scope)
+        auth.withToken { token ->
+            val current = api.readVersioned(token, scope.environment, scope.projectId, path)
+            if (current.fields.has(key)) {
+                throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "${location(scope)} already has a field $key")
+            }
+            current.fields.addProperty(key, value.reveal())
+            api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+        val path = secretPath(scope)
+        auth.withToken { token ->
+            val current = api.readVersioned(token, scope.environment, scope.projectId, path)
+            if (!current.fields.has(key)) throw missing(scope, key)
+            current.fields.addProperty(key, value.reveal())
+            api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    override fun deleteSecret(scope: SecretScope, key: String): WriteOutcome {
+        val path = secretPath(scope)
+        auth.withToken { token ->
+            val current = api.readVersioned(token, scope.environment, scope.projectId, path)
+            if (!current.fields.has(key)) throw missing(scope, key)
+            current.fields.remove(key)
+            removeFields(token, scope, path, current)
+        }
+        return WriteOutcome.APPLIED
+    }
+
+    /**
+     * Copies the fields to the destination secret (one new version, values and types as stored), then removes them from the
+     * source secret (another new version). A field already at the destination is skipped unless [overwrite]; a failure to
+     * remove the source copy is reported, never a lost field.
+     */
+    override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
+        val sourcePath = secretPath(source)
+        val destinationPath = secretPath(destination)
+        if (source.projectId == destination.projectId && source.environment == destination.environment && sourcePath == destinationPath) {
+            return MoveResult(moved = emptyList(), notRemoved = secrets.associate { it.key to "source and destination are the same secret" })
+        }
+        val keys = secrets.map { it.key }
+        val notRemoved = linkedMapOf<String, String>()
+        val copied = auth.withToken { token ->
+            val from = api.readVersioned(token, source.environment, source.projectId, sourcePath)
+            val to = api.readVersioned(token, destination.environment, destination.projectId, destinationPath)
+            val copied = mutableListOf<String>()
+            for (key in keys) {
+                val value = from.fields.get(key)
+                when {
+                    value == null -> notRemoved[key] = "not in ${location(source)} any more"
+                    to.fields.has(key) && !overwrite -> notRemoved[key] = "${location(destination)} already has $key"
+                    else -> {
+                        to.fields.add(key, value.deepCopy())
+                        copied += key
+                    }
+                }
+            }
+            if (copied.isNotEmpty()) api.write(token, destination.environment, destination.projectId, destinationPath, to.fields, to.version)
+            copied
+        }
+        if (copied.isEmpty()) return MoveResult(moved = emptyList(), notRemoved = notRemoved)
+        try {
+            auth.withToken { token ->
+                // Read again: the copy is safe at the destination, the source may have changed since
+                val from = api.readVersioned(token, source.environment, source.projectId, sourcePath)
+                copied.forEach { from.fields.remove(it) }
+                removeFields(token, source, sourcePath, from)
+            }
+        } catch (e: SecretProviderException) {
+            copied.forEach { notRemoved[it] = "copied, but not removed from ${location(source)}: ${e.message}" }
+            return MoveResult(moved = emptyList(), notRemoved = notRemoved)
+        }
+        return MoveResult(moved = copied, notRemoved = notRemoved)
+    }
+
+    override fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
+        throw SecretProviderException(
+            SecretProviderException.Kind.CONFIGURATION,
+            "Namespaces are created by a Vault administrator. To show an existing one, add it to the connection's More namespaces.",
+        )
+
+    /** Writes [current] without the removed fields; a secret left with none has its latest version deleted (restorable). */
+    private fun removeFields(token: String, scope: SecretScope, path: String, current: VaultApi.Versioned) {
+        if (current.fields.size() == 0) api.deleteLatest(token, scope.environment, scope.projectId, path)
+        else api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+    }
+
+    /** The secret a write goes to: the scope's path, which must name a secret (KV v2 has none at the mount's root). */
+    private fun secretPath(scope: SecretScope): String {
+        if (scope.path == "/") {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "Choose a secret path below the mount (for example /app/db): fields live in secrets, and ${scope.projectId}/ itself isn't one",
+            )
+        }
+        return scope.path
+    }
+
+    private fun location(scope: SecretScope): String =
+        scope.projectId + scope.path + if (scope.environment == VaultApi.ROOT_NAMESPACE) "" else " (namespace ${scope.environment})"
+
+    private fun missing(scope: SecretScope, key: String) =
+        SecretProviderException(SecretProviderException.Kind.NOT_FOUND, "${location(scope)} has no field $key")
 
     private fun namespaces(): List<String> {
         val login = auth.loginNamespace

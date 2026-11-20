@@ -21,6 +21,7 @@ import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
+import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.KeysIndex
@@ -125,13 +126,15 @@ class NewSecretDialog(
             return
         }
         KeysIndex.getInstance(project).refreshAsync()
-        val where = "${scope.environment}:${scope.path}"
+        // Where the secret ended up (a 1Password secret created at a vault's root is a new item)
+        val (createdPath, createdKey) = SecretProvider.byId(connection.providerId)?.createdSecretLocation(scope, key) ?: (scope.path to key)
+        val where = "${scope.environment}:$createdPath"
         SecretsNotifications.info(
             project,
-            SecretsBundle.message(if (outcome == WriteOutcome.APPLIED) "new.secret.created" else "new.secret.approval", key, where),
+            SecretsBundle.message(if (outcome == WriteOutcome.APPLIED) "new.secret.created" else "new.secret.approval", createdKey, where),
         )
         super.doOKAction()
-        onCreated(SecretLocation(connection.id, projectId, scope.environment, scope.path, key), outcome)
+        onCreated(SecretLocation(connection.id, projectId, scope.environment, createdPath, createdKey), outcome)
     }
 
     companion object {

@@ -17,7 +17,7 @@ Status: agreed plan (grill session, 2026-11-19). Milestones M1–M4 below; this 
 - **Modular**: Infisical is the first implementation of a provider interface, so other secret managers can be added later.
 - IntelliJ Platform **2026.1+**, every IDE (IDEA, WebStorm, PyCharm, GoLand, Rider, DataGrip, …).
 
-Non-goals for v1: deleting secrets, syncing secrets to files. Creating and editing secrets and creating environments are the only writes, always on an explicit user action (*New Secret…*, *Edit Secret…*, *Extract value to Infisical…*, *New Environment…*), through `SecretsClient.createSecret` / `updateSecret` / `createEnvironment`, all guarded by `SecretsService` so the *Read-only* setting holds everywhere.
+Non-goals for v1: deleting secrets, syncing secrets to files. Creating and editing secrets and creating environments are the only writes, always on an explicit user action (*New Secret…*, *Edit Secret…*, *Extract Value to Secret Manager…*, *New Environment…*), through `SecretsClient.createSecret` / `updateSecret` / `createEnvironment`, all guarded by `SecretsService` so the *Read-only* setting holds everywhere.
 
 ## Identity and licensing
 
@@ -45,6 +45,10 @@ cz.xprees.secrets
     resolve    SecretResolver (launch-time, always fresh), SecretCache (memory-only TTL for UI/editor)
     settings   connections (application level), project binding (project level)
   infisical/   InfisicalProvider, InfisicalClient (REST), auth flows, project config (.infisical.yaml / .infisical.json)
+  vault/       VaultProvider (HashiCorp Vault / OpenBao, KV v2)
+  onepassword/ OnePasswordProvider (op CLI, Connect)
+  doppler/     DopplerProvider, DopplerClient, DopplerApi / DopplerHttp (REST v3), DopplerAuth (CLI browser flow, tokens),
+               DopplerGrammar (doppler://), DopplerProjectFile (doppler.yaml)
   run/         launch-time injection: SecretsProgramRunner (clone-and-delegate), EnvPatcher extension point, per-tech patchers
   ui/          tool window, settings pages, login dialogs, notifications
   editor/      (M3) completion, inlays, hover, inspections, console masking, status bar
@@ -189,8 +193,7 @@ open-source fork under the Linux Foundation, shares its API, so one provider cov
 exists for either. 1Password is the likely provider after it.
 
 **Scope, first version:** reading and injecting (sign-in, tool window, references in run configurations, terminal, `.env`,
-editor hints). Creating, editing, moving and deleting follow later; until then the write actions are off for Vault
-connections, as with *Read-only*. Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
+editor hints), then writing fields (see *Writes* below). Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
 dynamic secrets are later candidates.
 
 ### Model mapping
@@ -248,8 +251,15 @@ are renewed before they expire; otherwise the user signs in again (the launch fa
   callback to this IDE's request.
 - A token connection's token (or the CLI's `~/.vault-token`) is the user's own: sign-out forgets it but never revokes it. Tokens
   from OIDC, AppRole, userpass and LDAP are revoked on sign-out.
-- `SecretProvider.supportsWrites` is false for Vault: the tool window's and `.env` write actions are off, and the service refuses
-  writes as with *Read-only*.
+- **Writes**: a write changes one field of a KV v2 secret. The client reads the secret (`GET data/<path>`, fields as JSON and
+  `metadata.version`), changes the field and writes the whole secret as a new version with `options.cas` = the version read
+  (0 for a new secret), so a concurrent change fails with "check-and-set parameter did not match" instead of being lost, and
+  other fields keep their JSON types. Removing the last field deletes the latest version (`DELETE data/<path>`, a soft delete
+  Vault can undo); a deleted latest version still reports its version, which the next write names. Moves copy all fields into
+  the destination in one version, then re-read the source and remove them in another; a failed removal is reported per key
+  (`notRemoved`) with both copies kept. KV v2 has no per-field comments, so comments are ignored. Writes at the mount's root
+  (`/`) are refused: fields live in secrets. `createEnvironment` is refused (namespaces are an administrator's job).
+  Integration tests cover writes on real Vault and OpenBao, including check-and-set and a move between namespaces.
 
 ### Tests
 
@@ -262,8 +272,10 @@ Chosen after Vault for reach among individual developers and small teams: many a
 write `op://` references for `op run` / `op inject`. EnvBridge reads those same references, so a `.env` or run configuration
 written for the CLI works in the IDE unchanged, without `op run` wrapping every launch.
 
-**Scope, first version:** reading and injecting (tool window, references in run configurations, terminal, `.env`, editor
-hints). `supportsWrites` is false, so the write actions are off and `SecretsService` refuses writes, as with *Read-only*.
+**Scope:** reading and injecting (tool window, references in run configurations, terminal, `.env`, editor hints) in the
+first version; creating, changing, moving and deleting fields since then (see [Writes](#writes-1password)).
+`supportsWrites` is true, so the generic write actions (tool window *New / Edit / Move / Delete*, `.env` *Extract value to …*)
+work for 1Password connections, behind the same *Read-only* setting as every other provider.
 
 ### Model mapping
 
@@ -318,7 +330,7 @@ always left open (the binding's, `default`). Decisions:
 |---|---|---|
 | **1Password app (through the CLI)** (default) | `op` as a child process: `op vault list`, `op item list --vault <v>`, `op item get <item> --vault <v> --reveal`, `op whoami`, all `--format json`, optional `--account <shorthand / sign-in address / ID>`. The 1Password app authorizes the CLI (biometrics / system password) | None in the IDE. `SLOT_SESSION` only remembers that the user signed in (so background features don't run `op` for a user who never did) |
 | **Service account (through the CLI)** | The same commands | The token is a secret option (PasswordSafe), given to `op` only as `OP_SERVICE_ACCOUNT_TOKEN` in its environment, never on argv |
-| **1Password Connect server** | `GET /v1/vaults`, `GET /v1/vaults/{vaultId}/items`, `GET /v1/vaults/{vaultId}/items/{itemId}` with `Authorization: Bearer`. Names are resolved to IDs by listing (one list per client, i.e. per operation); a 26-character ID is fetched directly | The access token is a secret option (PasswordSafe) |
+| **1Password Connect server** | `GET /v1/vaults`, `GET /v1/vaults/{vaultId}/items`, `GET /v1/vaults/{vaultId}/items/{itemId}` (writes: `POST …/items`, `PUT …/items/{itemId}`, see [Writes](#writes-1password)) with `Authorization: Bearer`. Names are resolved to IDs by listing (one list per client, i.e. per operation); a 26-character ID is fetched directly | The access token is a secret option (PasswordSafe) |
 
 The CLI methods don't use the connection's base URL. A small generic SPI addition, `AuthMethod.usesBaseUrl` (default true),
 lets the connection dialog hide the address for them and lists not show it; a valid URL is still saved (the previous one, else
@@ -342,9 +354,79 @@ network → NETWORK. Connect: 401 → AUTH_REQUIRED, 403 → FORBIDDEN, 404 → 
 Sign-out: the app method forgets the "signed in" marker (the app's own authorization of the CLI expires by itself); service
 account and Connect forget the stored token.
 
+### Writes (1Password)
+
+Every write is a **read-modify-write of one item**: read the item's whole JSON (CLI `op item get … --reveal`, Connect `GET`),
+change it (`OnePasswordEdits`: add / change / remove fields, set notes), save it whole. Everything not touched (URLs, tags,
+other fields, the read `version`) is sent back as it was read. After a save, the item 1Password returns is checked by field
+IDs (never values): a field that should exist but doesn't, or should be gone but isn't, is a SERVER error ("didn't apply the
+change"), so a CLI that ignores or merges the piped JSON can't pass for success.
+
+| Operation | `/<item>` or `/<item>/<section>` | `/` (vault root) |
+|---|---|---|
+| `createSecret(key, value, comment)` | Adds a **concealed** field labelled `key` to the item's top level, or to the section (by label, else ID; a missing section is NOT_FOUND, sections aren't created). Refused (CONFIGURATION) when the item has a field whose key is `key` **anywhere** (any section): a reference without section must stay unambiguous. A non-blank `comment` is **appended** to the item's notes as `key: comment` (an existing item's notes are never replaced by a create) | Creates a **new item** titled `key`, category **Password**, value in its `password` field (purpose `PASSWORD`), `comment` as its notes. Refused (CONFIGURATION) when the vault has an item with that title (ignoring case): to add a field, choose `/<item>` |
+| `updateSecret(key, value, comment?)` | Sets the field's value (found as listings and references find it: in the section if given, else top-level first). A non-null `comment` **replaces the item's notes**: 1Password fields have no comment, so listings give every field the item's notes as `SecretEntry.comment`, and *Edit Secret* shows and edits them | CONFIGURATION (a root holds items, not secrets) |
+| `deleteSecret(key)` | Removes the field. A **built-in** field (one with a `purpose`: a login's username / password, the notes) is **emptied** instead: items keep their built-in fields, and empty fields aren't listed, so it disappears from the tool window | CONFIGURATION: **EnvBridge never deletes items.** The tool window shows no secrets at a vault's root (items are folders), so no UI action asks for it; deleting / archiving an item is left to 1Password |
+| `moveSecrets(…, destination, overwrite)` | Different items (also across vaults): every field is copied into the destination item in **one save** (with `overwrite`, a field with the same key there gets the value; without it, any such field refuses the whole move before anything is written), then removed from the source item in **a second save** (read again first, for its current version). If the copy's save fails, nothing changed and the error is thrown; if the removal fails, every key is in `MoveResult.notRemoved` with the reason (it exists in both items). Same item, other section: the fields just change section, one save | As destination: CONFIGURATION (choose an item). As source: CONFIGURATION |
+| `createEnvironment` | CONFIGURATION (1Password has no environments) | |
+
+Decisions:
+
+- **Root items are Password items, not API Credentials.** A Password item's layout is exactly one concealed field plus notes,
+  which is what a key / value / comment is. An API Credential item comes with `username`, `type`, `filename`, `hostname`,
+  `valid from`, `expires` that would stay empty (and which a sparse template may or may not get filled in by the CLI / Connect),
+  so its layout fits worse. The new item is addressed as `op://<vault>/<key>/password`; `SecretProvider.createdSecretLocation`
+  (a small generic SPI addition, default: the scope's folder and the key) tells the *New Secret* dialog and *Extract value to …*
+  that the secret is `/<key>` / `password`, so they select it and bind the `.env` line to a reference that resolves.
+- **New fields** get a random 26-character 1Password-style ID (lowercase letters and digits) not used in the item, type
+  `CONCEALED`; moved fields keep their type but not their `purpose` (the destination may have its own built-in field).
+- **No item deletion at all**, so the Connect `DELETE /v1/vaults/{v}/items/{id}` endpoint and `op item delete` are not used.
+  (`op item delete` moves an item to *Recently Deleted* unless `--archive` is given; whether Connect's DELETE is permanent is
+  not documented clearly enough to rely on.) An item whose last custom field was deleted or moved stays, empty.
+- **The New Secret dialog's folder** completes `/` plus `/<item>` for every item (`allFolders` over `listFolders`); sections
+  aren't offered (they are typed as `/<item>/<section>`). Its default is the selected node's folder: an item, a secret's
+  `/<item>/<section>`, or the vault's root (then a new item). Its key pattern (`[A-Za-z_][A-Za-z0-9_.-]*`) is also a valid item
+  title and field label.
+
+**Connect:** `POST /v1/vaults/{v}/items` (the template plus `vault.id`) and `PUT /v1/vaults/{v}/items/{id}` with the whole item,
+including the `version` it was read with. **409** (and 412) is CONFIGURATION "the item was changed meanwhile (…); refresh and try
+again". As far as known, Connect rejects a PUT with an outdated `version`; if a server doesn't, the last write wins within the
+read-modify-write window (milliseconds). `PATCH` (RFC 6902 on `fields`) would send less, but PUT of the item as read keeps
+everything else unchanged and is one code path with the CLI. The HTTP client is now pinned to **HTTP/1.1**, like the other
+providers' (over plain `http://`, the usual local Connect address, Java's default HTTP/2 sends an h2c upgrade that breaks
+request bodies on some servers).
+
+**CLI (app and service account): a value is never on `op`'s command line** (other local processes can read argv). That rules
+out `op item edit <item> 'field=value'` assignment statements entirely; there is no fallback to them. Instead:
+
+| Operation | Command | stdin |
+|---|---|---|
+| Create a root item | `op item create --vault <vault> --format json [--account …]` | The item template JSON (`title`, `category: PASSWORD`, `fields`) |
+| Change an item | `op item edit <item ID> --vault <vault ID> --format json [--account …]` | The whole item JSON as read with `op item get`, changed |
+
+`OnePasswordCli.run` writes the JSON to stdin from its own thread (so a process that never reads it can't block past the
+timeout) and closes it; for reads stdin is still closed at once. Neither stdin nor stdout is logged. Before an edit, an item
+whose concealed values came back masked (`[use 'op item get … --reveal' …]`, an `op` that didn't reveal) is refused, so the
+placeholder can never overwrite the real values.
+
+`op` features relied on, and confidence (from 1Password's documentation and release notes as remembered, **not verified
+against a live account or a real `op` binary** while writing this; the tests use a fake `op`):
+
+- `op item create` reads an item JSON template from **piped stdin** (documented, e.g. `op item get … --format json | op item
+  create --vault …` to copy an item; the template shape is `op item template get Password`'s): **high**.
+- `op item edit <item>` reads the **whole item JSON from piped stdin** and makes the item match it (fields left out are
+  removed), as with `--template` (added in op 2.x, used with the output of `op item get --format json`): **medium**. If an `op`
+  ignores the piped JSON or merges instead, the field-ID check after the save reports "didn't apply the change"; nothing is
+  then claimed as done. A user with such an `op` can update it or use Connect.
+- `op item edit` / `create` print the resulting item with `--format json`: **medium-high** (if they print nothing, the check
+  is skipped).
+- The CLI has no optimistic concurrency that EnvBridge can use: an item changed between `op item get` and `op item edit` (a
+  fraction of a second) is overwritten.
+
 ### Security notes
 
-- No secret on a command line: argv carries only vault / item names, flags and the account. The service account token goes
+- No secret on a command line: argv carries only vault / item names and IDs, flags and the account. Values written go to
+  `op` on stdin, as part of the item's JSON. The service account token goes
   through the child's environment, which other users' processes can't read.
 - Inherited `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_HOST`, `OP_CONNECT_TOKEN` and `OP_SESSION_*` are removed so `op` uses the
   connection's credentials only (`OP_ACCOUNT` is also removed for service accounts).
@@ -363,7 +445,17 @@ account and Connect forget the stored token.
 - `OnePasswordPlatformTest`: each method lists vaults, items and fields; sections by label and ID; duplicate titles; the
   whole-vault import and its cap; the token only in the environment; errors (op missing, not signed in, wrong token, missing
   item, ambiguous title, Connect 401 / 403); launches resolving `op://` references against a bound vault (vault by name and by
-  ID, section given or not, item import, fail closed, another vault refused while restricted); writes refused.
+  ID, section given or not, item import, fail closed, another vault refused while restricted).
+- Writes: `FakeOp` also answers `item create` / `item edit`, which read the item JSON from stdin, store it (edits are seen
+  under every name through symlinks) and **fail when stdin is empty or an argument is an assignment statement**; it can refuse
+  to edit one item (permission error) and ignore edits. `MockOnePasswordConnect` keeps items in memory with versions: `POST`,
+  `PUT` (409 unless the body carries the current `version`), `DELETE`; it can refuse PUTs of an item and change one "meanwhile".
+  `OnePasswordPlatformTest` covers, on the CLI and on Connect: creating a field (top level, section, comment into notes),
+  duplicate label refused, root-level Password item (template, notes, existing title refused), updating value and notes,
+  deleting a field and emptying a built-in one, root deletion refused, moving between items and sections, overwrite refused
+  then allowed, a move whose source can't be saved (`notRemoved`, copy kept), a Connect conflict (409 → "changed meanwhile",
+  nothing changed), an `op` that ignores the piped item, masked values refused, every written value absent from argv, and
+  *Read-only* blocking each write before anything is sent.
 
 ### Known limits and uncertainties
 
@@ -381,6 +473,160 @@ account and Connect forget the stored token.
   built-in `username` / `password`) are not supported.
 - A whole-vault import makes one `op` call per item (≈0.5 s each); it is capped at 100 items.
 - No dashboard link (opening items needs the account's UUID; a later version can use `whoami`).
+- Writes through the CLI rely on `op item edit` accepting piped item JSON (confidence above); there is no argv fallback.
+- Writes don't check that the item is unchanged since the tool window showed it, only since the operation read it (Connect:
+  `version`; CLI: none). Items are never deleted; sections aren't created; moving into a vault's root is refused.
+- A whole item is sent back on every write, values of all its fields included (to the same `op` / Connect server it was read
+  from, which already holds them).
+
+## Fourth provider: Doppler
+
+Chosen after 1Password because Doppler is popular with application teams that want hosted secrets per environment without
+running a server, and has no JetBrains integration. Its model (projects, environments, configs of flat key/value secrets) is
+close to Infisical's, so reading **and writing** fit the existing SPI with no core changes.
+
+**Scope, first version:** reading and injecting, plus every write the tool window offers (create, edit with note, move between
+configs, delete, new branch config). Doppler is SaaS only and can't be self-hosted, so there are **no integration tests against a
+real server**: everything is tested against a mock of the API (below).
+
+### Model mapping
+
+| EnvBridge | Doppler |
+|---|---|
+| Project | A Doppler project (ID = slug = the project's name as the API takes it, `backend`) |
+| Environment | A Doppler **config**: `dev`, `dev_personal`, `stg`, `prd`, branch configs such as `dev_feature`. Configs hold the secrets; Doppler's environments only group them. Shown as the config's name, branch configs as `dev_feature (branch of dev)` |
+| Folder | None: a config is a flat list. `listFolders` is empty; any path other than `/` is NOT_FOUND ("Doppler has no folders") |
+| Secret (key = value) | A secret of the config, with Doppler's **computed** value (Doppler references `${KEY}`, `${env.config.KEY}` resolved by the server); the comment is the secret's note |
+| Organization (dashboard links) | The workplace (from `/v3/me`) |
+
+`defaultEnvironment()` is `dev` (Doppler creates `dev`, `stg` and `prd` in every new project). Doppler adds `DOPPLER_PROJECT`,
+`DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` to every config; `listSecrets` leaves them out, so scope imports don't inject them
+(they describe the binding, which the IDE already knows; `doppler run` sets them, EnvBridge deliberately doesn't). A reference to
+one of them is therefore NOT_FOUND. Secrets whose value is restricted (`computed` null or `computedVisibility: restricted`) are
+listed with `valueHidden`. Dynamic secrets are not requested (`include_dynamic_secrets=false`).
+
+### References
+
+The default path grammar with scheme `doppler`, without folders (`DopplerGrammar`, a thin wrapper around `PathGrammar`):
+
+```
+doppler://DB_PASSWORD                   DB_PASSWORD of the bound config
+doppler://prd:DB_PASSWORD               DB_PASSWORD of config prd of the bound project
+doppler://dev_personal:*                every secret of config dev_personal (scope import)
+doppler://DB_PASSWORD?project=web&connection=<name>
+```
+
+A folder segment or `?path=` is refused at parse time ("Doppler has no folders: write doppler://[config:]KEY"); `**` is accepted
+and means `*`. Config names (lowercase, digits, `_`) always fit the `config:` prefix form.
+
+### API (v3, `https://api.doppler.com`, `Authorization: Bearer <token>`)
+
+| Purpose | Call |
+|---|---|
+| Account, workplace, token type | `GET /v3/me` → `name`, `type`, `workplace {slug, name}`, `user {email}` |
+| Projects | `GET /v3/projects?page&per_page=100` → `projects[] {slug, name}` (paged, ≤ 20 pages) |
+| Configs of a project | `GET /v3/configs?project&page&per_page=100` → `configs[] {name, environment, root, locked}` |
+| Secrets of a config | `GET /v3/configs/config/secrets?project&config&include_dynamic_secrets=false` → `secrets {KEY: {raw, computed, note, computedVisibility}}` |
+| Create / change secrets | `POST /v3/configs/config/secrets` `{project, config, secrets: {KEY: VALUE}}` |
+| Delete a secret | `DELETE /v3/configs/config/secret?project&config&name` |
+| Secret note | `POST /v3/projects/project/note?project` `{project, secret, note}` (a note belongs to the project, shared by its configs) |
+| New branch config | `POST /v3/configs` `{project, environment, name}` |
+| Browser sign-in | `POST /v3/auth/cli/generate_2` (fallback `generate`) `{hostname, version, os, arch}` → `{code, polling_code, auth_url}`; `POST /v3/auth/cli/authorize` `{code: polling_code}` until `{token, name, workplace}` |
+| Sign-out | `POST /v3/auth/revoke` `{token}` |
+
+`DopplerHttp` uses the JDK HttpClient like `VaultHttp`: IDE proxy and certificates, no redirects, HTTP/1.1, 10 s / 30 s timeouts;
+the token only ever goes in the `Authorization` header, the polling code only in a request body, and no body is logged. Errors:
+401 → AUTH_REQUIRED, 403 → FORBIDDEN, 404 → NOT_FOUND, 429 → SERVER ("Doppler rate limited the request; retry in N s" from
+`Retry-After`), other 4xx → CONFIGURATION, 5xx → SERVER, I/O → NETWORK. Doppler's `messages` are shown, joined and capped at 300
+characters; a message about a locked config becomes CONFIGURATION "the config is locked in Doppler: …" whatever the status.
+
+### Sign-in
+
+| Method | Flow | Credentials |
+|---|---|---|
+| **Browser sign-in** (default) | The Doppler CLI's `doppler login` flow: `generate_2` with the computer's name (`EnvBridge (<host>)`, the token's name in the user's Doppler token list), open `auth_url` in the system browser, show "check that Doppler shows the code `<code>`, then approve" as the progress text, poll `authorize` every 2 s (or the server's `poll_interval`), stop on cancel, give up after 5 minutes. Pending = 409 / 202 / a success without a token / a 400 saying "pending"; any other 4xx = declined or expired (AUTH_REQUIRED) | The CLI token in `SLOT_SESSION` (PasswordSafe), revoked on sign-out (local copy forgotten first, so a failed revoke never keeps it) |
+| **Token** | A pasted personal (`dp.pt.`), service account (`dp.sa.`) or service token (`dp.st.`), checked with `/v3/me` on *Sign In* | A secret option (PasswordSafe). Sign-out forgets it, never revokes it (the user's own) |
+
+The session slot also caches what `/v3/me` said (workplace, token type, user), keyed to the token, so listings ask once. A
+browser session Doppler refuses (401) is forgotten, so the UI offers to sign in again; there is nothing to refresh. The
+`auth_url` is opened only if it is `https` (or loopback, for tests).
+
+**Service tokens** are bound to one config and may not list projects. When `/v3/me` reports a service token (or, if it reports no
+type, the token starts with `dp.st.`), or listing projects is FORBIDDEN, `listProjects` offers just the token's project with its
+one config: from `/v3/me` if it names them, else from that config's own `DOPPLER_PROJECT` / `DOPPLER_CONFIG` (a secrets read
+without `project` / `config`, which Doppler answers for the token's config). Projects whose configs a token may not list are
+shown without configs.
+
+### Writes
+
+All writes go through `SecretsService` (so *Read-only* and the prod guard apply) and are explicit user actions.
+
+- **Names** must match `[A-Z_][A-Z0-9_]*` (Doppler's rule: uppercase letters, digits, underscores); checked before any request,
+  with a suggested name (`db-url` → `DB_URL`).
+- **Create** reads the config first and refuses an existing key ("edit it instead"); **update** refuses a missing one (NOT_FOUND).
+  Both send one `POST /v3/configs/config/secrets`. Doppler's `change_requests` form isn't used (it needs the same permission and
+  adds nothing here). A key that the config only inherits counts as existing (the listing doesn't tell them apart).
+- **Notes**: a non-empty comment on create, or a changed comment on update, sets the secret's note. The value is written first;
+  if the note then fails, the error says the value was saved. Notes are per project, so editing one in `dev` changes it for every
+  config.
+- **Delete**: `DELETE …/secret`, one request per key; a missing key is NOT_FOUND.
+- **Move** between configs (and projects): checks every key exists and is readable in the source and, without *overwrite*, is
+  absent from the destination (else nothing happens); copies the **raw** values (so `${…}` references keep referring) in one
+  request; carries notes over when the project changes; then deletes each key from the source. A key whose deletion fails stays in
+  both configs and is reported in `MoveResult.notRemoved`: a failure never loses a secret.
+- **New environment** creates a **branch config**. Doppler names a branch config after its environment (`dev_feature` in `dev`);
+  the dialog's slug may use hyphens (`dev-feature`), which become underscores. The longest existing environment that prefixes the
+  name is used; otherwise CONFIGURATION with the allowed prefixes. The dialog's display name isn't used (a config has only a name).
+  New Doppler environments (as opposed to configs) are created in the dashboard.
+- **Locked configs**, config inheritance and access rules are Doppler's to enforce; their refusals come back as CONFIGURATION or
+  FORBIDDEN with Doppler's message. A read-only service token gets FORBIDDEN on writes.
+
+### Project file
+
+`readProjectFile` reads the Doppler CLI's repository file `doppler.yaml` (also `doppler.yml`), looked up in the project directory
+and its parents, so the binding picks up the project and config that `doppler setup` would. `setup:` may be one `{project,
+config}` or a list of them with a `path` (relative to the file); the entry whose path is the project directory wins, then one for
+the file's own directory, then the first. SnakeYAML's `SafeConstructor`, files over 256 KB ignored. The user's
+`~/.doppler/.doppler.yaml` (which holds the CLI's tokens and scoped settings) is never read.
+
+### Dashboard
+
+`https://dashboard.doppler.com/workplace/<workplace>/projects/<project>/configs/<config>`, the workplace from `/v3/me`; without it
+the dashboard's start page. For another API address, `api.<domain>` becomes `dashboard.<domain>`.
+
+### Tests
+
+- `DopplerGrammarTest`: keys, `config:` prefixes, `*` / `**`, `?project=` / `?connection=` round trips, folders refused,
+  building short references; `doppler.yaml` in both forms, nested directories, malformed files.
+- `MockDoppler`: a JDK HttpServer with `/v3/me`, projects, configs (one project forbidden), secrets with computed `${KEY}`
+  values and the `DOPPLER_*` metadata, writes, delete, notes, branch configs, the browser sign-in (409 until approved after N
+  polls, or declined), revocation, service tokens bound to one config, locked configs, failing deletions and a 429 with
+  `Retry-After`.
+- `DopplerPlatformTest`: registration; listings with each token type (service token offered alone, without listing projects);
+  the browser sign-in round trip (code in the progress text, polling code only in bodies, token only in the header, never in
+  exceptions or `toString`, revoked on sign-out), declined, cancelled and timed-out sign-ins, a revoked session; error mapping
+  (401, 403, 404, 429); create / update / note / delete; name validation; a locked config; *Read-only*; move with a partial
+  failure, conflicts and a cross-project note; branch configs; launches through `LaunchSecretResolver` with a binding (bound
+  config, `config:` prefix, `?project=`, scope import without metadata, fail closed, *Only use the bound project*); `doppler.yaml`.
+
+### Known limits and unverified assumptions
+
+developer.doppler.com / docs.doppler.com could not be reached while this was written, so request and response shapes come from
+the public API reference and the Doppler CLI's source **as remembered**, and are checked only against the mock. Parsers are
+lenient (missing fields are skipped). Specifically unverified:
+
+- The browser sign-in: the endpoint name `generate_2` (the CLI's current one; `generate` is tried on 404 / 405), its request
+  fields, the `polling_code` field (the shown `code` is polled when it is absent), the optional `poll_interval`, and that
+  `authorize` answers **409** while pending (202, 425, a tokenless success and a 400 saying "pending" are treated alike).
+- `/v3/me` field names (`type` values such as `service_token`, `workplace.slug`, `user.email`) and whether it can name a service
+  token's project and config (if not, the config's metadata secrets are used).
+- The note endpoint's shape (`project` sent both as query parameter and in the body).
+- That a service token may read secrets without `project` / `config` parameters (the CLI relies on this).
+- That `workplace.slug` is what the dashboard's `/workplace/<…>` path takes.
+- Branch config names with digits and underscores only (hyphens become underscores); Doppler may allow more.
+- No retry on 429: the error says when to retry. Pagination stops at a short page (≤ 2 000 projects or configs).
+- `INFISICAL_ENVIRONMENT` on a run configuration still picks the config (the core's override variable); `DOPPLER_CONFIG` /
+  `DOPPLER_PROJECT` / `DOPPLER_TOKEN` in the IDE's or run configuration's environment are not read.
 
 ## Threat model (summary)
 
@@ -394,7 +640,8 @@ account and Connect forget the stored token.
 | Secrets on screen or in clipboard | Masked by default, auto-hide on reveal, clipboard auto-clear, console masking (M3). |
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
 | Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
-| Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; argv carries names and flags only; inherited `OP_*` credentials are removed. |
+| Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; values written go on stdin as item JSON (never `field=value` assignments); argv carries names and flags only; inherited `OP_*` credentials are removed. |
+| Phishing of a device-code style sign-in (Doppler) | The IDE shows the code it asked for and tells the user to approve only if the browser shows the same one; the polling code never leaves the IDE except to Doppler, in a request body; only an `https` sign-in address is opened. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 
 ## Milestones

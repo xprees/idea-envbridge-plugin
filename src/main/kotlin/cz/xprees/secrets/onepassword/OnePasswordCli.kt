@@ -1,6 +1,7 @@
 package cz.xprees.secrets.onepassword
 
 import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -21,7 +22,7 @@ import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
 /**
- * Reads through the 1Password CLI (`op`), run as a child process with `--format json`:
+ * Reads and writes through the 1Password CLI (`op`), run as a child process with `--format json`:
  *
  * - **desktop app** ([serviceAccount] false): `op` asks the 1Password app to authorize it (Touch ID, Windows Hello, system
  *   password, …), so EnvBridge never sees a password or session token. An optional `--account` picks the account.
@@ -29,7 +30,8 @@ import java.util.concurrent.TimeUnit
  *   `OP_SERVICE_ACCOUNT_TOKEN`, never on the command line (other processes can read command lines).
  *
  * Inherited variables that would make `op` use other credentials (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_*`, `OP_SESSION_*`)
- * are removed. Nothing `op` prints is logged; its error text is shown shortened.
+ * are removed. Nothing `op` prints is logged; its error text is shown shortened. Writes hand `op` the item's JSON on stdin,
+ * never a value on the command line.
  */
 class OnePasswordCli(private val connection: SecretConnection, private val serviceAccount: Boolean) : OnePasswordBackend {
 
@@ -45,7 +47,7 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
 
     override fun items(vault: String): List<OpItemSummary> = OnePasswordJson.items(json(run(listOf("item", "list", "--vault", vault))))
 
-    override fun item(vault: String, item: String): OpItem {
+    override fun itemJson(vault: String, item: String): JsonObject {
         val args = listOf("item", "get", item, "--vault", vault)
         // `--reveal` (op 2.24+) makes sure concealed values are in the output; older versions don't know it (and include them)
         val output = try {
@@ -54,8 +56,30 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
             if (e.message?.contains("unknown flag", ignoreCase = true) != true) throw e
             run(args)
         }
-        return OnePasswordJson.item(json(output))
+        return json(output).takeIf { it.isJsonObject }?.asJsonObject
+            ?: throw SecretProviderException(Kind.SERVER, "The 1Password CLI sent an unexpected answer to item get")
     }
+
+    /**
+     * `op item create --vault <vault>` with the item's JSON template on stdin (as `op item get … | op item create` does), so
+     * no value is ever on `op`'s command line.
+     */
+    override fun createItem(vault: String, template: JsonObject): JsonObject =
+        written(run(listOf("item", "create", "--vault", vault), input = template.toString()), "item create")
+
+    /**
+     * `op item edit <id> --vault <vault>` with the whole changed item JSON on stdin (recent op 2.x edits an item from piped JSON).
+     * Never `op item edit <item> field=value`: assignment statements would put the value on the command line.
+     */
+    override fun replaceItem(vault: String, item: JsonObject): JsonObject {
+        val id = item.str("id")?.takeIf { it.isNotBlank() } ?: throw SecretProviderException(Kind.SERVER, "The item has no ID")
+        refuseMaskedValues(item)
+        val target = item.getAsJsonObject("vault")?.str("id")?.takeIf { it.isNotBlank() } ?: vault
+        return written(run(listOf("item", "edit", id, "--vault", target), input = item.toString()), "item edit")
+    }
+
+    private fun written(output: String, what: String): JsonObject =
+        json(output).takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject().also { LOG.debug("op $what printed no item") }
 
     /** Whether a token is stored (service account), or the app is used (no stored credentials needed). */
     fun hasToken(): Boolean = token() != null
@@ -63,8 +87,11 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
     private fun token(): String? =
         CredentialVault.get(connection.id, CredentialVault.secretOptionSlot(OnePasswordAuthMethods.OPTION_SERVICE_ACCOUNT_TOKEN))?.takeIf { it.isNotBlank() }
 
-    /** Runs `op <args> --format json` and returns what it printed on stdout. */
-    fun run(args: List<String>, cancelled: () -> Boolean = { false }): String {
+    /**
+     * Runs `op <args> --format json` and returns what it printed on stdout. [input] (an item's JSON, values included) is
+     * written to its stdin, else stdin is closed at once. Neither is ever logged.
+     */
+    fun run(args: List<String>, cancelled: () -> Boolean = { false }, input: String? = null): String {
         val executable = executable()
         val command = buildList {
             add(executable.toString())
@@ -89,10 +116,21 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
         }
         val what = args.take(2).joinToString(" ")
         try {
-            // No input: `op` must never wait for a password on stdin
-            process.outputStream.close()
             val stdout = Drain(process.inputStream, MAX_OUTPUT_BYTES)
             val stderr = Drain(process.errorStream, MAX_ERROR_BYTES)
+            if (input == null) {
+                // No input: `op` must never wait for a password on stdin
+                process.outputStream.close()
+            } else {
+                // On its own thread, so a process that doesn't read stdin can't block us past the timeout
+                Thread({
+                    try {
+                        process.outputStream.use { it.write(input.toByteArray(StandardCharsets.UTF_8)) }
+                    } catch (_: IOException) {
+                        // the process ended or was killed
+                    }
+                }, "EnvBridge op writer").apply { isDaemon = true; start() }
+            }
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs ?: if (serviceAccount) SERVICE_TIMEOUT_MS else APP_TIMEOUT_MS)
             while (!process.waitFor(POLL_MS, TimeUnit.MILLISECONDS)) {
                 if (cancelled()) throw SecretProviderException(Kind.CANCELLED, "Cancelled")
@@ -187,6 +225,22 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
         private const val MAX_MESSAGE = 300
 
         const val INSTALL_HINT = "Install it (https://developer.1password.com/docs/cli/get-started/) or enter its path in the connection's settings."
+
+        /** What `op` 2.24+ prints instead of a concealed value when `--reveal` is missing. */
+        private const val MASKED_PREFIX = "[use 'op item get"
+
+        /**
+         * Refuses to write an item whose concealed values came back masked: writing it would replace the real values with the
+         * placeholder text.
+         */
+        fun refuseMaskedValues(item: JsonObject) {
+            val masked = item.getAsJsonArray("fields")?.any { f ->
+                f.isJsonObject && f.asJsonObject.str("value")?.startsWith(MASKED_PREFIX) == true
+            } == true
+            if (masked) {
+                throw SecretProviderException(Kind.SERVER, "The 1Password CLI returned masked values; nothing was changed. Update the 1Password CLI")
+            }
+        }
 
         /** Overrides the timeout (tests). */
         @Volatile

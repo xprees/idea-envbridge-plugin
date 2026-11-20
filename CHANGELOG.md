@@ -4,19 +4,32 @@
 
 ### Added
 
+- **1Password: writing.** *New Secret…*, *Edit Secret…*, *Move…*, *Delete…* and *Extract value to …* work for 1Password
+  connections (all three access methods): a secret is a field of an item; a new secret at a vault's root becomes a Password item
+  (`op://vault/KEY/password`); the item's notes are the secrets' comment; fields are moved between items (copy first, remove
+  after); items are never deleted. With the CLI, values go to `op` only on its standard input as item JSON, never on its command
+  line; with Connect, an item changed meanwhile is refused instead of overwritten. *Read-only* turns it off as for every provider
+- **Doppler** (unofficial integration), reading, injecting and writing: Doppler projects are projects and configs (`dev`,
+  `dev_personal`, `stg`, `prd`, branch configs) are environments. References `doppler://KEY`, `doppler://prd:KEY`,
+  `doppler://*` for every secret of a config, `?project=` and `?connection=`; Doppler's computed values (its `${…}` references
+  resolved). Sign in through the system browser like `doppler login` (the IDE shows the code to compare, the token is kept in the
+  IDE's password storage and revoked on sign-out) or with a personal, service account or service token (a service token offers
+  just its project and config). Create, edit (with notes), move between configs and delete secrets, and create branch configs;
+  uppercase names are checked before anything is sent. Reads the Doppler CLI's `doppler.yaml`. Tested against a mock of the
+  Doppler API (Doppler can't be self-hosted)
 - **1Password** (unofficial integration), reading and injecting: 1Password's own secret references work as they are
   (`op://vault/item/[section/]field`, names or IDs), plus `op://vault/item/*` for every field of an item, `op://vault/**` for
   every item of a vault and `?connection=`. Access through the 1Password app via the 1Password CLI (the app approves, nothing to
   paste), a service account token (given to the CLI only in its environment, never on its command line) or a 1Password Connect
-  server. Vaults are projects with one environment (`default`), items are folders. Writing comes later; those actions are off
-  for 1Password connections
+  server. Vaults are projects with one environment (`default`), items are folders
 - Sign-in methods that need no instance address (a CLI talking to its desktop app): the connection dialog hides the address
 - *Only use the bound project* accepts references that name the bound project by its name (a 1Password vault), not only its ID
 - **HashiCorp Vault and OpenBao** (KV v2, namespaces), reading and injecting: `vault://secret/app/db#password`, `#*` for every
   field of a secret and `#**` for every secret below a path, `?namespace=` and `?connection=`. Sign in with OIDC in the system
   browser (the Vault CLI's redirect URI), a token or the Vault CLI's `~/.vault-token`, AppRole, userpass or LDAP; tokens and
   passwords only in the IDE's password storage, renewable tokens renewed before they expire. Mounts are listed from the server or
-  set on the connection. Creating and changing Vault secrets comes later; those actions are off for Vault connections
+  set on the connection. Creating, editing, moving and deleting fields, with check-and-set (a change made meanwhile is refused,
+  other fields keep their values and types)
 - Choosing the secret manager when adding a connection, once there are several
 - Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
   (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
@@ -30,7 +43,10 @@
 
 ### Changed
 
-- New plugin and tool window icons: a suspension bridge carrying a key
+- Actions and messages shared by every secret manager no longer say "Infisical": *Run with Secrets Environment…*, *Add Secrets
+  to Run Configuration…*, *New Terminal Tab with Secrets*, *Load Secrets into This Terminal*, *Bind to Secret…*, *Extract Value
+  to Secret Manager…*
+- New plugin icon: a suspension bridge carrying a key (the Secrets tool window keeps its key icon)
 - **Reference format**: folders are absolute from the environment's root and the environment goes before a colon:
   `infisical://KEY` (root), `infisical://workers/KEY`, `infisical://prod:KEY`, `infisical://prod:workers/KEY`. The binding's
   folder is only a default for new secrets and the tool window. References written the old way (`infisical://prod/KEY`) now

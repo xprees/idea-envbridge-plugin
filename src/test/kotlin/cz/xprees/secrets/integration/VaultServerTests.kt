@@ -168,6 +168,50 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
             .isEqualTo("db-pass-$server")
     }
 
+    fun `test fields are written, moved and deleted with check-and-set`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val base = "/envbridge-rw/run-${System.nanoTime()}"
+        val app = SecretScope("secret", "root", "$base/app")
+
+        service.createSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("t1"))
+        service.createSecret(connection, app, "url", cz.xprees.secrets.core.model.SecretValue("https://example.test"))
+        service.updateSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("t2"))
+        assertThat(client(connection).listSecrets(app).associate { it.key to it.value.reveal() })
+            .containsEntry("token", "t2").containsEntry("url", "https://example.test")
+        assertThatThrownBy { service.createSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("x")) }
+            .hasMessageContaining("already has a field token")
+
+        // the server enforces check-and-set: a stale version is refused
+        val api = VaultApi(VaultHttp(address))
+        val token = session(connection).accessToken
+        val current = api.readVersioned(token, VaultApi.ROOT_NAMESPACE, "secret", "$base/app")
+        assertThat(current.version).isEqualTo(3)
+        assertThatThrownBy { api.write(token, VaultApi.ROOT_NAMESPACE, "secret", "$base/app", current.fields, current.version - 1) }
+            .hasMessageContaining("changed meanwhile")
+
+        val moved = service.moveSecrets(connection, app, client(connection).listSecrets(app).filter { it.key == "url" }, SecretScope("secret", "root", "$base/other"), overwrite = false)
+        assertThat(moved.moved).containsExactly("url")
+        assertThat(client(connection).listSecrets(app).map { it.key }).containsExactly("token")
+        assertThat(client(connection).listSecrets(SecretScope("secret", "root", "$base/other")).single().value.reveal()).isEqualTo("https://example.test")
+
+        // deleting the last field deletes the latest version; the path can be written again
+        service.deleteSecrets(connection, app, listOf("token")).getValue("token").getOrThrow()
+        assertThat(client(connection).listSecrets(app)).isEmpty()
+        service.createSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("again"))
+        assertThat(client(connection).listSecrets(app).single().value.reveal()).isEqualTo("again")
+
+        // no write permission outside envbridge-rw/
+        assertThatThrownBy { service.createSecret(connection, SecretScope("secret", "root", "/envbridge/app/db"), "new", cz.xprees.secrets.core.model.SecretValue("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+
+        if (IntegrationEnv.get("ENVBRIDGE_IT_${server}_NAMESPACES") == "true") {
+            val toTeam = service.moveSecrets(connection, app, client(connection).listSecrets(app), SecretScope("secret", "team-a", "$base/app"), overwrite = false)
+            assertThat(toTeam.moved).containsExactly("token")
+            assertThat(client(connection).listSecrets(SecretScope("secret", "team-a", "$base/app")).single().value.reveal()).isEqualTo("again")
+        }
+    }
+
     fun `test launches resolve vault references`() {
         val connection = appRole()
         ProjectSecretsSettings.getInstance(project).update {
