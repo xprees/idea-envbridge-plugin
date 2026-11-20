@@ -110,12 +110,12 @@
 
     <actions>
         <action id="cz.xprees.secrets.RunWithEnvironment" class="cz.xprees.secrets.ui.actions.RunWithEnvironmentAction"
-                text="Run with Infisical Environment…"
+                text="Run with Secrets Environment…"
                 description="Run the selected configuration once with secrets from another environment">
             <add-to-group group-id="RunMenu" anchor="after" relative-to-action="ChooseRunConfiguration"/>
         </action>
         <action id="cz.xprees.secrets.AddSecretsToRunConfiguration" class="cz.xprees.secrets.ui.actions.AddSecretsToRunConfigurationAction"
-                text="Add Infisical Secrets to Run Configuration…"
+                text="Add Secrets to Run Configuration…"
                 description="Pick secrets of the bound folder and add references to them to a run configuration's environment variables">
             <add-to-group group-id="RunMenu" anchor="after" relative-to-action="cz.xprees.secrets.RunWithEnvironment"/>
         </action>

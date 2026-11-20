@@ -120,30 +120,30 @@ class DotEnvPlatformTest : BasePlatformTestCase() {
                 "ConnectionStrings__Default=fallback # infisical://ConnectionStrings__Default\n",
         )
         val problems = myFixture.doHighlighting(HighlightSeverity.WEAK_WARNING)
-            .filter { it.description?.contains("Infisical") == true }.mapNotNull(HighlightInfo::getDescription)
+            .filter { it.description?.contains("secret manager") == true }.mapNotNull(HighlightInfo::getDescription)
         // PROD_ONLY isn't in the bound environment (dev), PATH isn't a secret, REF and the bound line are taken care of
         assertThat(problems).hasSize(2)
         assertThat(problems).anySatisfy { assertThat(it).contains("DB_PASSWORD").contains("dev") }
 
-        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to Infisical and clear the value" && it.text.contains("DB_PASSWORD") })
-        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to Infisical, keep the value as local fallback" })
+        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to the secret and clear the value" && it.text.contains("DB_PASSWORD") })
+        myFixture.launchAction(myFixture.getAllQuickFixes().first { it.familyName == "Bind to the secret, keep the value as local fallback" })
         assertThat(myFixture.editor.document.text).isEqualTo(
             "DB_PASSWORD= # infisical://DB_PASSWORD\nAPI_KEY=\"abc\" # infisical://API_KEY\nPATH=/usr/bin\nREF=infisical://API_KEY\nPROD_ONLY=x\n" +
                 "ConnectionStrings__Default=fallback # infisical://ConnectionStrings__Default\n",
         )
-        assertThat(myFixture.doHighlighting(HighlightSeverity.WEAK_WARNING).filter { it.description?.contains("Infisical") == true }).isEmpty()
+        assertThat(myFixture.doHighlighting(HighlightSeverity.WEAK_WARNING).filter { it.description?.contains("secret manager") == true }).isEmpty()
         // The binding comment is a reference the editor knows (gutter icon, masked hint)
         assertThat(cz.xprees.secrets.editor.EditorReferences.of(myFixture.file).map { it.name }).contains("DB_PASSWORD", "API_KEY")
     }
 
     fun `test empty variables can be bound with an intention`() {
         myFixture.configureByText(".env.local", "API_KEY=<caret>\nOTHER=\n")
-        val intention = myFixture.getAvailableIntention("Bind to Infisical")
+        val intention = myFixture.getAvailableIntention("Bind to Secret")
         assertNotNull(intention)
         myFixture.launchAction(intention!!)
         assertThat(myFixture.editor.document.text).isEqualTo("API_KEY= # infisical://API_KEY\nOTHER=\n")
         myFixture.editor.caretModel.moveToOffset(myFixture.editor.document.text.indexOf("OTHER=") + 6)
-        assertNull(myFixture.getAvailableIntention("Bind to Infisical"))
+        assertNull(myFixture.getAvailableIntention("Bind to Secret"))
     }
 
     private fun npmConfiguration(): NpmRunConfiguration {

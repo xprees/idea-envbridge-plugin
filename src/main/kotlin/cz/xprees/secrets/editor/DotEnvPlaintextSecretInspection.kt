@@ -69,7 +69,7 @@ class DotEnvPlaintextSecretInspection : LocalInspectionTool() {
     }
 }
 
-/** On a `KEY=` line without a value whose key is a secret in the bound folder: *Bind to Infisical* (`KEY= # infisical://KEY`). */
+/** On a `KEY=` line without a value whose key is a secret in the bound folder: *Bind to Secret* (`KEY= # infisical://KEY`). */
 class DotEnvBindIntention : IntentionAction {
     override fun getFamilyName(): String = SecretsBundle.message("dotenv.bind.intention.family")
 

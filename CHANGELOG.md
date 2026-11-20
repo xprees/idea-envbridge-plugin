@@ -35,6 +35,9 @@
 
 ### Changed
 
+- Actions and messages shared by every secret manager no longer say "Infisical": *Run with Secrets Environment…*, *Add Secrets
+  to Run Configuration…*, *New Terminal Tab with Secrets*, *Load Secrets into This Terminal*, *Bind to Secret…*, *Extract Value
+  to Secret Manager…*
 - New plugin icon: a suspension bridge carrying a key (the Secrets tool window keeps its key icon)
 - **Reference format**: folders are absolute from the environment's root and the environment goes before a colon:
   `infisical://KEY` (root), `infisical://workers/KEY`, `infisical://prod:KEY`, `infisical://prod:workers/KEY`. The binding's
