@@ -139,6 +139,9 @@ jobs:
     name: Integration tests
     needs: [ build ]
     runs-on: ubuntu-latest
+    env:
+      # Only whether the secret exists (true / false), not the secret: steps use it to decide what to set up
+      HAS_OP_TOKEN: ${{ secrets.ENVBRIDGE_IT_OP_SERVICE_ACCOUNT_TOKEN != '' }}
     steps:
 
       - name: Maximize Build Space
@@ -166,7 +169,24 @@ jobs:
       - name: Start Vault, OpenBao and Infisical
         run: scripts/integration/start.sh
 
+      # 1Password's CLI, for the 1Password tests (only when the repository has a service account token for them)
+      - name: Install the 1Password CLI
+        if: ${{ env.HAS_OP_TOKEN == 'true' }}
+        run: |
+          curl -sS https://downloads.1password.com/linux/keys/1password.asc | sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/amd64 stable main" | sudo tee /etc/apt/sources.list.d/1password.list
+          sudo apt-get update -q && sudo apt-get install -y -q 1password-cli
+          op --version
+
+      # Hosted secret managers (Doppler, 1Password) are tested only when their test accounts' credentials are set as repository
+      # secrets; without them those tests skip. Secrets are not passed to pull requests from forks.
       - name: Run integration tests
+        env:
+          ENVBRIDGE_IT_DOPPLER_TOKEN: ${{ secrets.ENVBRIDGE_IT_DOPPLER_TOKEN }}
+          ENVBRIDGE_IT_DOPPLER_PROJECT: ${{ vars.ENVBRIDGE_IT_DOPPLER_PROJECT }}
+          ENVBRIDGE_IT_DOPPLER_CONFIG: ${{ vars.ENVBRIDGE_IT_DOPPLER_CONFIG }}
+          ENVBRIDGE_IT_OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.ENVBRIDGE_IT_OP_SERVICE_ACCOUNT_TOKEN }}
+          ENVBRIDGE_IT_OP_VAULT: ${{ vars.ENVBRIDGE_IT_OP_VAULT }}
         run: ./gradlew integrationTest
 
       - name: Server logs

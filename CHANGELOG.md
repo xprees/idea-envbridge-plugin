@@ -31,6 +31,8 @@
   set on the connection. Creating, editing, moving and deleting fields, with check-and-set (a change made meanwhile is refused,
   other fields keep their values and types)
 - Choosing the secret manager when adding a connection, once there are several
+- Opt-in integration tests against real Doppler and 1Password test accounts (run when their credentials are set as
+  repository secrets)
 - Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
   (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
 
