@@ -1,10 +1,12 @@
 # EnvBridge
 
-Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**.
+Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**,
+**HashiCorp Vault** and **OpenBao**.
 
 <!-- Plugin description -->
-<p><b>Unofficial Infisical integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc.
-"Infisical" is a trademark of Infisical Inc. and is used only to say which service this plugin works with.</p>
+<p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company)
+or the OpenBao project. "Infisical", "HashiCorp Vault" and "OpenBao" are trademarks of their owners and are used only to say which
+services this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
 and test locally <b>without keeping secrets in <code>.env</code> files</b>. Values are fetched when a run configuration starts and
@@ -49,13 +51,17 @@ handed to the process in memory. Nothing is written to disk.</p>
       settings apply)</li>
   <li><b>Sign in through the system browser</b> (like the Infisical CLI), with a read-only <b>OAuth application</b> (PKCE), or with a
       <b>machine identity</b>. Tokens and client secrets are kept only in the IDE's password storage</li>
+  <li><b>HashiCorp Vault and OpenBao</b> (KV v2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
+      <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
+      <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
+      Reading only for now</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
-<p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you create or edit one yourself
-(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Extract value to Infisical…</i>); it never deletes anything. <i>Read-only</i> in the
-settings turns all writing off.</p>
+<p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you change one yourself
+(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract value to Infisical…</i>; Infisical only).
+<i>Read-only</i> in the settings turns all writing off.</p>
 <!-- Plugin description end -->
 
 Works in JetBrains IDEs based on the IntelliJ Platform **2026.1 and newer**. The plugin is built and tested against the oldest
@@ -156,6 +162,31 @@ stops and says to write `infisical://prod:KEY`.
 | **OAuth application** | Your organization wants least-privilege, read-only tokens | An org admin creates an OAuth application (*Organization Settings › OAuth Applications*) with the redirect URI `http://127.0.0.1:51327/callback` (or your chosen port) and shares the client ID and secret. The token can only read secrets (`secrets:read`). Such tokens may not be allowed to list projects; bind the project ID through `.infisical.yaml` or the settings |
 | **Machine identity** | No browser, or a dedicated identity | A machine identity with Universal Auth: client ID and client secret (and optionally the organization slug) |
 
+### HashiCorp Vault and OpenBao
+
+One provider covers both (same API). In EnvBridge terms a **KV v2 mount** is a project, a **namespace** is an environment
+(`root` without one), a **secret path** is a folder and the secret's **fields** are its keys. References name the mount and path the
+way `vault kv get secret/app/db` does:
+
+```
+DB_PASSWORD=vault://secret/app/db#password
+VAULT=vault://secret/app/db#*                          every field of secret/app/db
+VAULT=vault://secret/app#**                            every field of every secret below secret/app
+TEAM_DB=vault://secret/app/db#password?namespace=team-a
+```
+
+| Method | Setup |
+|---|---|
+| **OIDC (browser)** | The OIDC auth method's role must allow the redirect URI `http://localhost:8250/oidc/callback` (the Vault CLI's; the port can be changed). Role and auth mount path are optional |
+| **Token** | Paste a token, or leave it empty to use the Vault CLI's `~/.vault-token`. EnvBridge never revokes such a token on sign-out |
+| **AppRole** | Role ID, and the secret ID (kept in the password storage) |
+| **Userpass / LDAP** | Username, and the password (kept in the password storage) |
+
+Every method also takes a **namespace** (where to sign in; the default environment), **more namespaces** to show, and the **KV v2
+mounts**, needed only when the token may not list secret engines. Renewable tokens are renewed before they expire; AppRole,
+userpass and LDAP sign in again by themselves; OIDC asks you to sign in again. This version reads secrets only; creating and
+changing them comes later.
+
 ## Security
 
 - **Credentials** (session tokens, refresh tokens, client secrets) are stored only in the IDE's password storage (system keychain,
@@ -186,7 +217,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and conventions.
 
 Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc. "Infisical" and
-the Infisical logo are trademarks of Infisical Inc. This plugin uses no Infisical logos or other brand assets, and it contains no
-Infisical source code. It talks to the documented Infisical API and reimplements the documented behaviour of the Infisical CLI
-(browser sign-in callback, `.infisical.yaml`).
+This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an
+IBM company) or the OpenBao project. "Infisical" and the Infisical logo are trademarks of Infisical Inc.; "HashiCorp" and "Vault"
+are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation. This plugin uses none of their logos or other brand
+assets, and it contains none of their source code. It talks to their documented APIs and reimplements documented behaviour of
+their CLIs (Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`).

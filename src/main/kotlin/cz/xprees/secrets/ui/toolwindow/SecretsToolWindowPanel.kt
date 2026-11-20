@@ -488,7 +488,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         // Drag secrets onto a folder or environment of the same project
         DnDSupport.createBuilder(tree)
             .setBeanProvider { info ->
-                if (!SecretsService.getInstance().writesAllowed) return@setBeanProvider null
+                if (!SecretsService.getInstance().writesAllowed(selectedNode()?.connection)) return@setBeanProvider null
                 val path = tree.getPathForLocation(info.point.x, info.point.y) ?: return@setBeanProvider null
                 if (path.lastPathComponent !is SecretNode) return@setBeanProvider null
                 movable(selectedNodes())?.let { DnDDragStartBean(it) }
@@ -561,9 +561,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         }
     }
 
-    /** False (with the reason as the description) while *Read-only* is on in the settings. */
+    /** False (with the reason as the description) while *Read-only* is on, or for a provider that can't write. */
     private fun writable(e: AnActionEvent): Boolean {
-        val allowed = SecretsService.getInstance().writesAllowed
+        val allowed = SecretsService.getInstance().writesAllowed(selectedNode()?.connection)
         if (!allowed) e.presentation.description = SecretsBundle.message("action.read.only.disabled")
         return allowed
     }

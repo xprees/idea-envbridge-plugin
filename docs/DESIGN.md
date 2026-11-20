@@ -239,6 +239,18 @@ given. Each provider now brings its own reference grammar (`SecretProvider.refer
 Auth mount paths default to the method names (`oidc`, `approle`, `userpass`, `ldap`) and can be changed. Renewable tokens
 are renewed before they expire; otherwise the user signs in again (the launch fails closed, as with Infisical).
 
+### Implementation notes (first version)
+
+- Mounts are listed in the sign-in namespace and offered for every namespace of the connection (its namespace plus *More
+  namespaces*); a mount missing in another namespace reads as empty there.
+- The OIDC listener binds `127.0.0.1` (never all interfaces) while the redirect URI says `localhost`, as the Vault CLI's does;
+  browsers fall back from `::1` to `127.0.0.1`. The callback must carry the `state` from `auth_url`, and a `client_nonce` ties the
+  callback to this IDE's request.
+- A token connection's token (or the CLI's `~/.vault-token`) is the user's own: sign-out forgets it but never revokes it. Tokens
+  from OIDC, AppRole, userpass and LDAP are revoked on sign-out.
+- `SecretProvider.supportsWrites` is false for Vault: the tool window's and `.env` write actions are off, and the service refuses
+  writes as with *Read-only*.
+
 ### Tests
 
 A mock Vault server (like `MockInfisical`): mounts, LIST, KV v2 reads, namespaces, each auth method including the OIDC

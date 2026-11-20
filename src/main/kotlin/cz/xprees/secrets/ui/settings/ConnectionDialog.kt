@@ -34,7 +34,7 @@ class ConnectionDialog(
     private val nameField = JBTextField(existing?.name ?: provider.displayName)
     private val instanceCombo = ComboBox((provider.instancePresets.map { it.second }).toTypedArray()).apply {
         isEditable = true
-        selectedItem = existing?.baseUrl ?: provider.instancePresets.first().second
+        selectedItem = existing?.baseUrl ?: provider.instancePresets.firstOrNull()?.second ?: "https://"
         renderer = textListCellRenderer { url: String? ->
             provider.instancePresets.firstOrNull { it.second == url }?.let { "${it.first} — ${it.second}" } ?: url.orEmpty()
         }

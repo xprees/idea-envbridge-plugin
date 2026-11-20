@@ -64,19 +64,19 @@ class SecretsService {
 
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
     fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome {
-        checkWritesAllowed()
+        checkWritesAllowed(connection)
         return client(connection).createSecret(scope, key, value, comment).also { invalidate(connection.id) }
     }
 
     /** Changes a secret (see [SecretsClient.updateSecret]) and forgets the connection's cached values. Off the EDT. */
     fun updateSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome {
-        checkWritesAllowed()
+        checkWritesAllowed(connection)
         return client(connection).updateSecret(scope, key, value, comment).also { invalidate(connection.id) }
     }
 
     /** Moves secrets between folders or environments (see [SecretsClient.moveSecrets]); forgets cached values. Off the EDT. */
     fun moveSecrets(connection: SecretConnection, source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
-        checkWritesAllowed()
+        checkWritesAllowed(connection)
         try {
             return client(connection).moveSecrets(source, secrets, destination, overwrite)
         } finally {
@@ -89,7 +89,7 @@ class SecretsService {
      * failed). Forgets cached values. Off the EDT.
      */
     fun deleteSecrets(connection: SecretConnection, scope: SecretScope, keys: List<String>): Map<String, Result<WriteOutcome>> {
-        checkWritesAllowed()
+        checkWritesAllowed(connection)
         val client = client(connection)
         try {
             return keys.associateWith { key -> runCatching { client.deleteSecret(scope, key) } }
@@ -101,19 +101,33 @@ class SecretsService {
     /** Whether writing to secret managers is allowed (not turned off with *Read-only* in the settings). */
     val writesAllowed: Boolean get() = !SecretsAppSettings.getInstance().state.readOnly
 
+    /** [writesAllowed], and [connection]'s provider can write (null: any connection). */
+    fun writesAllowed(connection: SecretConnection?): Boolean =
+        writesAllowed && (connection == null || SecretProvider.byId(connection.providerId)?.supportsWrites != false)
+
+    /** Whether the provider with [providerId] can write and *Read-only* is off. */
+    fun writesAllowed(providerId: String): Boolean = writesAllowed && SecretProvider.byId(providerId)?.supportsWrites != false
+
     /** Every write passes here, so *Read-only* holds whatever UI asked for it. */
-    private fun checkWritesAllowed() {
+    private fun checkWritesAllowed(connection: SecretConnection) {
         if (!writesAllowed) {
             throw SecretProviderException(
                 SecretProviderException.Kind.CONFIGURATION,
                 "Read-only is on (Settings › Tools › EnvBridge): this IDE doesn't create, change, move or delete secrets and environments",
             )
         }
+        val provider = SecretProvider.byId(connection.providerId)
+        if (provider?.supportsWrites == false) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "${provider.displayName} connections are read-only in this version of EnvBridge",
+            )
+        }
     }
 
     /** Creates an environment (see [SecretsClient.createEnvironment]) and forgets the connection's cached projects. Off the EDT. */
     fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment {
-        checkWritesAllowed()
+        checkWritesAllowed(connection)
         return client(connection).createEnvironment(projectId, name, slug).also { invalidate(connection.id) }
     }
 

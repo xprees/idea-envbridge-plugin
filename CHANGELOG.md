@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **HashiCorp Vault and OpenBao** (KV v2, namespaces), reading and injecting: `vault://secret/app/db#password`, `#*` for every
+  field of a secret and `#**` for every secret below a path, `?namespace=` and `?connection=`. Sign in with OIDC in the system
+  browser (the Vault CLI's redirect URI), a token or the Vault CLI's `~/.vault-token`, AppRole, userpass or LDAP; tokens and
+  passwords only in the IDE's password storage, renewable tokens renewed before they expire. Mounts are listed from the server or
+  set on the connection. Creating and changing Vault secrets comes later; those actions are off for Vault connections
+- Choosing the secret manager when adding a connection, once there are several
+
 ### Changed
 
 - New plugin and tool window icons: a suspension bridge carrying a key

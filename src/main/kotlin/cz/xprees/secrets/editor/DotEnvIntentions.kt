@@ -127,7 +127,8 @@ class DotEnvExtractToSecretIntention : IntentionAction {
         val line = lineAtCaret(editor, file) ?: return false
         if (line.binding != null || !isPlaintext(project, line)) return false
         // Read-only (settings): no writes, so no extracting
-        return SecretsService.getInstance().writesAllowed && KeysIndex.getInstance(project).current() != null
+        val snapshot = KeysIndex.getInstance(project).current() ?: return false
+        return SecretsService.getInstance().writesAllowed(snapshot.providerId)
     }
 
     override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
