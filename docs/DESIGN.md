@@ -49,6 +49,9 @@ cz.xprees.secrets
   onepassword/ OnePasswordProvider (op CLI, Connect)
   doppler/     DopplerProvider, DopplerClient, DopplerApi / DopplerHttp (REST v3), DopplerAuth (CLI browser flow, tokens),
                DopplerGrammar (doppler://), DopplerProjectFile (doppler.yaml)
+  aws/         AwsSecretsManagerProvider, AwsClient, AwsApi / AwsHttp (JSON 1.1), AwsSigV4 (request signing, no SDK),
+               AwsAuth (access keys, environment), AwsProfiles (~/.aws files), AwsCli (export-credentials),
+               AwsGrammar and AwsSecretNames (aws-sm://, name <-> project/environment)
   run/         launch-time injection: SecretsProgramRunner (clone-and-delegate), EnvPatcher extension point, per-tech patchers
   ui/          tool window, settings pages, login dialogs, notifications
   editor/      (M3) completion, inlays, hover, inspections, console masking, status bar
@@ -716,6 +719,234 @@ note}}`), deleting with a null value, notes and error bodies (`messages`). The m
 - `ENVBRIDGE_ENVIRONMENT` (or `INFISICAL_ENVIRONMENT`) on a run configuration picks the config (the core's override variable); `DOPPLER_CONFIG` /
   `DOPPLER_PROJECT` / `DOPPLER_TOKEN` in the IDE's or run configuration's environment are not read.
 
+## Fifth provider: AWS Secrets Manager
+
+Chosen after Doppler because it is where most teams on AWS already keep application secrets, and JetBrains has no
+integration that injects them into run configurations. It is the first provider whose API needs **request signing** (AWS
+Signature Version 4) rather than a bearer token.
+
+**Scope, first version:** reading and injecting, plus every write the tool window offers (create, edit, rename, move, copy,
+delete a key, new environment). Integration tests run against **LocalStack** in Docker; no real AWS account was used.
+
+**No AWS SDK.** The SDK for Java v2 would add several megabytes and dozens of transitive artifacts for five API calls. The
+plugin signs requests itself (`AwsSigV4`, about 150 lines, unit-tested against the AWS SigV4 test suite) and speaks the JSON 1.1
+protocol with the JDK HttpClient like the other providers.
+
+### Model mapping
+
+The usual way to keep application configuration in Secrets Manager is **one secret per application and environment holding a
+JSON object of key/value pairs** (the console's "key/value" secret type), named `<app>/<env>`: `myapp/dev` →
+`{"DB_PASSWORD": "…", "API_KEY": "…"}`. EnvBridge maps that convention directly:
+
+| EnvBridge | AWS Secrets Manager |
+|---|---|
+| Connection | An AWS account (credentials) in one region (the endpoint `https://secretsmanager.<region>.amazonaws.com`) |
+| Project | The **name prefix**: everything before the last `/` of a secret's name (`myapp` for `myapp/dev`, `team/myapp` for `team/myapp/dev`, `/prod` for `/prod/web`). Names without `/` belong to the project *(no prefix)* (ID `~`, a character AWS names can't contain) |
+| Environment | The **last segment** of the name (`dev`, `stg`, `prod`). The secret *is* the environment: `myapp/dev` |
+| Folder | None: `listFolders` is empty; any path other than `/` is NOT_FOUND |
+| Secret (key = value) | A **top-level field of the secret's JSON object**. String values as they are; numbers, booleans, objects and arrays as their JSON text (as for Vault). A secret whose `SecretString` is not a JSON object (a **plain string**) is listed as a single key named after the name's last segment (`STRIPE_KEY` for `myapp/STRIPE_KEY`) |
+
+Alternatives considered:
+
+- **Project = the secret, environment = none** (like 1Password's single environment): simplest, but loses the environment
+  switcher, the prod guard by environment name and `aws-sm://#KEY` references that follow the selected environment, which is
+  what makes `<app>/<env>` naming useful in the IDE.
+- **Project = first segment, environment = second, folders = the rest** (`myapp/dev/db` → folder `/db`): fits `app/env/component`
+  names but not the equally common deeper prefixes (`team/myapp/dev`) and leaves single- and two-segment names awkward. "Last
+  segment is the environment" works for any depth of prefix, and the name is always `project + "/" + environment`, so a
+  reference written with the full name maps back without asking AWS.
+- **One AWS secret per variable** (`myapp/dev/DB_PASSWORD`, plain strings): supported as a side effect (project `myapp/dev`,
+  each variable an "environment" with one key), but not the primary model: every variable would be a separate API call and a
+  separate secret billed monthly.
+- **Environment-first names** (`prod/myapp`) map inverted (project `prod`, environment `myapp`). References with the full name
+  still work; a later version could add a per-connection "name layout" option.
+
+Names AWS allows but the mapping can't express are left out of listings and refused in references: a name ending with `/` or
+containing `//`. Secrets scheduled for deletion are not listed (ListSecrets' default). **Binary secrets** (`SecretBinary`) are
+not supported: reading one is CONFIGURATION "holds a binary value, which EnvBridge doesn't read"; nothing writes them.
+
+### References
+
+Scheme `aws-sm` (`AwsGrammar`). The secret is named the way AWS users name it (`aws secretsmanager get-secret-value --secret-id
+myapp/dev`), the key after `#`:
+
+```
+aws-sm://myapp/dev#DB_PASSWORD               key DB_PASSWORD of secret myapp/dev
+aws-sm://team/myapp/prod#DB_PASSWORD         prefix team/myapp, environment prod
+aws-sm://myapp/dev#*                         every key of myapp/dev (scope import; ** means the same)
+aws-sm://#DB_PASSWORD                        key DB_PASSWORD of the bound secret (bound prefix + selected environment)
+aws-sm://#DB_PASSWORD?env=prod               bound prefix, environment prod (?project=<prefix> names another prefix)
+aws-sm://myapp/dev#DB_PASSWORD?connection=Work
+```
+
+- The full name pins prefix and environment; `aws-sm://#KEY` takes both from the binding, so it follows the environment picked
+  in the status bar, like `doppler://KEY`. `build()` writes the short form only when the scope is the bound project *and*
+  environment (as `PathGrammar` does), else the full name.
+- `?env=` / `?project=` exist for references that name only one of the two, which the core produces when it rewrites
+  references after a move (an omitted project stays omitted). A name can't be combined with them (it already says both);
+  `?env=` can't contain `/`. A name without `/` can't be told apart from a one-segment short form, which is why the partial
+  forms are parameters rather than path segments.
+- A name is written raw when it uses only the characters AWS allows in names (letters, digits, `/_+=.@-`); anything else
+  (managed secrets' `!`, a `#` or `?` in a key) is percent-encoded. Keys are encoded like other providers' segments; `%2A` is a
+  key called `*`.
+- Refused with a message: no `#` ("add #KEY, or #* for every key"), an empty key, whitespace, `*` inside the name, a name
+  ending with `/` or containing `//`, unknown parameters. The query may follow the name or the key (as in `vault://`).
+- **No `?region=`**: a connection is one region; a secret in another region is reached through a connection for that region
+  (`?connection=`). Cross-region references would need the client to sign for another endpoint with the same credentials,
+  which the SPI's scope doesn't carry.
+
+### API (JSON 1.1: `POST /`, `Content-Type: application/x-amz-json-1.1`, `X-Amz-Target: secretsmanager.<Action>`)
+
+| Purpose | Action |
+|---|---|
+| Projects and environments | `ListSecrets` `{MaxResults: 100, NextToken, Filters: [{Key: "name", Values: [prefix]}]}` (the connection's optional name prefix), paged, ≤ 100 pages (10 000 secrets; more is CONFIGURATION "set a name prefix") |
+| Keys of an environment | `GetSecretValue` `{SecretId: name}` → `SecretString` / `SecretBinary`, `VersionId` |
+| Create an environment, or the first key of a missing secret | `CreateSecret` `{Name, SecretString, ClientRequestToken}` (fails with `ResourceExistsException` if it exists: an atomic create) |
+| Change keys | `PutSecretValue` + `UpdateSecretVersionStage`, see *Writes* |
+| Sign-in check | `ListSecrets` `{MaxResults: 1}` |
+
+Errors (`__type`, possibly prefixed `…#`, or `x-amzn-ErrorType`; message from `message` / `Message`, capped at 300 characters):
+`UnrecognizedClientException`, `InvalidSignatureException`, `SignatureDoesNotMatch`, `ExpiredTokenException`,
+`InvalidClientTokenId`, `IncompleteSignature`, `MissingAuthenticationToken` → AUTH_REQUIRED (with "check the system clock" for
+an expired signature); `AccessDeniedException` and any 403 → FORBIDDEN; `DecryptionFailure` → FORBIDDEN ("can't decrypt with
+its KMS key"); `ResourceNotFoundException` → NOT_FOUND; `ThrottlingException` / `TooManyRequestsException` / 429 → SERVER
+("AWS throttled the request; retry in a moment"); other 4xx → CONFIGURATION; 5xx → SERVER; I/O → NETWORK (`NetworkErrors`).
+AWS messages name secrets and ARNs, never values.
+
+`AwsHttp` follows `DopplerHttp`: JDK HttpClient, IDE proxy and certificates, no redirects, HTTP/1.1, 10 s / 30 s timeouts,
+user agent `EnvBridge-IntelliJ`. Credentials are used only to compute the `Authorization` header (the secret access key never
+leaves the IDE; the session token goes in `X-Amz-Security-Token`). Nothing is put in URLs; bodies are not logged.
+
+### Signing (`AwsSigV4`)
+
+Signature Version 4 as specified in the AWS General Reference: canonical request (method, canonical URI, sorted query, sorted
+lower-case headers with trimmed values, signed header list, hex SHA-256 of the body) → string to sign (`AWS4-HMAC-SHA256`,
+`X-Amz-Date`, credential scope `<date>/<region>/secretsmanager/aws4_request`, hash of the canonical request) → signing key
+(HMAC-SHA256 chain `AWS4<secret>` → date → region → service → `aws4_request`) → `Authorization: AWS4-HMAC-SHA256
+Credential=…, SignedHeaders=…, Signature=…`. Signed headers: `content-type`, `host` (with the port when not the default),
+`x-amz-date`, `x-amz-target` and, for temporary credentials, `x-amz-security-token`. The clock is injectable for tests.
+
+Tests: the cases `get-vanilla`, `get-vanilla-query-order-key-case`, `get-vanilla-with-session-token`, `post-vanilla`,
+`post-vanilla-query`, `post-header-key-sort` and `post-x-www-form-urlencoded` of the AWS SigV4 test suite (the copy in
+`awslabs/aws-c-auth`, `tests/aws-signing-test-suite/v4`: canonical request, string to sign and signature each compared), plus
+the mock server re-computing every request's signature with the same secret.
+
+### Region and endpoint
+
+The connection's address is the regional endpoint; the presets are the common regions (`us-east-1` … `sa-east-1`). The region is
+the connection's *Region* option if set, else read from the host (`secretsmanager[-fips].<region>.amazonaws.com[.cn]`), else
+CONFIGURATION "set the region". A custom address (LocalStack `http://localhost:4566`, a VPC endpoint
+`https://vpce-….secretsmanager.<region>.vpce.amazonaws.com`) is allowed with the usual rule: `https://`, plain `http://` only
+for loopback.
+
+### Sign-in
+
+| Method | Credentials | Where they live |
+|---|---|---|
+| **Access key** (default) | Access key ID, secret access key, optional session token | All three are secret options (PasswordSafe). The access key ID isn't secret by AWS's definition, but it identifies the account's user, so it isn't put in settings either. Sign-out forgets them (never deactivates the key: it is the user's own) |
+| **AWS profile** | A profile of `~/.aws/credentials` / `~/.aws/config` (`AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` honoured), name in the connection (default `default`) | Read **at use time**, never copied to PasswordSafe or settings. Static keys (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) are read from the files directly. Profiles that get credentials another way (`sso_session` / `sso_start_url`, `role_arn`, `credential_process`, `web_identity_token_file`) are handed to the AWS CLI: `aws configure export-credentials --profile <name> --format process` (AWS CLI v2.9+), whose stdout is the credential JSON. argv carries only the profile name; stdin is closed; stdout is never logged; temporary credentials are kept in memory until five minutes before they expire |
+| **Environment variables** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` of the IDE process | Read at use time; nothing stored |
+
+*Sign In* checks the credentials with `ListSecrets {MaxResults: 1}` and shows the access key ID shortened (`AKIA…WXYZ`) and the
+region. Profile and environment connections store a "signed in" marker in the session slot (as the 1Password app method does),
+so background features (the keys index) don't run the AWS CLI for a connection nobody signed in to; sign-out removes it and the
+in-memory credentials. An `aws` CLI failure that says the SSO session expired or the token is invalid is AUTH_REQUIRED with "run
+`aws sso login --profile <name>`"; a missing CLI is CONFIGURATION with an install hint. The CLI is found like `op`: PATH, then the
+usual install locations. Variables that would make it use other credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_SESSION_TOKEN`, `AWS_PROFILE`) are removed from its environment.
+
+Setup links: the IAM console's *Security credentials* page (`https://console.aws.amazon.com/iam/home#/security_credentials`)
+and the AWS docs on access keys and on named profiles / IAM Identity Center.
+
+**IAM Identity Center (SSO) in the IDE, later.** v1 relies on `aws sso login` for SSO profiles. A built-in browser sign-in
+would follow the CLI's OIDC **device authorization** flow: `sso-oidc` `RegisterClient` (public client, cached until it expires)
+→ `StartDeviceAuthorization` with the start URL → open `verificationUriComplete` in the system browser and show the user code
+(as the Doppler sign-in does) → poll `CreateToken` (grant type `urn:ietf:params:oauth:grant-type:device_code`, honouring
+`slow_down`) → keep the access and refresh tokens in PasswordSafe → `sso` `GetRoleCredentials` (account ID + role name) for
+short-lived keys, refreshed before they expire. Those endpoints are bearer-token APIs (no SigV4), so they fit the existing HTTP
+code; the open questions are the account/role picker and refresh-token support per region.
+
+### Writes
+
+All writes go through `SecretsService` (*Read-only* and the prod guard apply) and are explicit user actions. Every write is a
+**read-modify-write of one secret's JSON object** with a real check-and-set:
+
+1. `GetSecretValue` → the JSON object and its `VersionId` *V0* (the version that has `AWSCURRENT`).
+2. Change the object (add / change / rename / remove keys; untouched keys keep their JSON types and order).
+3. `PutSecretValue` `{SecretString, ClientRequestToken: <new UUID V1>, VersionStages: ["ENVBRIDGE_PENDING"]}`: a new version
+   that is **not yet current** (readers still get *V0*).
+4. `UpdateSecretVersionStage` `{VersionStage: "AWSCURRENT", MoveToVersionId: V1, RemoveFromVersionId: V0}`. AWS documents
+   that this fails if `AWSCURRENT` is attached to another version than `RemoveFromVersionId`, so if anyone changed the secret
+   after step 1, nothing becomes current and the user gets CONFIGURATION "the secret was changed meanwhile; refresh and try
+   again". AWS moves `AWSPREVIOUS` to *V0* by itself.
+5. `UpdateSecretVersionStage` `{VersionStage: "ENVBRIDGE_PENDING", RemoveFromVersionId: V1}`, best effort (also after a failed
+   step 4), so no helper label stays behind; a version without labels is deprecated and removed by AWS.
+
+What AWS offers was checked: `PutSecretValue` and `UpdateSecret` have no condition on the current version
+(`ClientRequestToken` only makes a retry idempotent), so a plain `PutSecretValue` would silently overwrite a concurrent change.
+The staging-label move is the same mechanism rotation functions use, and it costs one extra permission:
+`secretsmanager:UpdateSecretVersionStage`. Without it, step 4 is FORBIDDEN and the message says so ("nothing changed; EnvBridge
+needs secretsmanager:UpdateSecretVersionStage to write safely"); there is deliberately no fallback to an unchecked write. The
+staging labels `AWSPENDING` (rotation's) are never touched. LocalStack implements the same check (verified by the integration
+test that writes a version meanwhile).
+
+| Operation | Behaviour |
+|---|---|
+| `createSecret(key, value)` | Adds the key to the environment's JSON object; refused (CONFIGURATION) if the key exists. If the secret doesn't exist (yet), `CreateSecret` with `{key: value}`. A plain-string secret is refused ("holds a plain string, not key/value JSON"): EnvBridge never converts a secret's format |
+| `updateSecret(key, value, comment, newKey)` | Changes the value (as a JSON string; a value left as it was keeps its JSON type). With `newKey`: renamed in the same write, keeping its place; refused before writing if `newKey` exists. A plain-string secret's single key: its value is replaced (`PutSecretValue` of the plain string, with the same check-and-set); renaming it is refused (its name is the secret's) |
+| `deleteSecret(key)` | Removes the key. The last key leaves `{}`. **The AWS secret itself is never deleted** (`DeleteSecret` is not used at all; even with a recovery window, deleting a secret other services may read is not an IDE's call). A plain-string secret's key: refused |
+| `moveSecrets` | Within a connection (other environment or prefix): every key written to the destination in **one** check-and-set write (overwrite: as given; without it, any existing key refuses the whole move before anything is written), then the source re-read and the keys removed in **another**. A failed removal is reported per key in `MoveResult.notRemoved`, both copies kept. The destination secret is created if missing |
+| `copySecrets` | One check-and-set write to the destination with the values as stored (JSON types kept); keys that exist there fail individually |
+| `createEnvironment(projectId, name, slug)` | `CreateSecret` `<prefix>/<slug>` with `{}` (Description = the dialog's name when it differs from the slug). The slug must be valid in an AWS name and contain no `/` |
+
+Comments: Secrets Manager has no per-key comments, so they are ignored (as for Vault); the secret's `Description` is not
+shown (it would cost a `DescribeSecret` per listing). Key names are free-form JSON keys; only blank names and names with
+surrounding blanks are refused (`renameTarget`), since the New Secret dialog already checks env-var style names.
+
+### Dashboard
+
+`https://<region>.console.aws.amazon.com/secretsmanager/secret?name=<url-encoded name>&region=<region>`, or the region's secret
+list (`…/secretsmanager/listsecrets?region=<region>`) without a scope. Only for `amazonaws.com` endpoints; LocalStack and other
+custom addresses get none.
+
+### Tests
+
+- `AwsSigV4Test`: the test-suite vectors above (canonical request, string to sign, signature), the signing key derivation.
+- `AwsGrammarTest`: full names with any prefix depth, leading `/`, `#*` / `#**`, the short `#KEY` form, percent-encoding of
+  names and keys, `?connection=` before and after the key, round trips, `build()` with and without a binding, and every
+  malformed form with its message; name ↔ project/environment mapping.
+- `MockAwsSecretsManager`: a JDK HttpServer speaking JSON 1.1. It **verifies each request's SigV4 signature** with the known
+  secret (and rejects a wrong one with `InvalidSignatureException`, an unknown key with `UnrecognizedClientException`), checks
+  the credential scope's region and service, and implements `ListSecrets` (pages, name filter), `GetSecretValue`,
+  `CreateSecret`, `PutSecretValue` and `UpdateSecretVersionStage` (with AWS's `RemoveFromVersionId` check); `DeleteSecret` is
+  answered with an error and asserted never to be called. It can deny actions per secret (`AccessDeniedException`), throttle,
+  and change a secret "meanwhile".
+- `AwsPlatformTest`: registration, presets and setup links; listing prefixes / environments / keys (JSON types, plain strings,
+  binary refused, *(no prefix)*), pagination, the name-prefix option; each sign-in method (access key with and without session
+  token, profile with static keys, profile through a fake `aws` CLI printing `export-credentials` JSON, environment variables);
+  values never in URLs, `toString` or exception messages; error mapping (403 AccessDenied, ResourceNotFound, throttling, wrong
+  key); writes (create, update, rename, delete, move, copy, new environment, conflicts refused before writing, the check-and-set
+  refusing a concurrent change with nothing changed, the helper label removed); *Read-only*; launches resolving `aws-sm://`
+  references (full names, short form following the bound environment, scope import, fail closed, *Only use the bound project*).
+- `AwsIntegrationTest` against LocalStack (`scripts/integration/start.sh` starts `localstack/localstack:4.14.0` with only
+  Secrets Manager and seeds two secrets): listing, reading, launches, writes including the check-and-set against a real
+  implementation of `UpdateSecretVersionStage`.
+
+### Known limits and unverified assumptions
+
+- **Not tested against a real AWS account.** The JSON shapes, error names and the staging-label check follow the AWS API
+  reference as remembered and LocalStack 4.14's behaviour. Real AWS error messages for the failed staging move may differ from
+  LocalStack's ("Version stage AWSCURRENT not found in version …"); any `InvalidParameterException` from step 4 is treated as a
+  concurrent change.
+- SSO / assume-role profiles depend on the AWS CLI v2 (`export-credentials`, 2.9+); that path is tested with a fake CLI only.
+  `credential_process` is not run by EnvBridge directly (the CLI runs it).
+- No cross-region references; one connection per region. No `?versionStage=` / `?versionId=` (always `AWSCURRENT`).
+- The keys index (completion) reads every environment of the bound project every 10 minutes: one `GetSecretValue` each. Binding
+  the *(no prefix)* project of a large account therefore makes many calls (Secrets Manager bills API calls).
+- Listings are capped at 10 000 secrets per connection; use the name prefix option for larger accounts.
+- Secrets replicated to other regions are read from the connection's region only; replica-region writes are refused by AWS
+  and come back as CONFIGURATION with AWS's message.
+
 ## Threat model (summary)
 
 | Threat | Mitigation |
@@ -729,6 +960,8 @@ note}}`), deleting with a null value, notes and error bodies (`messages`). The m
 | Plaintext transport | `https://` required, except loopback. The IDE's proxy and certificate settings apply (self-hosted CAs). |
 | Accidental production use | Prod guard (M3) for launches and for creating secrets in production-like environments; no edits or deletes. |
 | Secrets on child process command lines (1Password CLI) | Tokens go only into the child's environment; values written go on stdin as item JSON (never `field=value` assignments); argv carries names and flags only; inherited `OP_*` credentials are removed. |
+| AWS credentials leaking through signing or the CLI | The secret access key only computes the SigV4 signature and is never sent; `aws configure export-credentials` gets only the profile name on argv, its stdout (credentials) is parsed in memory and never logged; profile credentials are read at use time, never copied to settings or PasswordSafe. |
+| A concurrent change to an AWS secret silently overwritten by a read-modify-write | Writes go to a version that isn't current yet and become current only through `UpdateSecretVersionStage` with `RemoveFromVersionId` = the version read; AWS refuses the move if anything else became current meanwhile. |
 | Phishing of a device-code style sign-in (Doppler) | The IDE shows the code it asked for and tells the user to approve only if the browser shows the same one; the polling code never leaves the IDE except to Doppler, in a request body; only an `https` sign-in address is opened. |
 | Untrusted repository ships run configurations with references | Running a configuration hands the referenced secrets to its code, as running it with any environment would. References are visible in the run configuration, and the IDE's Trusted Projects mode keeps untrusted projects from running anything. |
 

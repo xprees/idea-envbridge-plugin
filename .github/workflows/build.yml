@@ -133,7 +133,7 @@ jobs:
           name: tests-result
           path: ${{ github.workspace }}/build/reports/tests
 
-  # Integration tests against real servers in Docker: HashiCorp Vault, OpenBao and a self-hosted Infisical
+  # Integration tests against real servers in Docker: HashiCorp Vault, OpenBao, a self-hosted Infisical and LocalStack (AWS)
   # (scripts/integration/start.sh starts and seeds them; the same works locally)
   integration:
     name: Integration tests
@@ -166,7 +166,7 @@ jobs:
         with:
           cache-read-only: true
 
-      - name: Start Vault, OpenBao and Infisical
+      - name: Start Vault, OpenBao, Infisical and LocalStack
         run: scripts/integration/start.sh
 
       # 1Password's CLI, for the 1Password tests (only when the repository has a service account token for them)
@@ -192,7 +192,7 @@ jobs:
       - name: Server logs
         if: ${{ failure() }}
         run: |
-          for c in envbridge-it-vault envbridge-it-openbao envbridge-it-infisical; do
+          for c in envbridge-it-vault envbridge-it-openbao envbridge-it-infisical envbridge-it-localstack; do
             echo "::group::$c"; docker logs --tail 200 "$c" 2>&1 || true; echo "::endgroup::"
           done
 

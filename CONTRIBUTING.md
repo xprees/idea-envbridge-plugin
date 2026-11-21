@@ -77,9 +77,10 @@ Every change in behaviour needs a test that fails without it.
 
 - Pure logic (`core/model`, `core/reference`, `core/resolve/EnvResolution`, API parsing, project files) is tested with plain JUnit.
 - Code that needs the platform extends `BasePlatformTestCase`. Network code is unit-tested against fakes (`MockInfisical`,
-  `MockVault`, `MockDoppler`), never against a real instance.
+  `MockVault`, `MockDoppler`, `MockAwsSecretsManager`), never against a real instance.
 - **Integration tests** (`src/test/kotlin/.../integration/`, classes ending in `IntegrationTest`) run the providers and the launch
-  path against real servers in Docker: HashiCorp Vault, OpenBao and a self-hosted Infisical, seeded with throwaway test data.
+  path against real servers in Docker: HashiCorp Vault, OpenBao, a self-hosted Infisical and LocalStack (AWS Secrets Manager),
+  seeded with throwaway test data.
   Doppler can't be self-hosted, so it has mock-based tests only.
   `./gradlew test` leaves them out; CI runs them in the *Integration tests* job. Locally:
 

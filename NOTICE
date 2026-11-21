@@ -19,5 +19,12 @@ only to describe the service this plugin works with. The plugin contains no Dopp
 to the documented Doppler API and reimplements documented behaviour of the Doppler CLI (Apache-2.0 licensed,
 https://github.com/DopplerHQ/cli): the browser sign-in (`doppler login`) and the doppler.yaml repository file.
 
+It is likewise not affiliated with, endorsed by or sponsored by Amazon Web Services, Inc. "AWS" and "AWS Secrets Manager" are
+trademarks of Amazon.com, Inc. or its affiliates, used only to describe the service this plugin works with. The plugin contains
+no AWS logos, brand assets or SDK code; it signs requests with its own implementation of the documented Signature Version 4
+process, talks to the documented Secrets Manager API and runs the AWS CLI installed by the user. Its tests include cases of the
+AWS SigV4 test suite as published in the awslabs/aws-c-auth repository (Apache-2.0, Copyright Amazon.com, Inc. or its
+affiliates), in src/test/resources/aws-sigv4.
+
 The plugin bundles no third-party libraries. At run time it uses libraries that ship with the IntelliJ Platform (Gson,
 SnakeYAML, the JDK's HTTP server), under their own licenses.

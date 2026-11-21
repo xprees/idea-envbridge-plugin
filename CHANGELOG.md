@@ -11,6 +11,15 @@
   secret's last field deletes the secret for good
 - **1Password: Open in Dashboard** for connections through the 1Password app or a service account: an item opens through its
   1Password private link, a vault in your account's web app (the account comes from `op whoami`). Connect servers have no link
+- **AWS Secrets Manager** (unofficial integration), reading, injecting and writing. A connection is an account in one region; a
+  secret named `<prefix>/<env>` holding key/value JSON is environment `<env>` of project `<prefix>`, and its fields are the keys
+  (plain-string secrets are one key). References `aws-sm://myapp/dev#DB_PASSWORD`, `aws-sm://myapp/dev#*` for every key,
+  `aws-sm://#KEY` for the bound secret (following the selected environment), `?connection=`. Sign in with an access key (kept in
+  the IDE's password storage), an AWS profile (static keys from `~/.aws`; SSO, role and `credential_process` profiles through
+  the AWS CLI v2) or the IDE's environment variables. Create, edit, rename, move, copy and delete keys and create environments,
+  each write checked against concurrent changes (staging-label check-and-set); AWS secrets are never deleted. Requests are signed
+  by the plugin (AWS Signature Version 4, tested against the AWS test suite), so no AWS SDK is bundled. Tested against a
+  signature-checking mock and LocalStack
 - **Secrets tool window, compact and keyboard-friendly.** The copy variants are in a *Copy* submenu; the toolbar keeps the everyday
   actions (sign-out stays in the settings and the connection's menu). Copy, cut and paste secrets between folders and environments
   (*Paste* copies or moves them, with confirmation). The IDE's standard shortcuts from your keymap work in the tree: Alt+Insert

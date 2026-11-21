@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seeds fresh Vault, OpenBao and Infisical servers with the data the integration tests read, and writes the connection
+# Seeds fresh Vault, OpenBao, Infisical and LocalStack servers with the data the integration tests read, and writes the connection
 # details to an env file (default build/integration.env) that `./gradlew integrationTest` passes to the tests.
 #
 # The servers are started by scripts/integration/start.sh locally, or by the CI workflow's service containers. Every server is
@@ -8,6 +8,7 @@
 #   VAULT_ADDR_IT     Vault dev server, root token VAULT_TOKEN_IT      (default http://127.0.0.1:8200, root-token)
 #   OPENBAO_ADDR_IT   OpenBao dev server, root token OPENBAO_TOKEN_IT  (default http://127.0.0.1:8300, root-token)
 #   INFISICAL_URL_IT  a fresh, not yet bootstrapped Infisical          (default http://127.0.0.1:8080)
+#   LOCALSTACK_URL_IT LocalStack with Secrets Manager                   (default http://127.0.0.1:4566)
 #
 # Only throwaway test credentials are involved; nothing here is a real secret.
 set -euo pipefail
@@ -18,6 +19,7 @@ VAULT_TOKEN_IT=${VAULT_TOKEN_IT:-root-token}
 OPENBAO_ADDR_IT=${OPENBAO_ADDR_IT-http://127.0.0.1:8300}
 OPENBAO_TOKEN_IT=${OPENBAO_TOKEN_IT:-root-token}
 INFISICAL_URL_IT=${INFISICAL_URL_IT-http://127.0.0.1:8080}
+LOCALSTACK_URL_IT=${LOCALSTACK_URL_IT-http://127.0.0.1:4566}
 
 mkdir -p "$(dirname "$OUT")"
 : > "$OUT"
@@ -156,6 +158,35 @@ if [[ -n $INFISICAL_URL_IT ]]; then
     echo "ENVBRIDGE_IT_INFISICAL_ORGANIZATION=$org"
   } >> "$OUT"
   echo "Seeded Infisical at $INFISICAL_URL_IT (project $project)"
+fi
+
+# ---- LocalStack (AWS Secrets Manager) ----------------------------------------------------------------------------------
+
+# Calls the Secrets Manager JSON 1.1 API: action, json body. LocalStack accepts any signature; the credential scope names the
+# region, and access key "test" is LocalStack's default account.
+smapi() {
+  curl --fail-with-body -sS -X POST "$LOCALSTACK_URL_IT/" \
+    -H "Content-Type: application/x-amz-json-1.1" -H "X-Amz-Target: secretsmanager.$1" -H "X-Amz-Date: 20260101T000000Z" \
+    -H "Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/secretsmanager/aws4_request, SignedHeaders=host;x-amz-date, Signature=0000" \
+    -d "$2"
+}
+
+if [[ -n $LOCALSTACK_URL_IT ]]; then
+  for _ in $(seq 1 90); do
+    if curl -fsS "$LOCALSTACK_URL_IT/_localstack/health" 2>/dev/null | grep -Eq '"secretsmanager": *"(available|running)"'; then break; fi
+    sleep 2
+  done
+  # A JSON key/value secret per environment, and a plain-string secret
+  smapi CreateSecret '{"Name":"envbridge-it/dev","ClientRequestToken":"00000000-0000-4000-8000-000000000001","SecretString":"{\"DB_PASSWORD\":\"dev-db-pass\",\"API_KEY\":\"dev-api-key\",\"PORT\":5432}"}' >/dev/null
+  smapi CreateSecret '{"Name":"envbridge-it/prod","ClientRequestToken":"00000000-0000-4000-8000-000000000002","SecretString":"{\"DB_PASSWORD\":\"prod-db-pass\"}"}' >/dev/null
+  smapi CreateSecret '{"Name":"envbridge-it-plain/TOKEN","ClientRequestToken":"00000000-0000-4000-8000-000000000003","SecretString":"plain-token"}' >/dev/null
+  {
+    echo "ENVBRIDGE_IT_AWS_ENDPOINT=$LOCALSTACK_URL_IT"
+    echo "ENVBRIDGE_IT_AWS_REGION=us-east-1"
+    echo "ENVBRIDGE_IT_AWS_ACCESS_KEY_ID=test"
+    echo "ENVBRIDGE_IT_AWS_SECRET_ACCESS_KEY=test"
+  } >> "$OUT"
+  echo "Seeded LocalStack at $LOCALSTACK_URL_IT"
 fi
 
 echo "Wrote $OUT"

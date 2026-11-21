@@ -16,7 +16,7 @@ class SetupLinksTest : BasePlatformTestCase() {
 
     fun `test token methods link to where their credentials are made`() {
         val links = SecretProvider.all().flatMap { p -> p.authMethods.map { "${p.id}/${it.id}" to it.setupLinks } }.toMap()
-        for (method in listOf("doppler/token", "infisical/machine-identity", "vault/token", "vault/approle", "onepassword/service-account", "onepassword/connect")) {
+        for (method in listOf("doppler/token", "infisical/machine-identity", "vault/token", "vault/approle", "onepassword/service-account", "onepassword/connect", "aws-secrets-manager/access-key", "aws-secrets-manager/profile")) {
             assertTrue(method, links[method].orEmpty().isNotEmpty())
         }
         val doppler = links.getValue("doppler/token").first().url("https://api.doppler.com/v3/workplace")
