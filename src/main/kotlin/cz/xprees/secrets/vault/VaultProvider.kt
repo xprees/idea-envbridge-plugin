@@ -31,6 +31,9 @@ class VaultProvider : SecretProvider {
     override val id: String = ID
     override val displayName: String = "HashiCorp Vault / OpenBao"
     override val icon: Icon get() = SecretsIcons.PROVIDER
+    // A namespace / the single environment is account structure, not a selection users switch
+    override val switchesEnvironments: Boolean get() = false
+
     override val referenceScheme: String = "vault"
     override val referenceGrammar: ReferenceGrammar get() = VaultGrammar
     override val supportsWrites: Boolean get() = true

@@ -16,6 +16,7 @@ import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.provider.CopyResult
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.KeysIndex
@@ -43,6 +44,10 @@ class MoveSecretsDialog(
     private val pathField = TextFieldWithAutoCompletion.create(project, listOf(destination.path), true, destination.path)
     private val overwrite = JBCheckBox(SecretsBundle.message("move.overwrite"))
     private val updateReferences = JBCheckBox(SecretsBundle.message("move.update.references"), true)
+
+    /** Whether the move replaced secrets that existed at the destination (set during the move). */
+    @Volatile
+    private var overwrote = false
 
     init {
         title = SecretsBundle.message(if (copy) "copy.title" else "move.title", secrets.size)
@@ -100,6 +105,10 @@ class MoveSecretsDialog(
         val (result, plan) = try {
             ProgressManager.getInstance().runProcessWithProgressSynchronously<Pair<MoveResult, ReferenceUpdater.Plan?>, SecretProviderException>(
                 {
+                    if (overwrite.isSelected) {
+                        val there = SecretsService.getInstance().secrets(connection, target.copy(recursive = false), fresh = true).filter { it.path == target.path }.map { it.key }.toSet()
+                        overwrote = secrets.any { it.key in there }
+                    }
                     val moved = SecretsService.getInstance().moveSecrets(connection, source, secrets, target, overwrite.isSelected)
                     // The references of what moved (not what waits for approval or exists in both places now)
                     moved to moved.moved.takeIf { update && it.isNotEmpty() }?.let {
@@ -107,7 +116,8 @@ class MoveSecretsDialog(
                     }
                 },
                 SecretsBundle.message("move.progress", secrets.size),
-                true,
+                // Not cancellable: a move half done would go unreported
+                false,
                 project,
             )
         } catch (e: SecretProviderException) {
@@ -119,44 +129,37 @@ class MoveSecretsDialog(
         }
         plan?.let { ReferenceUpdater.getInstance(project).apply(it) }
         KeysIndex.getInstance(project).refreshAsync()
-        report(project, result, "${target.environment}:${target.path}", plan, UndoMove(project, connection, source, target, result.moved, update))
+        // Moving back can't restore secrets the move overwrote, so there is no Undo Move after overwriting
+        val undo = UndoMove(project, connection, source, target, result.moved, update).takeUnless { overwrite.isSelected && overwrote }
+        report(project, result, "${target.environment}:${target.path}", plan, undo)
         super.doOKAction()
         onMoved(target, result)
     }
 
-    /** Creates each secret at [target] with its value and comment; the originals stay. */
+    /** Copies the secrets to [target] as the provider stores them (fresh, not the values shown here); the originals stay. */
     private fun copySecrets(target: SecretScope) {
-        val failures = linkedMapOf<String, String>()
-        val copied = mutableListOf<String>()
-        try {
-            ProgressManager.getInstance().runProcessWithProgressSynchronously<Unit, SecretProviderException>(
-                {
-                    val service = SecretsService.getInstance()
-                    for (entry in secrets) {
-                        if (entry.valueHidden) {
-                            failures[entry.key] = SecretsBundle.message("copy.hidden")
-                            continue
-                        }
-                        try {
-                            service.createSecret(connection, target, entry.key, entry.value, entry.comment)
-                            copied += entry.key
-                        } catch (e: SecretProviderException) {
-                            failures[entry.key] = e.message ?: e.kind.name
-                        }
-                    }
-                },
+        val result = try {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously<CopyResult, SecretProviderException>(
+                { SecretsService.getInstance().copySecrets(connection, source, secrets, target) },
                 SecretsBundle.message("copy.progress", secrets.size),
-                true,
+                // Not cancellable: a write half done would go unreported
+                false,
                 project,
             )
         } catch (e: SecretProviderException) {
             setErrorText(e.message ?: e.kind.name)
             return
+        } catch (e: IllegalArgumentException) {
+            setErrorText(e.message)
+            return
         }
+        val copied = result.copied
+        val failures = result.failed
         KeysIndex.getInstance(project).refreshAsync()
         val where = "${target.environment}:${target.path}"
         val lines = buildList {
             if (copied.isNotEmpty()) add(SecretsBundle.message("copy.done", copied.joinToString(), where))
+            if (result.awaitingApproval.isNotEmpty()) add(SecretsBundle.message("move.approval", result.awaitingApproval.joinToString(), where))
             failures.forEach { (key, reason) -> add(SecretsBundle.message("copy.failed", key, reason)) }
         }
         if (failures.isEmpty()) SecretsNotifications.info(project, SecretsBundle.message("copy.title.done"), lines.joinToString("\n"))
@@ -170,12 +173,13 @@ class MoveSecretsDialog(
         fun report(project: Project, result: MoveResult, where: String, plan: ReferenceUpdater.Plan? = null, undo: UndoMove? = null) {
             val lines = buildList {
                 if (result.moved.isNotEmpty()) add(SecretsBundle.message("move.done", result.moved.joinToString(), where))
-                if (plan != null && !plan.isEmpty) add(plan.summary())
+                plan?.summary()?.takeIf { it.isNotEmpty() }?.let(::add)
                 if (result.awaitingApproval.isNotEmpty()) add(SecretsBundle.message("move.approval", result.awaitingApproval.joinToString(), where))
                 result.notRemoved.forEach { (key, reason) -> add(SecretsBundle.message("move.not.removed", key, reason)) }
             }
             if (result.notRemoved.isEmpty()) {
-                val actions = listOfNotNull(undo?.takeIf { result.moved.isNotEmpty() }?.let { SecretsBundle.message("move.undo.action") to it::run })
+                val actions = listOfNotNull(undo?.takeIf { result.moved.isNotEmpty() }?.let { SecretsBundle.message("move.undo.action") to it::run }) +
+                ReferenceUpdater.followUpActions(project, plan)
                 SecretsNotifications.info(project, SecretsBundle.message("move.title.done"), lines.joinToString("\n"), actions)
             } else {
                 SecretsNotifications.error(project, SecretsBundle.message("move.title.partial"), lines.joinToString("\n"))
@@ -212,7 +216,7 @@ class UndoMove(
                     back to back.moved.takeIf { updateReferences && it.isNotEmpty() }?.let { ReferenceUpdater.planInReadAction(project, connection, it, to, from) }
                 },
                 SecretsBundle.message("move.progress", keys.size),
-                true,
+                false,
                 project,
             )
         } catch (e: SecretProviderException) {

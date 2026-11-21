@@ -62,4 +62,28 @@ class MovedReferencesTest {
         val m = MovedReferences("infisical", setOf("DB_PASSWORD", "API_KEY"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/backend"), { it == null }, mapOf("DB_PASSWORD" to "PASS"))
         assertThat(m.rewriteText("A=infisical://DB_PASSWORD\nB=infisical://API_KEY", defaults)).isEqualTo("A=infisical://backend/PASS\nB=infisical://backend/API_KEY")
     }
+
+    @Test
+    fun `references that follow the selected environment are only rewritten when asked`() {
+        fun renamed(includeFollowing: Boolean) = MovedReferences(
+            "infisical", setOf("DB_PASSWORD"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/"), { true },
+            renames = mapOf("DB_PASSWORD" to "DATABASE_PASSWORD"),
+            followsSelection = { it.environment == null },
+            includeFollowing = includeFollowing,
+        )
+        val cautious = renamed(includeFollowing = false)
+        assertThat(cautious.rewriteText("A=infisical://DB_PASSWORD\nB=infisical://dev:DB_PASSWORD", defaults))
+            .isEqualTo("A=infisical://DB_PASSWORD\nB=infisical://dev:DATABASE_PASSWORD")
+        assertThat(cautious.followingSkipped).isEqualTo(1)
+        assertThat(renamed(includeFollowing = true).rewriteText("A=infisical://DB_PASSWORD", defaults)).isEqualTo("A=infisical://DATABASE_PASSWORD")
+    }
+
+    @Test
+    fun `a project named instead of its ID still matches`() {
+        val m = MovedReferences(
+            "infisical", setOf("DB_PASSWORD"), SecretScope("id-123", "dev", "/"), SecretScope("id-123", "dev", "/backend"), { true },
+            projectAliases = setOf("Private"),
+        )
+        assertThat(m.rewriteText("X=infisical://DB_PASSWORD?project=private", defaults)).isEqualTo("X=infisical://backend/DB_PASSWORD?project=private")
+    }
 }

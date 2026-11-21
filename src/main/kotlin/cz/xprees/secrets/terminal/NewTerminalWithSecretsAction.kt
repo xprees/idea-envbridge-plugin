@@ -40,27 +40,36 @@ class NewTerminalWithSecretsAction : DumbAwareAction(AllIcons.Nodes.Padlock) {
         val project = e.project ?: return
         TerminalSecrets.fetch(project) { resolved ->
             TerminalSecretsHandoff.offer(resolved.environment)
-            openTab(project)
+            if (!openTab(project)) {
+                // Nothing will take the offer: withdraw it, so a tab opened later doesn't get the secrets
+                TerminalSecretsHandoff.take()
+                SecretsNotifications.error(project, SecretsBundle.message("terminal.open.failed"), "")
+                return@fetch
+            }
             resolved.summary()?.let { SecretsNotifications.info(project, SecretsBundle.message("terminal.opened"), it) }
         }
     }
 
-    private fun openTab(project: Project) {
+    /** Opens a terminal tab; false when none could be opened. */
+    private fun openTab(project: Project): Boolean {
         val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TERMINAL_TOOL_WINDOW_ID)
         val newTab = ActionManager.getInstance().getAction(NEW_TAB_ACTION_ID)
         if (toolWindow != null && newTab != null) {
             toolWindow.activate {
                 ActionManager.getInstance().tryToExecute(newTab, null, toolWindow.component, ActionPlaceName, true)
             }
+            return true
         } else {
             // What the terminal's own New Tab action does (it replaces the deprecated TerminalToolWindowManager.createNewSession()).
             // The shell still starts through SecretsTerminalCustomizer, which takes the offer.
             try {
                 @Suppress("UnstableApiUsage")
                 TerminalToolWindowTabsManager.getInstance(project).createTabBuilder().requestFocus(true).createTab()
+                return true
             } catch (e: NoClassDefFoundError) {
                 // The terminal's frontend module isn't loaded here (e.g. the backend of a remote development session)
                 LOG.warn("Could not open a terminal tab", e)
+                return false
             }
         }
     }

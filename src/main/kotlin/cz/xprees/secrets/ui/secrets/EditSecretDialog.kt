@@ -132,17 +132,28 @@ class EditSecretDialog(
         Arrays.fill(chars, ' ')
         val comment = commentField.text.trim().takeIf { it != entry.comment }
         val update = newKey != null && updateReferences.isSelected
+        // Set when a rename went through but a later step of it failed (a provider's note, say): reported, not an error
+        var warning: String? = null
         val (outcome, plan) = try {
             ProgressManager.getInstance().runProcessWithProgressSynchronously<Pair<WriteOutcome, ReferenceUpdater.Plan?>, SecretProviderException>(
                 {
-                    val outcome = SecretsService.getInstance().updateSecret(connection, scope, entry.key, value, comment, newKey)
+                    val service = SecretsService.getInstance()
+                    val outcome = try {
+                        service.updateSecret(connection, scope, entry.key, value, comment, newKey)
+                    } catch (e: SecretProviderException) {
+                        // A rename that failed after renaming: the secret has its new name, so finish (references, refresh) and tell
+                        if (newKey == null || !renamed(newKey)) throw e
+                        warning = e.message ?: e.kind.name
+                        WriteOutcome.APPLIED
+                    }
                     // A rename waiting for approval hasn't happened yet: its references stay
                     outcome to newKey?.takeIf { update && outcome == WriteOutcome.APPLIED }?.let {
                         ReferenceUpdater.planRenameInReadAction(project, connection, scope, entry.key, it)
                     }
                 },
                 SecretsBundle.message("edit.secret.saving", entry.key),
-                true,
+                // Not cancellable: a write half done would go unreported
+                false,
                 project,
             )
         } catch (e: SecretProviderException) {
@@ -157,8 +168,16 @@ class EditSecretDialog(
             newKey != null -> SecretsBundle.message("edit.secret.renamed", entry.key, newKey, where)
             else -> SecretsBundle.message("edit.secret.saved", entry.key, where)
         }
-        SecretsNotifications.info(project, message, plan?.takeIf { !it.isEmpty }?.summary().orEmpty())
+        val details = listOfNotNull(warning, plan?.summary()?.takeIf { it.isNotEmpty() }).joinToString("\n")
+        SecretsNotifications.info(project, message, details, ReferenceUpdater.followUpActions(project, plan))
         super.doOKAction()
         onSaved(outcome, if (outcome == WriteOutcome.APPLIED) newKey ?: entry.key else entry.key)
     }
+
+    /** Whether the folder now has [newKey] and not the old key (read fresh). Off the EDT. */
+    private fun renamed(newKey: String): Boolean = runCatching {
+        val keys = SecretsService.getInstance().secrets(connection, scope.copy(recursive = false), fresh = true)
+            .filter { it.path == scope.path && it.origin == cz.xprees.secrets.core.model.SecretOrigin.LOCAL }.map { it.key }
+        newKey in keys && entry.key !in keys
+    }.getOrDefault(false)
 }

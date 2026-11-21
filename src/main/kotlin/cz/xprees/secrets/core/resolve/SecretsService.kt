@@ -1,5 +1,6 @@
 package cz.xprees.secrets.core.resolve
 
+import cz.xprees.secrets.core.provider.CopyResult
 import cz.xprees.secrets.core.provider.MoveResult
 
 import cz.xprees.secrets.core.model.ProviderEnvironment
@@ -91,6 +92,16 @@ class SecretsService {
         checkWritesAllowed(connection)
         try {
             return client(connection).moveSecrets(source, secrets, destination, overwrite)
+        } finally {
+            invalidate(connection.id)
+        }
+    }
+
+    /** Copies secrets to another folder or environment (see [SecretsClient.copySecrets]); forgets cached values. Off the EDT. */
+    fun copySecrets(connection: SecretConnection, source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope): CopyResult {
+        checkWritesAllowed(connection)
+        try {
+            return client(connection).copySecrets(source, secrets, destination)
         } finally {
             invalidate(connection.id)
         }

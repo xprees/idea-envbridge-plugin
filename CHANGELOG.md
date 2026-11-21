@@ -58,6 +58,21 @@
 
 ### Fixed
 
+- Settings › This Project: with the connection on *Automatic*, changes to the project, environment, folder or production
+  environments weren't saved (*Apply* stayed off)
+- Editing only a secret's comment (or leaving its value as shown) no longer replaces an Infisical or Doppler value that holds
+  `${…}` references with their expanded text
+- Moving or renaming secrets no longer rewrites references that name no environment: those follow the selected environment, so
+  rewriting them would break the other environments, where the secret didn't change. The notification counts them and offers
+  *Update Those Too*. References are matched as launches resolve them (the connection they name, a run configuration's
+  environment, a 1Password vault named instead of its ID)
+- Edit › Undo of reference updates keeps run configuration and terminal edits made after them
+- Copying secrets copies them as stored (Infisical duplicates them, Doppler copies raw values), so references in values keep
+  working; a secret that already exists at the destination is left alone
+- No *Undo Move* after a move that overwrote secrets at the destination (moving back couldn't restore them)
+- Saving, moving and copying can't be cancelled halfway any more, and a rename that went through although a later step failed
+  (Doppler's note) is finished and reported instead of shown as an error
+- *New Terminal with Secrets*: when no terminal tab can be opened, the secrets are withdrawn instead of going to the next tab
 - Settings: adding a connection could do nothing (seen in Rider): the provider chooser opened centred on the focus and could end up
   behind the Settings dialog; it now opens under the + button. An empty connection list has an *Add a connection…* link
 - Secrets tool window without connections: the empty tree has an *Add a connection…* link that opens the settings and starts adding

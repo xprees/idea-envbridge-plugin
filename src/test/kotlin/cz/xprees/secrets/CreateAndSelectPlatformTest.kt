@@ -285,6 +285,26 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
             .contains("\"shouldOverwrite\":false").contains("\"value\":true").contains("\"comment\":true").contains("\"tags\":true")
     }
 
+    fun `test editing only the comment doesn't send the value, so references in it are kept`() {
+        val service = SecretsService.getInstance()
+        val scope = SecretScope("p1", "dev", "/")
+        service.updateSecret(connection, scope, "API_KEY", SecretValue("dev-key"), "documented")
+        assertThat(mock.requests.last { it.method == "PATCH" }.body).doesNotContain("secretValue").contains("\"secretComment\":\"documented\"")
+        service.updateSecret(connection, scope, "API_KEY", SecretValue("changed"), null)
+        assertThat(mock.requests.last { it.method == "PATCH" }.body).contains("\"secretValue\":\"changed\"")
+    }
+
+    fun `test copying duplicates the stored secrets and leaves the originals`() {
+        val service = SecretsService.getInstance()
+        val source = SecretScope("p1", "dev", "/")
+        val secrets = devRoot().let { listOf(it.getValue("API_KEY")) }
+        val result = service.copySecrets(connection, source, secrets, SecretScope("p1", "prod", "/backend"))
+        assertThat(result.copied).containsExactly("API_KEY")
+        assertThat(mock.duplicated).containsExactly("prod:/backend:API_KEY")
+        assertThat(mock.deleted).isEmpty()
+        assertThat(mock.requests.first { it.path == "/api/v4/secrets/duplicate" }.body).contains("\"shouldOverwrite\":false")
+    }
+
     fun `test a destination waiting for approval keeps the originals, and a failed removal is reported`() {
         val service = SecretsService.getInstance()
         val source = SecretScope("p1", "dev", "/")

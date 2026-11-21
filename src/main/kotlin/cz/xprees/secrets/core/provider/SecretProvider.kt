@@ -8,6 +8,7 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import javax.swing.Icon
@@ -32,6 +33,13 @@ interface SecretProvider {
 
     /** Name of the provider's project file read by [readProjectFile] (shown in the UI as the source of "Automatic"), or null. */
     val projectFileName: String? get() = null
+
+    /**
+     * Whether a project's environment is something users switch between (Infisical environments, Doppler configs), so a
+     * reference that names none reads different secrets as the selection changes. False where the "environment" is fixed
+     * account structure (a Vault namespace, 1Password's single one).
+     */
+    val switchesEnvironments: Boolean get() = true
 
     /** Environment used when neither the binding nor a project file names one. */
     fun defaultEnvironment(connection: SecretConnection): String = "dev"
@@ -160,6 +168,33 @@ interface SecretsClient {
     fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't move secrets")
 
+    /**
+     * Copies [secrets] (defined in the folder of [source]) to the folder of [destination], leaving them where they are. A
+     * secret that already exists at the destination isn't changed (it fails). By default each is created from a fresh read
+     * of the source (values as listed, so with references expanded); providers that can copy stored values override this.
+     */
+    fun copySecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope): CopyResult {
+        val keys = secrets.map { it.key }.toSet()
+        val fresh = listSecrets(source.copy(recursive = false))
+            .filter { it.key in keys && it.path == source.path && it.origin == SecretOrigin.LOCAL }.associateBy { it.key }
+        val copied = mutableListOf<String>()
+        val awaiting = mutableListOf<String>()
+        val failed = linkedMapOf<String, String>()
+        for (key in keys) {
+            val entry = fresh[key]
+            when {
+                entry == null -> failed[key] = "not in ${source.environment}:${source.path} any more"
+                entry.valueHidden -> failed[key] = "its value can't be read"
+                else -> try {
+                    if (createSecret(destination, key, entry.value, entry.comment) == WriteOutcome.APPROVAL_REQUESTED) awaiting += key else copied += key
+                } catch (e: SecretProviderException) {
+                    failed[key] = e.message ?: e.kind.name
+                }
+            }
+        }
+        return CopyResult(copied, awaiting, failed)
+    }
+
     /** Deletes the shared secret [key] from the folder of [scope] (or opens a change request where a policy requires one). */
     fun deleteSecret(scope: SecretScope, key: String): WriteOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't delete secrets")
@@ -177,6 +212,15 @@ data class MoveResult(
     val awaitingApproval: List<String> = emptyList(),
     /** Copied to the destination, but the source copy could not be removed (key -> reason): they exist in both places. */
     val notRemoved: Map<String, String> = emptyMap(),
+)
+
+/** What [SecretsClient.copySecrets] did, per key. */
+data class CopyResult(
+    val copied: List<String>,
+    /** A change request was opened at the destination. */
+    val awaitingApproval: List<String> = emptyList(),
+    /** Not copied (key -> reason). */
+    val failed: Map<String, String> = emptyMap(),
 )
 
 /**
