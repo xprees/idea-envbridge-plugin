@@ -38,6 +38,15 @@
 
 ### Fixed
 
+- 1Password: moving fields to the source item named another way (a title in other letter case) could delete them
+- Editing a connection (a new token or password, another namespace or option) takes effect right away instead of after the
+  old session expires
+- Doppler: production configs (`prd`, `prd_*`) are production for the prod guard; a `doppler.yaml` list binds the entry that
+  holds the project directory (or nothing), not the first one; a passing server problem no longer ends a browser sign-in
+- Vault: a move that would overwrite without Overwrite, or whose source field is gone, changes nothing and says why;
+  removing a secret's last field is protected by check-and-set; `.` / `..` in paths are refused
+- 1Password names with emoji work in references; item names starting with `-` are refused rather than passed to the CLI
+- *Settings › This Project* no longer reads project files on the UI thread, and uses the selected connection's provider
 - Changing secrets (and other requests with a body) on Infisical instances served over plain `http://` (a local self-hosted one)
   failed with HTTP 405: such requests now use HTTP/1.1 instead of an HTTP/2 upgrade
 - OpenBao: an expired or revoked token is recognised although the server only says "permission denied", so the plugin signs in
