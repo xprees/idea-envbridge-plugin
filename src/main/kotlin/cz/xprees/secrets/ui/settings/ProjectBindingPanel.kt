@@ -105,7 +105,7 @@ internal class ProjectBindingPanel(private val project: Project) {
                 .bindSelected({ settings.state.restrictToBoundProject }, { value -> settings.update { restrictToBoundProject = value } })
                 .comment(SecretsBundle.message("settings.binding.restrict.comment"))
         }
-        row { comment(SecretsBundle.message("settings.binding.comment"), maxLineLength = 90) }
+        row { comment(SecretsBundle.message("settings.binding.comment"), maxLineLength = 70) }
 
         connectionCombo.addActionListener {
             if (updating > 0) return@addActionListener
