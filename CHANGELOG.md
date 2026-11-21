@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Secrets tool window, compact and keyboard-friendly.** The copy variants are in a *Copy* submenu; the toolbar keeps the everyday
+  actions (sign-out stays in the settings and the connection's menu). Copy, cut and paste secrets between folders and environments
+  (*Paste* copies or moves them, with confirmation). The IDE's standard shortcuts from your keymap work in the tree: Alt+Insert
+  new secret, F4 edit, Shift+F6 rename, Ctrl+C / Ctrl+X / Ctrl+V, Delete, F6 move, Ctrl+Alt+Shift+C copy reference, Ctrl+Q reveal,
+  Ctrl+Alt+Y refresh; the context menu shows them. *New Environment…* in a project's context menu, for providers that can create one
+- **Masked secret hints:** a click selects the secret in the Secrets tool window; the right-click menu has *Preview Secret Value*
+  (shown next to the caret until the next keystroke) and *Copy Secret Value*
+- **Connection dialog: links to where credentials are made** under token-style sign-in methods: the Doppler dashboard and its
+  token guide, the Infisical instance and its machine identity guide, the Vault UI and the AppRole guide, 1Password's service
+  account and Connect guides
 - **Moving secrets updates their references** in the project: run configurations' environment variables, `.env` files (values
   and binding comments) and the terminal's references follow the secrets to their new folder or environment (*Update
   references in this project*, on by default). Edit › Undo puts them back in one step; *Undo Move* in the notification also
@@ -42,6 +52,8 @@
 
 ### Fixed
 
+- Doppler: browser sign-in failed with *HTTP 400: Invalid CLI version*; it now tells Doppler a CLI release version, as the Doppler
+  CLI does
 - 1Password: moving fields to the source item named another way (a title in other letter case) could delete them
 - Editing a connection (a new token or password, another namespace or option) takes effect right away instead of after the
   old session expires

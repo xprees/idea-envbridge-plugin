@@ -120,5 +120,14 @@
                 description="Pick secrets of the bound folder and add references to them to a run configuration's environment variables">
             <add-to-group group-id="RunMenu" anchor="after" relative-to-action="cz.xprees.secrets.RunWithEnvironment"/>
         </action>
+        <!-- Right-click menu of a masked secret hint -->
+        <group id="cz.xprees.secrets.InlayMenu">
+            <separator/>
+            <action id="cz.xprees.secrets.inlay.PreviewValue" class="cz.xprees.secrets.editor.PreviewSecretValueInlayAction"
+                    text="Preview Secret Value" description="Show the secret's value next to the caret until the next keystroke"/>
+            <action id="cz.xprees.secrets.inlay.CopyValue" class="cz.xprees.secrets.editor.CopySecretValueInlayAction"
+                    text="Copy Secret Value" description="Copy the secret's value to the clipboard"/>
+            <add-to-group group-id="InlayMenu" anchor="first"/>
+        </group>
     </actions>
 </idea-plugin>

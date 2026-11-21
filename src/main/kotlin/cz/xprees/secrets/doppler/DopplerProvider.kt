@@ -97,6 +97,10 @@ object DopplerAuthMethods {
         ),
         AuthMethod(
             id = TOKEN,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.dashboard", "Doppler")) { DopplerProvider.dashboardBase(DopplerProvider.apiOrigin(it)) },
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.tokens"), "https://docs.doppler.com/reference/api#authentication"),
+            ),
             displayName = SecretsBundle.message("auth.doppler.token.name"),
             description = SecretsBundle.message("auth.doppler.token.description"),
             secretOptions = listOf(

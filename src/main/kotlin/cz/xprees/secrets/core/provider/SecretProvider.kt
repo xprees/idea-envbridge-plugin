@@ -92,7 +92,20 @@ data class AuthMethod(
      * talking to its desktop app): the connection dialog then hides the address, and lists don't show it.
      */
     val usesBaseUrl: Boolean = true,
+    /** Where to get the credentials this method asks for (a token, a service account), shown as links in the connection dialog. */
+    val setupLinks: List<SetupLink> = emptyList(),
 )
+
+/**
+ * A link to the provider's page for creating credentials. [url] gets the connection's base URL (self-hosted instances have
+ * their own dashboards) and returns the page, or null when there is none for that instance. Opened in the system browser.
+ */
+class SetupLink(val text: String, val url: (baseUrl: String) -> String?) {
+    companion object {
+        /** A page that doesn't depend on the instance (the provider's documentation). */
+        fun fixed(text: String, url: String) = SetupLink(text) { url }
+    }
+}
 
 /** Whether [connection]'s sign-in method uses its base URL (unknown providers and methods: yes). */
 fun usesBaseUrl(connection: SecretConnection): Boolean =

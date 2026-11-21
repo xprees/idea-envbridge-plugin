@@ -106,6 +106,10 @@ object InfisicalAuthMethods {
         ),
         AuthMethod(
             id = MACHINE_IDENTITY,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.dashboard", "Infisical")) { it.trimEnd('/') },
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.identity"), "https://infisical.com/docs/documentation/platform/identities/universal-auth"),
+            ),
             displayName = SecretsBundle.message("auth.infisical.machine.identity.name"),
             description = SecretsBundle.message("auth.infisical.machine.identity.description"),
             options = listOf(

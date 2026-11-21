@@ -8,6 +8,7 @@ import cz.xprees.secrets.ui.toolwindow.SecretLocation
 import com.intellij.codeInsight.hints.declarative.HintFormat
 import com.intellij.codeInsight.hints.declarative.InlayHintsCollector
 import com.intellij.codeInsight.hints.declarative.InlayHintsProvider
+import com.intellij.codeInsight.hints.declarative.InlayPayload
 import com.intellij.codeInsight.hints.declarative.InlayTreeSink
 import com.intellij.codeInsight.hints.declarative.InlineInlayPosition
 import com.intellij.codeInsight.hints.declarative.OwnBypassCollector
@@ -19,7 +20,7 @@ import cz.xprees.secrets.core.resolve.KeysIndex
 
 /**
  * A masked hint after each secret: `dev ••••••` (the environment the value comes from). The value itself never appears;
- * the gutter icon reveals it on demand. Toggle in Settings › Editor › Inlay Hints.
+ * a click opens the secret in the Secrets tool window, the right-click menu previews the value on demand. Toggle in Settings › Editor › Inlay Hints.
  */
 class SecretInlayHintsProvider : InlayHintsProvider {
     override fun createCollector(file: PsiFile, editor: Editor): InlayHintsCollector? {
@@ -39,7 +40,9 @@ class SecretInlayHintsProvider : InlayHintsProvider {
                     // A click opens the secret in the Secrets tool window
                     val click = SecretLocation.of(file.project, found.name, found.reference)
                         ?.let { InlayActionData(StringInlayActionPayload(it.encode()), ShowSecretInToolWindow.HANDLER_ID) }
-                    sink.addPresentation(InlineInlayPosition(found.end, true), hintFormat = HintFormat.default, tooltip = SecretsBundle.message("inlay.click.tooltip")) {
+                    // The right-click menu (Preview Value, Copy Value) reads which secret the hint is for; names only, never the value
+                    val secret = InlayPayload(SecretInlayMenu.PAYLOAD, StringInlayActionPayload(SecretInlayMenu.encode(found.name, found.reference?.environment, folder)))
+                    sink.addPresentation(InlineInlayPosition(found.end, true), listOf(secret), SecretsBundle.message("inlay.click.tooltip"), HintFormat.default) {
                         text("$environment ${SecretValue.MASK}", click)
                     }
                 }

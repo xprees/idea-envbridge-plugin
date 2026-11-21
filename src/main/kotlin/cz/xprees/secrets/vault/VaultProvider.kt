@@ -126,6 +126,9 @@ object VaultAuthMethods {
         ),
         AuthMethod(
             id = TOKEN,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.vault.ui")) { it.trimEnd('/') + "/ui/" },
+            ),
             displayName = SecretsBundle.message("auth.vault.token.name"),
             description = SecretsBundle.message("auth.vault.token.description"),
             options = COMMON,
@@ -138,6 +141,9 @@ object VaultAuthMethods {
         ),
         AuthMethod(
             id = APPROLE,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.approle"), "https://developer.hashicorp.com/vault/docs/auth/approle"),
+            ),
             displayName = SecretsBundle.message("auth.vault.approle.name"),
             description = SecretsBundle.message("auth.vault.approle.description"),
             options = listOf(AuthOption(OPTION_ROLE_ID, SecretsBundle.message("auth.vault.option.roleId.label")), mount(APPROLE)) + COMMON,

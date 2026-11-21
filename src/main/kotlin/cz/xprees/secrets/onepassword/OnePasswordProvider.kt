@@ -92,6 +92,9 @@ object OnePasswordAuthMethods {
         ),
         AuthMethod(
             id = SERVICE_ACCOUNT,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.op.service"), "https://developer.1password.com/docs/service-accounts/get-started/"),
+            ),
             displayName = SecretsBundle.message("auth.onepassword.service.account.name"),
             description = SecretsBundle.message("auth.onepassword.service.account.description"),
             options = listOf(OP_PATH),
@@ -102,6 +105,9 @@ object OnePasswordAuthMethods {
         ),
         AuthMethod(
             id = CONNECT,
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.op.connect"), "https://developer.1password.com/docs/connect/get-started/"),
+            ),
             displayName = SecretsBundle.message("auth.onepassword.connect.name"),
             description = SecretsBundle.message("auth.onepassword.connect.description"),
             secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, SecretsBundle.message("auth.onepassword.option.connectToken.label"))),

@@ -4,6 +4,7 @@ import cz.xprees.secrets.ui.secrets.DeleteSecretsDialog
 
 import cz.xprees.secrets.ui.secrets.MoveSecretsDialog
 
+import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.IdeActions
 
 import com.intellij.ide.dnd.DnDDragStartBean
@@ -19,6 +20,7 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
@@ -79,6 +81,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     /** Secrets cut with Cut, waiting for Paste on a folder or environment (kept here only, never on the system clipboard). */
     private var cutSecrets: List<SecretNode> = emptyList()
 
+    /** Secrets marked with Copy (Ctrl+C): Paste copies them to the selected folder, leaving these where they are. */
+    private var copiedSecrets: List<SecretNode> = emptyList()
+
     private val moveAction = MoveSecretsAction()
     private val deleteAction = DeleteSecretsAction()
 
@@ -106,17 +111,54 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
         installMoving()
 
-        val actions = DefaultActionGroup(
-            RefreshAction(), NewSecretAction(), EditSecretAction(), moveAction, deleteAction, NewEnvironmentAction(), Separator.create(), RevealAction(), CopyKeyAction(), CopyValueAction(), CopyReferenceAction(), CopyAsEnvironmentVariablesAction(),
-            CopyEnvLineAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
-            OpenDashboardAction(), OverrideAction(), Separator.create(), PreviewAction(),
-            ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment"), CompareAction(),
-            Separator.create(), ShowAllProjectsAction(), SignInOutAction(), SettingsAction(),
+        val newSecret = NewSecretAction()
+        val editSecret = EditSecretAction()
+        val reveal = RevealAction()
+        val refresh = RefreshAction()
+        val preview = PreviewAction()
+        val compare = CompareAction()
+        val runWithEnvironment = ActionManager.getInstance().getAction("cz.xprees.secrets.RunWithEnvironment")
+        // The toolbar keeps what is used all the time; everything else is in the context menu (sign-out also in the settings)
+        val toolbarActions = DefaultActionGroup(
+            refresh, newSecret, editSecret, deleteAction, Separator.create(), reveal, Separator.create(), preview, runWithEnvironment, compare,
+            Separator.create(), ShowAllProjectsAction(), SettingsAction(),
         )
-        val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", actions, true)
+        val copyReference = CopyReferenceAction()
+        val cut = CutSecretsAction()
+        val copy = CopySecretsAction()
+        val paste = PasteSecretsAction()
+        val newEnvironment = NewEnvironmentAction()
+        installShortcuts(
+            IdeActions.ACTION_NEW_ELEMENT to newSecret, // Alt+Insert
+            IdeActions.ACTION_EDIT_SOURCE to editSecret, // F4
+            IdeActions.ACTION_RENAME to editSecret, // Shift+F6: the Edit dialog changes the key
+            IdeActions.ACTION_CUT to cut,
+            IdeActions.ACTION_COPY to copy,
+            IdeActions.ACTION_PASTE to paste,
+            IdeActions.ACTION_DELETE to deleteAction,
+            "Move" to moveAction, // F6
+            IdeActions.ACTION_COPY_REFERENCE to copyReference, // Ctrl+Alt+Shift+C
+            IdeActions.ACTION_QUICK_JAVADOC to reveal, // Ctrl+Q / F1: show the value
+            "Synchronize" to refresh, // Ctrl+Alt+Y
+            "Refresh" to refresh, // F5 where the keymap has it
+        )
+        val copyGroup = DefaultActionGroup(
+            SecretsBundle.message("action.copy.group"),
+            listOf(CopyKeyAction(), CopyValueAction(), copyReference, CopyAsEnvironmentVariablesAction(), CopyEnvLineAction()),
+        ).apply {
+            isPopup = true
+            templatePresentation.icon = AllIcons.Actions.Copy
+        }
+        val popupActions = DefaultActionGroup(
+            newSecret, editSecret, reveal, copyGroup, Separator.create(),
+            cut, copy, paste, moveAction, deleteAction, Separator.create(),
+            newEnvironment, OverrideAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
+            OpenDashboardAction(), Separator.create(), SignInOutAction(), refresh,
+        )
+        val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", toolbarActions, true)
         toolbar.targetComponent = tree
         setToolbar(toolbar.component)
-        PopupHandler.installPopupMenu(tree, actions, "SecretsToolWindowPopup")
+        PopupHandler.installPopupMenu(tree, popupActions, "SecretsToolWindowPopup")
         setContent(ScrollPaneFactory.createScrollPane(tree))
 
         ApplicationManager.getApplication().messageBus.connect(this)
@@ -457,12 +499,12 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         TreeUtil.findObjectInPath(TreePath(node.path), ProjectNode::class.java)?.project?.environments?.map { it.slug }.orEmpty()
 
     /** Opens the confirmation for moving [secrets] to [destination] (it can still be changed there). */
-    private fun confirmMove(secrets: List<SecretNode>, destination: SecretScope) {
+    private fun confirmMove(secrets: List<SecretNode>, destination: SecretScope, copy: Boolean = false) {
         val first = secrets.first()
         val source = sourceOf(first)
         if (destination.projectId != source.projectId) return
-        MoveSecretsDialog(project, first.connection, source, secrets.map { it.entry }, environmentsOf(first), destination) { target, _ ->
-            cutSecrets = emptyList()
+        MoveSecretsDialog(project, first.connection, source, secrets.map { it.entry }, environmentsOf(first), destination, copy = copy) { target, _ ->
+            if (!copy) cutSecrets = emptyList()
             reloadFolder(first.connection.id, source)
             reloadFolder(first.connection.id, target)
         }.show()
@@ -479,14 +521,19 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         (node as? LazyNode)?.takeIf { it.loaded && !it.loading }?.let { load(it, force = true) }
     }
 
-    private fun installMoving() {
+    /**
+     * Gives actions the shortcuts of the IDE's standard actions (from the user's keymap, so remapped keys follow), active in
+     * the tree. Several standard actions may map to one of ours; their shortcuts add up. The menu shows them too.
+     */
+    private fun installShortcuts(vararg mapping: Pair<String, AnAction>) {
         val manager = ActionManager.getInstance()
-        // The usual shortcuts: Cut, Paste and Delete of the IDE, F6 (Move) where the keymap has it
-        CutSecretsAction().registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_CUT).shortcutSet, tree, this)
-        PasteSecretsAction().registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_PASTE).shortcutSet, tree, this)
-        deleteAction.registerCustomShortcutSet(manager.getAction(IdeActions.ACTION_DELETE).shortcutSet, tree, this)
-        manager.getAction("Move")?.shortcutSet?.let { moveAction.registerCustomShortcutSet(it, tree, this) }
+        mapping.groupBy({ it.second }, { it.first }).forEach { (action, ids) ->
+            val shortcuts = ids.flatMap { id -> manager.getAction(id)?.shortcutSet?.shortcuts?.toList().orEmpty() }.distinct()
+            if (shortcuts.isNotEmpty()) action.registerCustomShortcutSet(CustomShortcutSet(*shortcuts.toTypedArray()), tree, this)
+        }
+    }
 
+    private fun installMoving() {
         // Drag secrets onto a folder or environment of the same project
         DnDSupport.createBuilder(tree)
             .setBeanProvider { info ->
@@ -548,18 +595,36 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
         override fun actionPerformed(e: AnActionEvent) {
             cutSecrets = movable(selectedNodes()) ?: return
+            copiedSecrets = emptyList()
+            tree.repaint()
+        }
+    }
+
+    /** Marks the selected secrets for Paste to copy them (their keys also go to the clipboard, nothing secret). */
+    private inner class CopySecretsAction : PanelAction(SecretsBundle.message("action.copy.secrets"), AllIcons.Actions.Copy) {
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = movable(selectedNodes()) != null
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            copiedSecrets = movable(selectedNodes()) ?: return
+            cutSecrets = emptyList()
+            selectedKeysText()?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
             tree.repaint()
         }
     }
 
     private inner class PasteSecretsAction : PanelAction(SecretsBundle.message("action.paste.secrets"), AllIcons.Actions.MenuPaste) {
         override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = cutSecrets.isNotEmpty() && destinationOf(selectedNode()) != null && writable(e)
+            e.presentation.isEnabled = (cutSecrets.isNotEmpty() || copiedSecrets.isNotEmpty()) && destinationOf(selectedNode()) != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {
             val destination = destinationOf(selectedNode()) ?: return
-            if (cutSecrets.isNotEmpty()) confirmMove(cutSecrets, destination)
+            when {
+                cutSecrets.isNotEmpty() -> confirmMove(cutSecrets, destination)
+                copiedSecrets.isNotEmpty() -> confirmMove(copiedSecrets, destination, copy = true)
+            }
         }
     }
 
@@ -631,6 +696,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         private fun projectNode(): ProjectNode? = TreeUtil.findObjectInPath(tree.selectionPath, ProjectNode::class.java)
 
         override fun update(e: AnActionEvent) {
+            e.presentation.isVisible = projectNode() != null
             e.presentation.isEnabled = projectNode() != null && writable(e)
         }
 
@@ -762,9 +828,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     private inner class SignInOutAction : PanelAction(SecretsBundle.message("action.sign.in"), AllIcons.General.User) {
         override fun update(e: AnActionEvent) {
-            val connectionNode = TreeUtil.findObjectInPath(tree.selectionPath, ConnectionNode::class.java)
-                ?: (root.childCount == 1).takeIf { it }?.let { root.firstChild as? ConnectionNode }
-            e.presentation.isEnabled = connectionNode != null
+            // Only on a connection itself (the toolbar doesn't have it; Settings can sign out too)
+            val connectionNode = tree.selectionPath?.lastPathComponent as? ConnectionNode
+            e.presentation.isEnabledAndVisible = connectionNode != null
             e.presentation.text = SecretsBundle.message(if (connectionNode?.signedIn == true) "action.sign.out" else "action.sign.in")
         }
 

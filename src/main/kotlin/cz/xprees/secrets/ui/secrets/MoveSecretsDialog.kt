@@ -35,6 +35,8 @@ class MoveSecretsDialog(
     private val secrets: List<SecretEntry>,
     environments: List<String>,
     destination: SecretScope,
+    /** Copy instead of move: the secrets are created at the destination and the originals (and their references) stay. */
+    private val copy: Boolean = false,
     private val onMoved: (SecretScope, MoveResult) -> Unit = { _, _ -> },
 ) : DialogWrapper(project) {
     private val environmentCombo = ComboBox(environments.ifEmpty { listOf(destination.environment) }.toTypedArray()).apply { selectedItem = destination.environment }
@@ -43,8 +45,8 @@ class MoveSecretsDialog(
     private val updateReferences = JBCheckBox(SecretsBundle.message("move.update.references"), true)
 
     init {
-        title = SecretsBundle.message("move.title", secrets.size)
-        setOKButtonText(SecretsBundle.message("move.ok"))
+        title = SecretsBundle.message(if (copy) "copy.title" else "move.title", secrets.size)
+        setOKButtonText(SecretsBundle.message(if (copy) "copy.ok" else "move.ok"))
         environmentCombo.addActionListener { loadFolders() }
         loadFolders()
         init()
@@ -55,9 +57,11 @@ class MoveSecretsDialog(
         row(SecretsBundle.message("move.from")) { label("${source.environment}:${source.path}") }
         row(SecretsBundle.message("new.secret.environment")) { cell(environmentCombo) }
         row(SecretsBundle.message("new.secret.folder")) { cell(pathField).align(AlignX.FILL).comment(SecretsBundle.message("new.secret.folder.comment")) }
-        row { cell(overwrite) }
-        row { cell(updateReferences).comment(SecretsBundle.message("move.update.references.comment")) }
-        row { comment(SecretsBundle.message("move.note")) }
+        if (!copy) {
+            row { cell(overwrite) }
+            row { cell(updateReferences).comment(SecretsBundle.message("move.update.references.comment")) }
+        }
+        row { comment(SecretsBundle.message(if (copy) "copy.note" else "move.note")) }
     }
 
     private fun destination(): SecretScope =
@@ -91,6 +95,7 @@ class MoveSecretsDialog(
                 Messages.getWarningIcon(),
             ) != Messages.YES
         ) return
+        if (copy) return copySecrets(target)
         val update = updateReferences.isSelected
         val (result, plan) = try {
             ProgressManager.getInstance().runProcessWithProgressSynchronously<Pair<MoveResult, ReferenceUpdater.Plan?>, SecretProviderException>(
@@ -117,6 +122,47 @@ class MoveSecretsDialog(
         report(project, result, "${target.environment}:${target.path}", plan, UndoMove(project, connection, source, target, result.moved, update))
         super.doOKAction()
         onMoved(target, result)
+    }
+
+    /** Creates each secret at [target] with its value and comment; the originals stay. */
+    private fun copySecrets(target: SecretScope) {
+        val failures = linkedMapOf<String, String>()
+        val copied = mutableListOf<String>()
+        try {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously<Unit, SecretProviderException>(
+                {
+                    val service = SecretsService.getInstance()
+                    for (entry in secrets) {
+                        if (entry.valueHidden) {
+                            failures[entry.key] = SecretsBundle.message("copy.hidden")
+                            continue
+                        }
+                        try {
+                            service.createSecret(connection, target, entry.key, entry.value, entry.comment)
+                            copied += entry.key
+                        } catch (e: SecretProviderException) {
+                            failures[entry.key] = e.message ?: e.kind.name
+                        }
+                    }
+                },
+                SecretsBundle.message("copy.progress", secrets.size),
+                true,
+                project,
+            )
+        } catch (e: SecretProviderException) {
+            setErrorText(e.message ?: e.kind.name)
+            return
+        }
+        KeysIndex.getInstance(project).refreshAsync()
+        val where = "${target.environment}:${target.path}"
+        val lines = buildList {
+            if (copied.isNotEmpty()) add(SecretsBundle.message("copy.done", copied.joinToString(), where))
+            failures.forEach { (key, reason) -> add(SecretsBundle.message("copy.failed", key, reason)) }
+        }
+        if (failures.isEmpty()) SecretsNotifications.info(project, SecretsBundle.message("copy.title.done"), lines.joinToString("\n"))
+        else SecretsNotifications.error(project, SecretsBundle.message("copy.title.partial"), lines.joinToString("\n"))
+        super.doOKAction()
+        onMoved(target, MoveResult(moved = emptyList()))
     }
 
     companion object {

@@ -11,7 +11,9 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.layout.ComponentPredicate
+import com.intellij.ide.BrowserUtil
 import cz.xprees.secrets.SecretsBundle
+import cz.xprees.secrets.core.provider.SetupLink
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.AuthMethod
@@ -80,6 +82,12 @@ class ConnectionDialog(
         for (method in provider.authMethods) {
             val visible = MethodSelected(method)
             row { comment(method.description, maxLineLength = 70) }.visibleIf(visible)
+            if (method.setupLinks.isNotEmpty()) {
+                row {
+                    // A page may depend on the instance typed in, so it is worked out on click
+                    for (setup in method.setupLinks) link(setup.text) { setupPage(setup)?.let(BrowserUtil::browse) }.applyToComponent { setExternalLinkIcon() }
+                }.visibleIf(visible)
+            }
             for (option in method.options) {
                 row(option.label) { cell(optionFields.getValue(method.id).getValue(option.key)).align(AlignX.FILL) }.visibleIf(visible)
             }
@@ -169,6 +177,12 @@ class ConnectionDialog(
         super.doOKAction()
     }
 
+    /** [link]'s page for the instance in the dialog; only web pages (https, or http on this machine). */
+    private fun setupPage(link: SetupLink): String? {
+        val base = SecretConnection.normalizeBaseUrl(instanceUrl()) ?: provider.instancePresets.firstOrNull()?.second ?: return null
+        return link.url(base)?.takeIf(::isWebPage)
+    }
+
     private fun instanceUrl(): String = (instanceCombo.editor.item ?: instanceCombo.selectedItem)?.toString().orEmpty().trim()
 
     override fun getPreferredFocusedComponent(): JComponent = nameField
@@ -179,6 +193,13 @@ class ConnectionDialog(
          * method, instance, options and secrets, so any change makes it stale (a newly pasted token or password must be used
          * right away, not after the old session expires).
          */
+        /** Whether [url] is a page to open in the browser: https, or http on this machine. */
+        fun isWebPage(url: String): Boolean {
+            val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+            val host = uri.host ?: return false
+            return uri.scheme.equals("https", true) || (uri.scheme.equals("http", true) && (host == "localhost" || host == "127.0.0.1"))
+        }
+
         fun sessionStale(existing: SecretConnection?, updated: SecretConnection, secretsEntered: Boolean): Boolean =
             existing != null && (
                 existing.authMethodId != updated.authMethodId || existing.baseUrl != updated.baseUrl ||
