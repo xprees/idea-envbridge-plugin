@@ -19,18 +19,50 @@ class MovedReferences(
     private val isMovedConnection: (String?) -> Boolean,
     /** New names of renamed keys (old -> new); a key not in here keeps its name. */
     private val renames: Map<String, String> = emptyMap(),
+    /** Other names of the source project a reference may use (1Password: the vault's name besides its ID). */
+    private val projectAliases: Set<String> = emptySet(),
+    /**
+     * Whether [reference] follows the selected environment (names none, and nothing fixes one): such a reference reads
+     * another environment when the selection changes, where the secret wasn't moved or renamed, so it is only rewritten
+     * with [includeFollowing].
+     */
+    private val followsSelection: (SecretReference) -> Boolean = { false },
+    private val includeFollowing: Boolean = true,
 ) {
+    /** References to a moved secret left as they were because they follow the selected environment (see [followsSelection]). */
+    var followingSkipped: Int = 0
+        private set
+
     /** The reference that names the same secret after the move, or null when [reference] isn't to a moved secret. */
     fun rewrite(reference: SecretReference, defaults: SecretReference.Defaults): SecretReference? {
         if (!reference.scheme.equals(scheme, ignoreCase = true)) return null
         val key = reference.key ?: return null // a scope import names a folder, not the moved secrets
         if (key !in keys || !isMovedConnection(reference.connectionId)) return null
         val scope = reference.scope(defaults)
-        if (scope.projectId != source.projectId || scope.environment != source.environment || scope.path != source.path) return null
+        val sameProject = scope.projectId == source.projectId || projectAliases.any { it.equals(scope.projectId, ignoreCase = true) }
+        if (!sameProject || scope.environment != source.environment || scope.path != source.path) return null
+        if (!includeFollowing && followsSelection(reference)) {
+            followingSkipped++
+            return null
+        }
         val grammar = SecretReference.grammarFor(reference.scheme)
         var moved = grammar.build(reference.scheme, destination.copy(recursive = false), renames[key] ?: key, defaults).copy(connectionId = reference.connectionId)
-        // Keep naming the project when the reference did (the grammar leaves out what the binding says)
-        if (reference.projectId != null && moved.projectId == null) moved = moved.copy(projectId = reference.projectId)
+        // Keep the reference's own form where the move doesn't change it (the grammar leaves out what the defaults say):
+        // an explicit environment stays explicit, one left out stays out (it follows the selection or the configuration),
+        // and a project named (perhaps by name, not ID) stays named as written
+        val sameEnvironment = destination.environment == source.environment
+        moved = when {
+            reference.environment != null -> moved.copy(environment = destination.environment)
+            sameEnvironment -> moved.copy(environment = null)
+            else -> moved
+        }
+        val projectKept = destination.projectId == source.projectId
+        moved = when {
+            projectKept && reference.projectId != null -> moved.copy(projectId = reference.projectId)
+            projectKept -> moved.copy(projectId = null)
+            reference.projectId != null && moved.projectId == null -> moved.copy(projectId = destination.projectId)
+            else -> moved
+        }
         return moved
     }
 
@@ -38,9 +70,16 @@ class MovedReferences(
     data class Edit(val start: Int, val end: Int, val old: String, val replacement: String)
 
     /** The edits that update every reference to a moved secret in [text] (a `.env` file, a variable's value, …). */
-    fun edits(text: CharSequence, defaults: SecretReference.Defaults): List<Edit> =
+    fun edits(text: CharSequence, defaults: SecretReference.Defaults): List<Edit> = edits(text) { defaults }
+
+    /**
+     * Like [edits], with defaults per reference ([defaultsFor]: null when the reference reads another connection, so it
+     * can't be to a moved secret).
+     */
+    fun edits(text: CharSequence, defaultsFor: (SecretReference) -> SecretReference.Defaults?): List<Edit> =
         EnvReferences.find(text, listOf(scheme)).filter { it.kind == EnvReferences.Kind.REFERENCE }.mapNotNull { found ->
             val reference = found.reference ?: return@mapNotNull null
+            val defaults = defaultsFor(reference) ?: return@mapNotNull null
             val moved = rewrite(reference, defaults) ?: return@mapNotNull null
             Edit(found.start, found.end, text.subSequence(found.start, found.end).toString(), moved.format())
         }.filter { it.old != it.replacement }
@@ -53,8 +92,11 @@ class MovedReferences(
     }
 
     /** [text] with every reference to a moved secret updated, or null when nothing changes. */
-    fun rewriteText(text: String, defaults: SecretReference.Defaults): String? {
-        val edits = edits(text, defaults)
+    fun rewriteText(text: String, defaults: SecretReference.Defaults): String? = rewriteText(text) { defaults }
+
+    /** Like [rewriteText], with defaults per reference (see [edits]). */
+    fun rewriteText(text: String, defaultsFor: (SecretReference) -> SecretReference.Defaults?): String? {
+        val edits = edits(text, defaultsFor)
         return if (edits.isEmpty()) null else apply(text, edits)
     }
 

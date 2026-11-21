@@ -59,9 +59,14 @@ class ReferenceUpdaterPlatformTest : BasePlatformTestCase() {
         runManager.addConfiguration(prodApp)
 
         val updater = ReferenceUpdater(project)
-        val plan = updater.plan(connection, listOf("DB_PASSWORD"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/backend"))
+        // References that name no environment follow the selection: by default they are left (and counted)
+        val cautious = updater.plan(connection, listOf("DB_PASSWORD"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/backend"))
+        assertThat(cautious.isEmpty).isTrue()
+        assertThat(cautious.following).isEqualTo(3)
+        assertThat(cautious.summary()).contains("follow the selected environment")
+        val plan = ReferenceUpdater.includingFollowing(cautious)!!
         assertThat(plan.references).isEqualTo(3)
-        updater.apply(plan)
+        assertThat(updater.apply(plan)).isEqualTo(3)
 
         val document = FileDocumentManager.getInstance().getDocument(env)!!
         assertThat(document.text).isEqualTo("DB_PASSWORD= # infisical://backend/DB_PASSWORD\nAPI_KEY=infisical://API_KEY\nPROD=infisical://prod:DB_PASSWORD\n")
@@ -93,7 +98,7 @@ class ReferenceUpdaterPlatformTest : BasePlatformTestCase() {
         runManager.addConfiguration(app)
 
         val updater = ReferenceUpdater(project)
-        val plan = updater.planRename(connection, SecretScope("p1", "dev", "/"), "DB_PASSWORD", "DATABASE_PASSWORD")
+        val plan = updater.planRename(connection, SecretScope("p1", "dev", "/"), "DB_PASSWORD", "DATABASE_PASSWORD", includeFollowing = true)
         assertThat(plan.references).isEqualTo(3)
         assertThat(plan.summary()).contains("new name")
         updater.apply(plan)
@@ -123,5 +128,32 @@ class ReferenceUpdaterPlatformTest : BasePlatformTestCase() {
         assertThat(plan.isEmpty).isTrue()
         ReferenceUpdater(project).apply(plan)
         assertThat(UndoManager.getInstance(project).isUndoAvailable(null)).isFalse()
+    }
+
+    fun `test references naming the environment are updated by default`() {
+        val env = myFixture.addFileToProject(".env", "A=infisical://dev:DB_PASSWORD\nB=infisical://DB_PASSWORD\n").virtualFile
+        val updater = ReferenceUpdater(project)
+        val plan = updater.planRename(connection, SecretScope("p1", "dev", "/"), "DB_PASSWORD", "DATABASE_PASSWORD")
+        assertThat(plan.references).isEqualTo(1)
+        // the terminal's reference and B follow the selection
+        assertThat(plan.following).isEqualTo(2)
+        updater.apply(plan)
+        assertThat(FileDocumentManager.getInstance().getDocument(env)!!.text).isEqualTo("A=infisical://dev:DATABASE_PASSWORD\nB=infisical://DB_PASSWORD\n")
+    }
+
+    fun `test undo keeps run configuration edits made after the update`() {
+        val runManager = RunManager.getInstance(project)
+        val app = runManager.createConfiguration("App", ApplicationConfigurationType.getInstance().configurationFactories[0])
+        (app.configuration as ApplicationConfiguration).envs = linkedMapOf("DB" to "infisical://dev:DB_PASSWORD")
+        runManager.addConfiguration(app)
+        val updater = ReferenceUpdater(project)
+        updater.apply(updater.planRename(connection, SecretScope("p1", "dev", "/"), "DB_PASSWORD", "DATABASE_PASSWORD"))
+        assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://dev:DATABASE_PASSWORD")
+
+        // the user adds a variable afterwards; undo puts DB back and keeps it
+        cz.xprees.secrets.run.EnvPatcher.store(project, app, linkedMapOf("DB" to "infisical://dev:DATABASE_PASSWORD", "FOO" to "1"))
+        TestDialogManager.setTestDialog(TestDialog.OK)
+        UndoManager.getInstance(project).undo(null)
+        assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://dev:DB_PASSWORD").containsEntry("FOO", "1")
     }
 }

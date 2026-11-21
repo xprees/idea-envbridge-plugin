@@ -33,6 +33,9 @@ class OnePasswordProvider : SecretProvider {
     override val id: String = ID
     override val displayName: String = "1Password"
     override val icon: Icon get() = SecretsIcons.PROVIDER
+    // A namespace / the single environment is account structure, not a selection users switch
+    override val switchesEnvironments: Boolean get() = false
+
     override val referenceScheme: String = "op"
     override val referenceGrammar: ReferenceGrammar get() = OnePasswordGrammar
     override val supportsWrites: Boolean get() = true

@@ -1,5 +1,6 @@
 package cz.xprees.secrets.infisical
 
+import cz.xprees.secrets.core.provider.CopyResult
 import cz.xprees.secrets.core.provider.MoveResult
 
 import cz.xprees.secrets.core.model.ProviderEnvironment
@@ -152,10 +153,11 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
 
     override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         checkWritable("secrets")
-        val rename = renameTarget(key, newKey) ?: return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
-        // Checked first, so a taken name changes nothing (secrets imported from elsewhere don't count: they live there)
+        val rename = renameTarget(key, newKey)
+        // Secrets imported from elsewhere don't count: they live there
         val folder = auth.withToken { api.listSecrets(it, scope.copy(recursive = false)) }.filter { it.origin != SecretOrigin.IMPORTED && it.path == scope.path }
-        if (folder.any { it.key == rename }) {
+        // Checked first, so a taken name changes nothing
+        if (rename != null && folder.any { it.key == rename }) {
             throw SecretProviderException(
                 SecretProviderException.Kind.CONFIGURATION,
                 "${scope.environment}:${scope.path} already has a secret $rename; choose another name or delete that one first",
@@ -195,6 +197,29 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
             }
         }
         return MoveResult(moved, awaiting, notRemoved)
+    }
+
+    /** Infisical duplicates the stored secrets (value with its references, comment, tags), never overwriting. */
+    override fun copySecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope): CopyResult {
+        checkWritable("secrets")
+        require(secrets.all { it.id.isNotEmpty() }) { "Secrets without an ID can't be copied; refresh and try again" }
+        // A folder that doesn't exist yet has nothing in it (duplicating creates it)
+        val existing = try {
+            auth.withToken { api.listSecrets(it, destination.copy(recursive = false)) }
+                .filter { it.origin != SecretOrigin.IMPORTED && it.path == destination.path }.map { it.key }.toSet()
+        } catch (e: SecretProviderException) {
+            if (e.kind != SecretProviderException.Kind.NOT_FOUND) throw e
+            emptySet()
+        }
+        val failed = linkedMapOf<String, String>()
+        secrets.filter { it.key in existing }.forEach { failed[it.key] = "already in ${destination.environment}:${destination.path}" }
+        val copied = mutableListOf<String>()
+        val awaiting = mutableListOf<String>()
+        for (chunk in secrets.filter { it.key !in existing }.chunked(50)) {
+            val result = auth.withToken { api.duplicateSecrets(it, source, chunk.map(SecretEntry::id), destination, overwrite = false) }
+            chunk.forEach { if (result[it.key] == true || result[it.id] == true) awaiting += it.key else copied += it.key }
+        }
+        return CopyResult(copied, awaiting, failed)
     }
 
     override fun deleteSecret(scope: SecretScope, key: String): WriteOutcome {

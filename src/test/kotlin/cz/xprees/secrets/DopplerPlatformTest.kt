@@ -309,6 +309,33 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         assertThat(mock.requests.count { it.method == "POST" && it.path == "/v3/configs/config/secrets" }).isEqualTo(writes)
     }
 
+    fun `test editing only the note keeps a computed value's raw reference`() {
+        val connection = personal()
+        val service = SecretsService.getInstance()
+        val dev = SecretScope("backend", "dev")
+        val listed = service.secrets(connection, dev, fresh = true).first { it.key == "DB_URL" }.value
+        val writes = mock.requests.count { it.method == "POST" && it.path == "/v3/configs/config/secrets" }
+        service.updateSecret(connection, dev, "DB_URL", listed, "new note")
+        // the value as listed is the computed one: nothing is written for it, the reference stays
+        assertThat(mock.requests.count { it.method == "POST" && it.path == "/v3/configs/config/secrets" }).isEqualTo(writes)
+        assertThat(mock.secrets.getValue("backend/dev")).containsEntry("DB_URL", "postgres://\${DB_HOST}:5432")
+        assertThat(mock.notes.getValue("backend")).containsEntry("DB_URL", "new note")
+    }
+
+    fun `test copying sends raw values and never overwrites`() {
+        val connection = personal()
+        val service = SecretsService.getInstance()
+        val dev = SecretScope("backend", "dev")
+        val entries = service.secrets(connection, dev, fresh = true).filter { it.key in setOf("DB_URL", "DB_HOST") }
+        service.createSecret(connection, SecretScope("backend", "stg"), "DB_HOST", SecretValue("stg-host"))
+        val result = service.copySecrets(connection, dev, entries, SecretScope("backend", "stg"))
+        assertThat(result.copied).containsExactly("DB_URL")
+        assertThat(result.failed).containsKey("DB_HOST")
+        assertThat(mock.secrets.getValue("backend/stg")).containsEntry("DB_URL", "postgres://\${DB_HOST}:5432").containsEntry("DB_HOST", "stg-host")
+        // the originals stay
+        assertThat(mock.secrets.getValue("backend/dev")).containsKey("DB_URL").containsKey("DB_HOST")
+    }
+
     fun `test secret names must be uppercase`() {
         val connection = personal()
         val dev = SecretScope("backend", "dev")

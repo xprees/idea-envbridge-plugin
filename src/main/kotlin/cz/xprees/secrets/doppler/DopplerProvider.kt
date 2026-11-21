@@ -11,6 +11,7 @@ import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.CopyResult
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.ProjectFileDefaults
 import cz.xprees.secrets.core.provider.SecretProvider
@@ -205,16 +206,16 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
         val secrets = existing(scope)
         val current = secrets[key]
             ?: throw SecretProviderException(Kind.NOT_FOUND, "$key doesn't exist in ${where(scope)}; create it instead")
+        // Listings (and so the dialog) show the computed value: left as it was, the raw one is kept so `${…}` references keep working
+        val raw = current.raw?.takeIf { value.reveal() == current.computed } ?: value.reveal()
         if (rename == null) {
-            auth.withToken { api.setSecrets(it, scope.projectId, scope.environment, mapOf(key to value.reveal())) }
+            if (raw != current.raw) auth.withToken { api.setSecrets(it, scope.projectId, scope.environment, mapOf(key to raw)) }
             if (comment != null && comment != current.note) saveNote(scope.projectId, key, comment)
             return WriteOutcome.APPLIED
         }
         if (rename in secrets) {
             throw SecretProviderException(Kind.CONFIGURATION, "$rename already exists in ${where(scope)}; choose another name or delete that one first")
         }
-        // Listings (and so the dialog) show the computed value: left as it was, the raw one is kept so `${…}` references keep working
-        val raw = current.raw?.takeIf { value.reveal() == current.computed } ?: value.reveal()
         auth.withToken { api.renameSecret(it, scope.projectId, scope.environment, key, rename, raw) }
         if (comment != null && comment != current.note) {
             saveNote(scope.projectId, rename, comment)
@@ -223,6 +224,36 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
             runCatching { auth.withToken { api.setNote(it, scope.projectId, rename, current.note) } }
         }
         return WriteOutcome.APPLIED
+    }
+
+    /** Copies the raw values (so Doppler references keep working), never overwriting; notes follow to another project. */
+    override fun copySecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope): CopyResult {
+        checkNoFolder(source)
+        checkNoFolder(destination)
+        val keys = secrets.map { it.key }.distinct()
+        val sourceSecrets = existing(source)
+        val atDestination = existing(destination).keys
+        val failed = linkedMapOf<String, String>()
+        val copyable = keys.filter { key ->
+            val reason = when {
+                key !in sourceSecrets -> "not in ${where(source)} any more"
+                sourceSecrets.getValue(key).raw == null -> "its value can't be read (restricted in Doppler)"
+                key in atDestination -> "already in ${where(destination)}"
+                else -> null
+            }
+            reason?.let { failed[key] = it }
+            reason == null
+        }
+        if (copyable.isNotEmpty()) {
+            auth.withToken { api.setSecrets(it, destination.projectId, destination.environment, copyable.associateWith { k -> sourceSecrets.getValue(k).raw!! }) }
+            if (source.projectId != destination.projectId) {
+                for (key in copyable) {
+                    val note = sourceSecrets.getValue(key).note
+                    if (note.isNotEmpty()) runCatching { auth.withToken { api.setNote(it, destination.projectId, key, note) } }
+                }
+            }
+        }
+        return CopyResult(copyable, emptyList(), failed)
     }
 
     override fun deleteSecret(scope: SecretScope, key: String): WriteOutcome {

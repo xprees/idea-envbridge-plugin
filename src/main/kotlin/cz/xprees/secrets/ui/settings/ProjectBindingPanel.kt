@@ -57,7 +57,8 @@ internal class ProjectBindingPanel(private val project: Project) {
     private val projectCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
     private val environmentCombo = ComboBox<Choice>().apply { renderer = textListCellRenderer { c: Choice? -> c?.label.orEmpty() } }
     private val folderCombo = ComboBox<String>().apply { isEditable = true }
-    private val productionField = JBTextField()
+    @org.jetbrains.annotations.VisibleForTesting
+    internal val productionField = JBTextField()
     private val status = JBLabel().apply {
         setAllowAutoWrapping(true)
         setCopyable(true)
@@ -135,9 +136,10 @@ internal class ProjectBindingPanel(private val project: Project) {
     fun isModified(): Boolean {
         val state = settings.state
         // A binding to a connection removed since shows no connection: compare with what reset() could show
+        // (Automatic, no connection chosen, is a binding too: its project, environment and folder count)
         val connection = app.connection(state.connectionId)
-        if (connection == null) return selectedConnection() != null
-        return selectedConnection()?.id != connection.id || selectedProjectId() != state.projectId ||
+        if (!state.connectionId.isNullOrBlank() && connection == null) return selectedConnection() != null
+        return selectedConnection()?.id != connection?.id || selectedProjectId() != state.projectId ||
             selectedEnvironment() != state.environment || selectedPath() != state.path ||
             selectedProduction() != state.productionEnvironments.orEmpty()
     }

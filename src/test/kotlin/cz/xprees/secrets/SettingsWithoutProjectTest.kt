@@ -34,4 +34,14 @@ class SettingsWithoutProjectTest : BasePlatformTestCase() {
             configurable.disposeUIResources()
         }
     }
+
+    fun `test a change under the Automatic connection counts`() {
+        val panel = cz.xprees.secrets.ui.settings.ProjectBindingPanel(project)
+        com.intellij.ui.dsl.builder.panel { panel.build(this) }
+        panel.reset()
+        assertFalse(panel.isModified())
+        // Automatic stays selected; typing production environments is a change to save
+        panel.productionField.text = "prod, live"
+        assertTrue(panel.isModified())
+    }
 }
