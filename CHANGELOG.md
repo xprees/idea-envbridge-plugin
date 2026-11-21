@@ -58,6 +58,12 @@
 
 ### Fixed
 
+- Settings: adding a connection could do nothing (seen in Rider): the provider chooser opened centred on the focus and could end up
+  behind the Settings dialog; it now opens under the + button. An empty connection list has an *Add a connection…* link
+- Secrets tool window without connections: the empty tree has an *Add a connection…* link that opens the settings and starts adding
+- Settings opened without a project (Welcome screen) show only what applies to every project (connections, general options),
+  instead of project sections that would only have changed the template for new projects
+- Settings: a project bound to a connection removed since kept *Apply* enabled without any change
 - Doppler: browser sign-in failed with *HTTP 400: Invalid CLI version*; it now tells Doppler a CLI release version, as the Doppler
   CLI does
 - 1Password: moving fields to the source item named another way (a title in other letter case) could delete them

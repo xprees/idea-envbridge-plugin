@@ -134,7 +134,10 @@ internal class ProjectBindingPanel(private val project: Project) {
 
     fun isModified(): Boolean {
         val state = settings.state
-        return selectedConnection()?.id != state.connectionId || selectedProjectId() != state.projectId ||
+        // A binding to a connection removed since shows no connection: compare with what reset() could show
+        val connection = app.connection(state.connectionId)
+        if (connection == null) return selectedConnection() != null
+        return selectedConnection()?.id != connection.id || selectedProjectId() != state.projectId ||
             selectedEnvironment() != state.environment || selectedPath() != state.path ||
             selectedProduction() != state.productionEnvironments.orEmpty()
     }

@@ -103,12 +103,16 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 if (e.clickCount != 2) return
                 when (val node = selectedNode()) {
                     is SecretNode -> toggleReveal(node)
-                    is MessageNode -> if (node.kind == MessageNode.Kind.SIGN_IN) node.connection?.let(::signIn)
+                    is MessageNode -> if (node.kind == MessageNode.Kind.SIGN_IN) node.connection?.let(::signIn) ?: SecretsConfigurable.show(project, addConnection = true)
                     else -> Unit
                 }
             }
         })
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
+        tree.emptyText.apply {
+            text = SecretsBundle.message("toolwindow.no.connections")
+            appendSecondaryText(SecretsBundle.message("toolwindow.add.connection"), SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { SecretsConfigurable.show(project, addConnection = true) }
+        }
         installMoving()
 
         val newSecret = NewSecretAction()
@@ -182,7 +186,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             }
             ApplicationManager.getApplication().invokeLater({
                 root.removeAllChildren()
-                if (nodes.isEmpty()) root.add(MessageNode(null, SecretsBundle.message("toolwindow.no.connections"), MessageNode.Kind.SIGN_IN))
+                // No connections: the tree's empty text says so, with a link to the settings
                 nodes.forEach(root::add)
                 model.reload()
                 // Open the connection of the project binding right away
