@@ -18,6 +18,7 @@ import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.provider.ProjectFileDefaults
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.SecretBindingService
@@ -199,7 +200,12 @@ internal class ProjectBindingPanel(private val project: Project) {
             return
         }
         status.text = SecretsBundle.message("settings.binding.loading")
-        background({ SecretsService.getInstance().projects(connection, fresh = force) }) { result ->
+        val provider = SecretProvider.byId(connection.providerId)
+        background({
+            // The project file of the selected connection's provider is read here too (off the EDT: it reads the disk)
+            fileDefaults = connection.providerId to provider?.let { runCatching { SecretBindingService.getInstance(project).projectFile(it) }.getOrNull() }
+            SecretsService.getInstance().projects(connection, fresh = force)
+        }) { result ->
             result.onSuccess { loaded ->
                 setProjects(loaded, keep = selectedProjectId() ?: storedFor(connection) { projectId })
                 fillEnvironments(keep = selectedEnvironment() ?: storedFor(connection) { environment })
@@ -297,19 +303,25 @@ internal class ProjectBindingPanel(private val project: Project) {
     /** What the binding would resolve to with the values currently chosen here (file defaults for "Automatic"). */
     private fun effectiveScope(): SecretScope? {
         val projectId = selectedProjectId() ?: effectiveProjectId() ?: return null
-        val defaults = fileBinding()
+        val defaults = fileDefaults()
         return SecretScope(
             projectId = projectId,
-            environment = selectedEnvironment() ?: defaults?.environment
+            environment = selectedEnvironment() ?: defaults?.branchEnvironment ?: defaults?.environment
                 ?: connectionToUse()?.let { c -> SecretProvider.byId(c.providerId)?.defaultEnvironment(c) } ?: SecretBindingService.DEFAULT_ENVIRONMENT,
             path = SecretScope.normalizePath(selectedPath() ?: defaults?.path),
         )
     }
 
-    private fun effectiveProjectId(): String? = fileBinding()?.projectId
+    private fun effectiveProjectId(): String? = fileDefaults()?.projectId
 
-    private fun fileBinding(): SecretBindingService.Binding? =
-        SecretBindingService.getInstance(project).boundProvider()?.let { SecretBindingService.getInstance(project).bindingOrNull(it) }
+    /** The selected connection's provider's project file, as last read off the EDT ([loadProjects]); null until then or without one. */
+    @Volatile
+    private var fileDefaults: Pair<String, ProjectFileDefaults?>? = null
+
+    private fun fileDefaults(): ProjectFileDefaults? {
+        val providerId = connectionToUse()?.providerId ?: return null
+        return fileDefaults?.takeIf { it.first == providerId }?.second
+    }
 
     private fun askForProjectId() {
         val id = Messages.showInputDialog(
