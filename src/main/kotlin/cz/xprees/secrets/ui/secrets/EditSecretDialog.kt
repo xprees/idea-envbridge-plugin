@@ -42,7 +42,8 @@ class EditSecretDialog(
     private val connection: SecretConnection,
     private val scope: SecretScope,
     private val entry: SecretEntry,
-    private val onSaved: (WriteOutcome) -> Unit = {},
+    /** Called after saving, with the secret's key afterwards (the new one after a rename). */
+    private val onSaved: (outcome: WriteOutcome, key: String) -> Unit = { _, _ -> },
 ) : DialogWrapper(project) {
     private val keyField = JBTextField(entry.key, 30)
     private val valueField = JBPasswordField().apply { text = entry.value.reveal(); columns = 30 }
@@ -158,6 +159,6 @@ class EditSecretDialog(
         }
         SecretsNotifications.info(project, message, plan?.takeIf { !it.isEmpty }?.summary().orEmpty())
         super.doOKAction()
-        onSaved(outcome)
+        onSaved(outcome, if (outcome == WriteOutcome.APPLIED) newKey ?: entry.key else entry.key)
     }
 }

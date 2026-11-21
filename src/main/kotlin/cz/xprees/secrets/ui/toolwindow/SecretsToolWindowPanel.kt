@@ -650,8 +650,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             val node = selectedSecret()?.takeIf(::editable) ?: return
             // The secret may live in a subfolder of a recursive listing: change it where it is defined
             val scope = SecretScope(node.scope.projectId, node.entry.environment.ifBlank { node.scope.environment }, node.entry.path)
-            EditSecretDialog(project, node.connection, scope, node.entry) { outcome ->
-                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(SecretLocation(node.connection.id, scope.projectId, node.scope.environment, node.scope.path, node.entry.key))
+            EditSecretDialog(project, node.connection, scope, node.entry) { outcome, key ->
+                if (outcome == WriteOutcome.APPLIED) refreshAndSelect(SecretLocation(node.connection.id, scope.projectId, node.scope.environment, node.scope.path, key))
             }.show()
         }
     }
