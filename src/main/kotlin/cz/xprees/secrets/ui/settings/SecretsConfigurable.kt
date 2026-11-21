@@ -55,6 +55,9 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
     private val connectionList = JBList(connectionModel)
     private val signedIn = ConcurrentHashMap<String, Boolean>()
 
+    /** Connections whose last sign-in (here) failed: shown so, not as signed in, though credentials may be stored. */
+    private val signInFailed = ConcurrentHashMap.newKeySet<String>()
+
     private val binding = ProjectBindingPanel(project)
 
     /** Starts adding a connection once the page is shown (see [show]). */
@@ -86,8 +89,25 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
             group(SecretsBundle.message("settings.connections")) {
                 row { cell(decorated).align(AlignX.FILL) }
                 row {
-                    button(SecretsBundle.message("action.sign.in")) { selectedConnection()?.let { SignInHelper.signIn(project, it) { refreshSignInStates() } } }
-                    button(SecretsBundle.message("action.sign.out")) { selectedConnection()?.let { SignInHelper.signOut(project, it) { refreshSignInStates() } } }
+                    // Off without a connection to act on
+                    val anyConnection = object : com.intellij.ui.layout.ComponentPredicate() {
+                        override fun invoke() = selectedConnection() != null
+                        override fun addListener(listener: (Boolean) -> Unit) {
+                            connectionList.addListSelectionListener { listener(invoke()) }
+                            connectionModel.addListDataListener(object : javax.swing.event.ListDataListener {
+                                override fun intervalAdded(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                                override fun intervalRemoved(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                                override fun contentsChanged(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                            })
+                        }
+                    }
+                    button(SecretsBundle.message("action.sign.in")) { selectedConnection()?.let(::signIn) }.enabledIf(anyConnection)
+                    button(SecretsBundle.message("action.sign.out")) {
+                        selectedConnection()?.let { connection ->
+                            signInFailed.remove(connection.id)
+                            SignInHelper.signOut(project, connection) { refreshSignInStates() }
+                        }
+                    }.enabledIf(anyConnection)
                 }
                 row { comment(SecretsBundle.message("settings.connections.comment")) }
             }
@@ -214,7 +234,14 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         app.addOrUpdate(connection)
         reloadConnections(select = connection)
         if (Messages.showYesNoDialog(project, SecretsBundle.message("settings.sign.in.now", connection.name), SecretsBundle.message("settings.display.name"), SecretsIcons.PROVIDER) == Messages.YES) {
-            SignInHelper.signIn(project, connection) { refreshSignInStates() }
+            signIn(connection)
+        }
+    }
+
+    private fun signIn(connection: SecretConnection) {
+        SignInHelper.signIn(project, connection) { ok ->
+            if (ok) signInFailed.remove(connection.id) else signInFailed.add(connection.id)
+            refreshSignInStates()
         }
     }
 
@@ -225,6 +252,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         val connection = dialog.result ?: return
         app.addOrUpdate(connection)
         SecretsService.getInstance().invalidate(connection.id)
+        signInFailed.remove(connection.id)
         reloadConnections(select = connection)
     }
 
@@ -265,6 +293,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
             val method = SecretProvider.byId(value.providerId)?.authMethod(value.authMethodId)?.displayName ?: value.authMethodId
             append("  · $method", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
             when (signedIn[value.id]) {
+                true if value.id in signInFailed -> append("  " + SecretsBundle.message("settings.signin.failed"), SimpleTextAttributes.ERROR_ATTRIBUTES)
                 true -> append("  " + SecretsBundle.message("settings.signed.in"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
                 false -> append("  " + SecretsBundle.message("toolwindow.signed.out"), SimpleTextAttributes.ERROR_ATTRIBUTES)
                 null -> Unit
