@@ -76,8 +76,19 @@ internal class ProjectBindingPanel(private val project: Project) {
         row(SecretsBundle.message("settings.binding.environment")) { cell(environmentCombo).align(AlignX.FILL).resizableColumn() }
         row(SecretsBundle.message("settings.binding.path")) { cell(folderCombo).align(AlignX.FILL).resizableColumn() }
         row {
-            button(SecretsBundle.message("settings.binding.check")) { check() }
-            button(SecretsBundle.message("settings.binding.reload")) { loadProjects(force = true) }
+            // Nothing to check or load without a connection
+            val anyConnection = object : com.intellij.ui.layout.ComponentPredicate() {
+                override fun invoke() = connectionCombo.itemCount > 1 // the first item is Automatic
+                override fun addListener(listener: (Boolean) -> Unit) {
+                    connectionCombo.model.addListDataListener(object : javax.swing.event.ListDataListener {
+                        override fun intervalAdded(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                        override fun intervalRemoved(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                        override fun contentsChanged(e: javax.swing.event.ListDataEvent?) = listener(invoke())
+                    })
+                }
+            }
+            button(SecretsBundle.message("settings.binding.check")) { check() }.enabledIf(anyConnection)
+            button(SecretsBundle.message("settings.binding.reload")) { loadProjects(force = true) }.enabledIf(anyConnection)
         }
         row { cell(status).align(AlignX.FILL).resizableColumn() }
         row(SecretsBundle.message("settings.binding.production")) {
@@ -94,7 +105,7 @@ internal class ProjectBindingPanel(private val project: Project) {
                 .bindSelected({ settings.state.restrictToBoundProject }, { value -> settings.update { restrictToBoundProject = value } })
                 .comment(SecretsBundle.message("settings.binding.restrict.comment"))
         }
-        row { comment(SecretsBundle.message("settings.binding.comment")) }
+        row { comment(SecretsBundle.message("settings.binding.comment"), maxLineLength = 90) }
 
         connectionCombo.addActionListener {
             if (updating > 0) return@addActionListener

@@ -12,6 +12,7 @@ import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.layout.ComponentPredicate
 import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.util.text.StringUtil
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.provider.SetupLink
 import cz.xprees.secrets.core.auth.CredentialVault
@@ -69,6 +70,9 @@ class ConnectionDialog(
     init {
         title = SecretsBundle.message(if (existing == null) "connection.title.add" else "connection.title.edit")
         init()
+        // Fit the fields of the chosen method: the dialog shrinks back after a method with more fields (after the
+        // panel's own visibility listeners ran)
+        methodCombo.addActionListener { com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater({ if (isShowing) pack() }, com.intellij.openapi.application.ModalityState.any()) }
     }
 
     private val selectedMethod: AuthMethod get() = methodCombo.selectedItem as AuthMethod
@@ -81,7 +85,8 @@ class ConnectionDialog(
         row(SecretsBundle.message("connection.method")) { cell(methodCombo).align(AlignX.FILL) }
         for (method in provider.authMethods) {
             val visible = MethodSelected(method)
-            row { comment(method.description, maxLineLength = 70) }.visibleIf(visible)
+            // Plain text: comments render HTML, where `<port>` would vanish
+            row { comment(StringUtil.escapeXmlEntities(method.description), maxLineLength = 70) }.visibleIf(visible)
             if (method.setupLinks.isNotEmpty()) {
                 row {
                     // A page may depend on the instance typed in, so it is worked out on click
@@ -95,7 +100,7 @@ class ConnectionDialog(
                 row(option.label) { cell(secretFields.getValue(method.id).getValue(option.key)).align(AlignX.FILL) }.visibleIf(visible)
             }
         }
-        row { comment(SecretsBundle.message("connection.storage.comment"), maxLineLength = 70) }
+        row { comment(StringUtil.escapeXmlEntities(SecretsBundle.message("connection.storage.comment")), maxLineLength = 70) }
     }.also { it.preferredSize = it.preferredSize.apply { width = maxOf(width, 560) } }
 
     private inner class MethodSelected(private val method: AuthMethod) : ComponentPredicate() {

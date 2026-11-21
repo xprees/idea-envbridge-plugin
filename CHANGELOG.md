@@ -58,6 +58,12 @@
 
 ### Fixed
 
+- Connection dialog: the redirect URIs of Vault OIDC and Infisical OAuth lost their `<port>`, and the password storage note its
+  "&"; the dialog shrinks back after choosing a sign-in method with fewer fields
+- Network failures read as words ("the connection was refused or the server can't be reached…") instead of exception class
+  names like `ConnectException`
+- Settings: a connection whose sign-in failed shows *can't sign in* instead of *signed in*; *Sign In* / *Sign Out*, *Check* and
+  *Reload Projects* are off while there is no connection; the project file option names every provider's file
 - Settings › This Project: with the connection on *Automatic*, changes to the project, environment, folder or production
   environments weren't saved (*Apply* stayed off)
 - Editing only a secret's comment (or leaving its value as shown) no longer replaces an Infisical or Doppler value that holds
