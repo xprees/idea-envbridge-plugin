@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Vault/OpenBao: KV version 1 mounts.** Reading, listing, injecting and writing (create, edit, rename, move, delete) now work on
+  KV v1 secrets engines too, next to KV v2. Each mount's version is found the way the Vault CLI finds it, so nothing needs to be
+  configured; moves also work between KV v1 and KV v2 mounts. KV v1 has no versions or check-and-set, so a change someone else
+  makes to the same secret at the same moment can't be detected there (KV v2 writes keep refusing it), and removing a KV v1
+  secret's last field deletes the secret for good
+- **1Password: Open in Dashboard** for connections through the 1Password app or a service account: an item opens through its
+  1Password private link, a vault in your account's web app (the account comes from `op whoami`). Connect servers have no link
 - **Secrets tool window, compact and keyboard-friendly.** The copy variants are in a *Copy* submenu; the toolbar keeps the everyday
   actions (sign-out stays in the settings and the connection's menu). Copy, cut and paste secrets between folders and environments
   (*Paste* copies or moves them, with confirmation). The IDE's standard shortcuts from your keymap work in the tree: Alt+Insert
