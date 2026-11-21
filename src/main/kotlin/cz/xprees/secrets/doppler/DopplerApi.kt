@@ -82,13 +82,14 @@ class DopplerApi(val http: DopplerHttp) {
 
     // ---- Browser sign-in (the Doppler CLI's flow) --------------------------------------------------------------------
 
+
     /** Starts a browser sign-in. [hostname] names the token in the user's Doppler token list. */
     fun generateAuthCode(hostname: String, os: String, arch: String): AuthCode {
         // As the Doppler CLI does (pkg/http/api.go GenerateAuthCode): GET with the machine's details, no token
         val response = http.send(
             "GET",
             "/v3/auth/cli/generate/2",
-            query = mapOf("hostname" to hostname, "version" to "envbridge", "os" to os, "arch" to arch),
+            query = mapOf("hostname" to hostname, "version" to CLI_VERSION, "os" to os, "arch" to arch),
         )
         if (!response.isSuccess) throw DopplerHttp.failure(response, "Starting the Doppler sign-in")
         val o = response.json().asJsonObject
@@ -255,6 +256,13 @@ class DopplerApi(val http: DopplerHttp) {
     }
 
     companion object {
+        /**
+         * The `version` the sign-in endpoint is told. Doppler accepts only a CLI release version (`v<major>.<minor>.<patch>`, as
+         * release builds of the CLI send) and answers anything else with HTTP 400 "Invalid CLI version"; the token's name
+         * ([generateAuthCode]'s hostname) still says EnvBridge.
+         */
+        const val CLI_VERSION = "v3.77.1"
+
         const val PER_PAGE = 100
         const val MAX_PAGES = 20
 
