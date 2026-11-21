@@ -10,6 +10,7 @@ import cz.xprees.secrets.core.model.SecretValue
 
 import cz.xprees.secrets.core.provider.WriteOutcome
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
@@ -85,30 +86,38 @@ object InfisicalAuthMethods {
     val ALL = listOf(
         AuthMethod(
             id = BROWSER,
-            displayName = "Browser sign-in",
-            description = "Sign in with your Infisical account in the system browser, as the Infisical CLI does. No setup needed; " +
-                "the session has your permissions.",
+            displayName = SecretsBundle.message("auth.infisical.browser.name"),
+            description = SecretsBundle.message("auth.infisical.browser.description"),
         ),
         AuthMethod(
             id = OAUTH,
-            displayName = "OAuth application",
-            description = "Least privilege: a read-only (secrets:read) token from an OAuth application your organization registered, " +
-                "approved in the browser. Register the redirect URI http://127.0.0.1:<port>/callback.",
+            displayName = SecretsBundle.message("auth.infisical.oauth.name"),
+            description = SecretsBundle.message("auth.infisical.oauth.description"),
             options = listOf(
-                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
-                AuthOption(OPTION_CALLBACK_PORT, "Redirect port:", required = false, hint = DEFAULT_CALLBACK_PORT.toString()),
+                AuthOption(OPTION_CLIENT_ID, SecretsBundle.message("auth.infisical.option.clientId.label")),
+                AuthOption(
+                    OPTION_CALLBACK_PORT,
+                    SecretsBundle.message("auth.infisical.option.callbackPort.label"),
+                    required = false,
+                    hint = DEFAULT_CALLBACK_PORT.toString(),
+                ),
             ),
-            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, SecretsBundle.message("auth.infisical.option.clientSecret.label"))),
         ),
         AuthMethod(
             id = MACHINE_IDENTITY,
-            displayName = "Machine identity (Universal Auth)",
-            description = "A machine identity's client ID and secret, for setups without a browser or with dedicated identities.",
+            displayName = SecretsBundle.message("auth.infisical.machine.identity.name"),
+            description = SecretsBundle.message("auth.infisical.machine.identity.description"),
             options = listOf(
-                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
-                AuthOption(OPTION_ORGANIZATION_SLUG, "Organization slug:", required = false, hint = "optional"),
+                AuthOption(OPTION_CLIENT_ID, SecretsBundle.message("auth.infisical.option.clientId.label")),
+                AuthOption(
+                    OPTION_ORGANIZATION_SLUG,
+                    SecretsBundle.message("auth.infisical.option.organizationSlug.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.infisical.option.organizationSlug.hint"),
+                ),
             ),
-            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, SecretsBundle.message("auth.infisical.option.clientSecret.label"))),
         ),
     )
 }

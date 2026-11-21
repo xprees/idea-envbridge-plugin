@@ -1,5 +1,6 @@
 package cz.xprees.secrets.doppler
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -91,16 +92,20 @@ object DopplerAuthMethods {
     val ALL = listOf(
         AuthMethod(
             id = BROWSER,
-            displayName = "Browser sign-in",
-            description = "Sign in with your Doppler account in the system browser, as `doppler login` does: check that the browser " +
-                "shows the code the IDE shows, and approve. The token is kept in the IDE's password storage and revoked on sign-out.",
+            displayName = SecretsBundle.message("auth.doppler.browser.name"),
+            description = SecretsBundle.message("auth.doppler.browser.description"),
         ),
         AuthMethod(
             id = TOKEN,
-            displayName = "Token",
-            description = "A personal token (dp.pt.…), a service account token (dp.sa.…) or a service token (dp.st.…, which reads " +
-                "one config only). Kept in the IDE's password storage; sign-out forgets it but doesn't revoke it.",
-            secretOptions = listOf(AuthOption(OPTION_TOKEN, "Token:", hint = "dp.pt.…, dp.sa.… or dp.st.…")),
+            displayName = SecretsBundle.message("auth.doppler.token.name"),
+            description = SecretsBundle.message("auth.doppler.token.description"),
+            secretOptions = listOf(
+                AuthOption(
+                    OPTION_TOKEN,
+                    SecretsBundle.message("auth.doppler.option.token.label"),
+                    hint = SecretsBundle.message("auth.doppler.option.token.hint"),
+                ),
+            ),
         ),
     )
 }

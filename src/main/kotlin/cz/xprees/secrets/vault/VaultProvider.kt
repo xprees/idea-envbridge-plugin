@@ -1,5 +1,6 @@
 package cz.xprees.secrets.vault
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -79,52 +80,88 @@ object VaultAuthMethods {
 
     /** Options every method has: where to sign in and what to show. */
     private val COMMON = listOf(
-        AuthOption(OPTION_NAMESPACE, "Namespace:", required = false, hint = "root (Vault Enterprise, HCP Vault, OpenBao)"),
-        AuthOption(OPTION_NAMESPACES, "More namespaces:", required = false, hint = "optional, comma-separated: team-a, team-a/dev"),
-        AuthOption(OPTION_MOUNTS, "KV v2 mounts:", required = false, hint = "listed from the server; or comma-separated: secret, kv"),
+        AuthOption(
+            OPTION_NAMESPACE,
+            SecretsBundle.message("auth.vault.option.namespace.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.namespace.hint"),
+        ),
+        AuthOption(
+            OPTION_NAMESPACES,
+            SecretsBundle.message("auth.vault.option.namespaces.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.namespaces.hint"),
+        ),
+        AuthOption(
+            OPTION_MOUNTS,
+            SecretsBundle.message("auth.vault.option.mounts.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.mounts.hint"),
+        ),
     )
 
-    private fun mount(default: String) = AuthOption(OPTION_MOUNT, "Auth mount path:", required = false, hint = default)
+    private fun mount(default: String) =
+        AuthOption(OPTION_MOUNT, SecretsBundle.message("auth.vault.option.authMount.label"), required = false, hint = default)
 
     val ALL = listOf(
         AuthMethod(
             id = OIDC,
-            displayName = "OIDC (browser)",
-            description = "Sign in with your identity provider in the system browser, as `vault login -method=oidc` does. The role must " +
-                "allow the redirect URI http://localhost:<port>/oidc/callback (the Vault CLI's).",
+            displayName = SecretsBundle.message("auth.vault.oidc.name"),
+            description = SecretsBundle.message("auth.vault.oidc.description"),
             options = listOf(
-                AuthOption(OPTION_ROLE, "Role:", required = false, hint = "the mount's default role"),
+                AuthOption(
+                    OPTION_ROLE,
+                    SecretsBundle.message("auth.vault.option.role.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.vault.option.role.hint"),
+                ),
                 mount(OIDC),
-                AuthOption(OPTION_CALLBACK_PORT, "Redirect port:", required = false, hint = DEFAULT_CALLBACK_PORT.toString()),
+                AuthOption(
+                    OPTION_CALLBACK_PORT,
+                    SecretsBundle.message("auth.vault.option.callbackPort.label"),
+                    required = false,
+                    hint = DEFAULT_CALLBACK_PORT.toString(),
+                ),
             ) + COMMON,
         ),
         AuthMethod(
             id = TOKEN,
-            displayName = "Token",
-            description = "A Vault token. Left empty, the Vault CLI's token (~/.vault-token, from `vault login`) is used.",
+            displayName = SecretsBundle.message("auth.vault.token.name"),
+            description = SecretsBundle.message("auth.vault.token.description"),
             options = COMMON,
-            secretOptions = listOf(AuthOption(OPTION_TOKEN, "Token:", required = false, hint = "~/.vault-token")),
+            secretOptions = listOf(AuthOption(
+                OPTION_TOKEN,
+                SecretsBundle.message("auth.vault.option.token.label"),
+                required = false,
+                hint = SecretsBundle.message("auth.vault.option.token.hint"),
+            )),
         ),
         AuthMethod(
             id = APPROLE,
-            displayName = "AppRole",
-            description = "A role ID and secret ID, for machines and dedicated identities.",
-            options = listOf(AuthOption(OPTION_ROLE_ID, "Role ID:"), mount(APPROLE)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_SECRET_ID, "Secret ID:")),
+            displayName = SecretsBundle.message("auth.vault.approle.name"),
+            description = SecretsBundle.message("auth.vault.approle.description"),
+            options = listOf(AuthOption(OPTION_ROLE_ID, SecretsBundle.message("auth.vault.option.roleId.label")), mount(APPROLE)) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_SECRET_ID, SecretsBundle.message("auth.vault.option.secretId.label"))),
         ),
         AuthMethod(
             id = USERPASS,
-            displayName = "Username and password",
-            description = "The userpass auth method.",
-            options = listOf(AuthOption(OPTION_USERNAME, "Username:"), mount(USERPASS)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_PASSWORD, "Password:")),
+            displayName = SecretsBundle.message("auth.vault.userpass.name"),
+            description = SecretsBundle.message("auth.vault.userpass.description"),
+            options = listOf(
+                AuthOption(OPTION_USERNAME, SecretsBundle.message("auth.vault.option.username.label")),
+                mount(USERPASS),
+            ) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_PASSWORD, SecretsBundle.message("auth.vault.option.password.label"))),
         ),
         AuthMethod(
             id = LDAP,
-            displayName = "LDAP",
-            description = "Your directory username and password (the LDAP auth method).",
-            options = listOf(AuthOption(OPTION_USERNAME, "Username:"), mount(LDAP)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_PASSWORD, "Password:")),
+            displayName = SecretsBundle.message("auth.vault.ldap.name"),
+            description = SecretsBundle.message("auth.vault.ldap.description"),
+            options = listOf(
+                AuthOption(OPTION_USERNAME, SecretsBundle.message("auth.vault.option.username.label")),
+                mount(LDAP),
+            ) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_PASSWORD, SecretsBundle.message("auth.vault.option.password.label"))),
         ),
     )
 }

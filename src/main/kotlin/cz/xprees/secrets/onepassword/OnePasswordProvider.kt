@@ -1,6 +1,7 @@
 package cz.xprees.secrets.onepassword
 
 import com.google.gson.JsonObject
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.ProviderEnvironment
@@ -66,36 +67,44 @@ object OnePasswordAuthMethods {
     const val OPTION_SERVICE_ACCOUNT_TOKEN = "serviceAccountToken"
     const val OPTION_CONNECT_TOKEN = "connectToken"
 
-    private val OP_PATH = AuthOption(OPTION_OP_PATH, "1Password CLI (op):", required = false, hint = "found on PATH or in the usual install locations")
+    private val OP_PATH = AuthOption(
+        OPTION_OP_PATH,
+        SecretsBundle.message("auth.onepassword.option.opPath.label"),
+        required = false,
+        hint = SecretsBundle.message("auth.onepassword.option.opPath.hint"),
+    )
 
     val ALL = listOf(
         AuthMethod(
             id = DESKTOP_APP,
-            displayName = "1Password app (through the CLI)",
-            description = "The 1Password CLI (op) asks your 1Password app to approve access (Touch ID, Windows Hello, your system " +
-                "password…), so no password or token is entered here. Needs the CLI and, in the app, Settings › Developer › " +
-                "Integrate with 1Password CLI.",
+            displayName = SecretsBundle.message("auth.onepassword.desktop.app.name"),
+            description = SecretsBundle.message("auth.onepassword.desktop.app.description"),
             options = listOf(
-                AuthOption(OPTION_ACCOUNT, "Account:", required = false, hint = "shorthand, sign-in address or ID; empty: the CLI's default"),
+                AuthOption(
+                    OPTION_ACCOUNT,
+                    SecretsBundle.message("auth.onepassword.option.account.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.onepassword.option.account.hint"),
+                ),
                 OP_PATH,
             ),
             usesBaseUrl = false,
         ),
         AuthMethod(
             id = SERVICE_ACCOUNT,
-            displayName = "Service account (through the CLI)",
-            description = "A 1Password service account token, kept in the IDE's password storage and given to the CLI (op) only in " +
-                "its environment (OP_SERVICE_ACCOUNT_TOKEN), never on its command line. The service account sees only the vaults " +
-                "it was granted.",
+            displayName = SecretsBundle.message("auth.onepassword.service.account.name"),
+            description = SecretsBundle.message("auth.onepassword.service.account.description"),
             options = listOf(OP_PATH),
-            secretOptions = listOf(AuthOption(OPTION_SERVICE_ACCOUNT_TOKEN, "Service account token:")),
+            secretOptions = listOf(
+                AuthOption(OPTION_SERVICE_ACCOUNT_TOKEN, SecretsBundle.message("auth.onepassword.option.serviceAccountToken.label")),
+            ),
             usesBaseUrl = false,
         ),
         AuthMethod(
             id = CONNECT,
-            displayName = "1Password Connect server",
-            description = "A self-hosted 1Password Connect server (its address above) and an access token for it.",
-            secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, "Access token:")),
+            displayName = SecretsBundle.message("auth.onepassword.connect.name"),
+            description = SecretsBundle.message("auth.onepassword.connect.description"),
+            secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, SecretsBundle.message("auth.onepassword.option.connectToken.label"))),
         ),
     )
 }
