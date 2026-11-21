@@ -168,6 +168,20 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
             .isEqualTo("db-pass-$server")
     }
 
+    fun `test a field is renamed in one check-and-set write`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val app = SecretScope("secret", "root", "/envbridge-rw/rename-${System.nanoTime()}")
+        service.createSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("t1"))
+        service.createSecret(connection, app, "url", cz.xprees.secrets.core.model.SecretValue("https://example.test"))
+        service.updateSecret(connection, app, "token", cz.xprees.secrets.core.model.SecretValue("t1"), null, "api_token")
+        assertThat(client(connection).listSecrets(app).associate { it.key to it.value.reveal() })
+            .containsOnlyKeys("api_token", "url").containsEntry("api_token", "t1")
+        assertThat(VaultApi(VaultHttp(address)).readVersioned(session(connection).accessToken, VaultApi.ROOT_NAMESPACE, "secret", app.path).version).isEqualTo(3)
+        assertThatThrownBy { service.updateSecret(connection, app, "api_token", cz.xprees.secrets.core.model.SecretValue("x"), null, "url") }
+            .hasMessageContaining("already has a field url")
+    }
+
     fun `test fields are written, moved and deleted with check-and-set`() {
         val connection = appRole()
         val service = SecretsService.getInstance()

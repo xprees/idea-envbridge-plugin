@@ -22,7 +22,7 @@ import cz.xprees.secrets.editor.DotEnvLines
 import cz.xprees.secrets.run.EnvPatcher
 
 /**
- * After secrets moved, updates the project's references to them, so everything keeps reading the same secrets:
+ * After secrets moved or one was renamed, updates the project's references to them, so everything keeps reading the same secrets:
  * run configurations' environment variables, `.env` files (values and binding comments) and the terminal's references.
  *
  * All changes are one command, *Update Secret References*, undoable as a whole with Edit › Undo: the files through their
@@ -35,28 +35,41 @@ class ReferenceUpdater(private val project: Project) {
         internal val files: List<Pair<VirtualFile, List<MovedReferences.Edit>>>,
         internal val configurations: List<Triple<RunnerAndConfigurationSettings, Map<String, String>, Map<String, String>>>,
         internal val terminal: Pair<String, String>?,
+        /** For a rename (else a move): only the summary's wording differs. */
+        internal val rename: Boolean = false,
     ) {
         val references: Int get() = files.sumOf { it.second.size } + configurations.sumOf { (_, old, new) -> old.count { (k, v) -> new[k] != v } } +
             (if (terminal != null) 1 else 0)
 
         val isEmpty: Boolean get() = files.isEmpty() && configurations.isEmpty() && terminal == null
 
-        fun summary(): String = SecretsBundle.message("move.references.summary", references, files.size, configurations.size)
+        fun summary(): String =
+            SecretsBundle.message(if (rename) "rename.references.summary" else "move.references.summary", references, files.size, configurations.size)
     }
 
     /**
      * Finds the references to [keys], moved from [source] to [destination] on [connection]. Reads files: call in a read action
      * off the EDT (or in tests).
      */
-    fun plan(connection: SecretConnection, keys: Collection<String>, source: SecretScope, destination: SecretScope): Plan {
+    fun plan(connection: SecretConnection, keys: Collection<String>, source: SecretScope, destination: SecretScope): Plan =
+        plan(connection, keys, source, destination, emptyMap())
+
+    /**
+     * Finds the references to [oldKey] of the folder of [scope] on [connection], renamed to [newKey]. Reads files: call in a read
+     * action off the EDT (or in tests).
+     */
+    fun planRename(connection: SecretConnection, scope: SecretScope, oldKey: String, newKey: String): Plan =
+        plan(connection, listOf(oldKey), scope, scope, mapOf(oldKey to newKey))
+
+    private fun plan(connection: SecretConnection, keys: Collection<String>, source: SecretScope, destination: SecretScope, renames: Map<String, String>): Plan {
         val provider = SecretProvider.byId(connection.providerId) ?: return Plan(emptyList(), emptyList(), null)
         val bindings = SecretBindingService.getInstance(project)
         val binding = bindings.bindingOrNull(provider)
         // A reference without ?connection= reads the bound connection of its provider
         val boundIsMoved = binding?.connection?.id == connection.id
-        val moved = MovedReferences(provider.referenceScheme, keys.toSet(), source, destination) { named ->
+        val moved = MovedReferences(provider.referenceScheme, keys.toSet(), source, destination, isMovedConnection = { named ->
             if (named == null) boundIsMoved else named == connection.id || named.equals(connection.name, ignoreCase = true)
-        }
+        }, renames = renames)
         val defaults = SecretReference.Defaults(binding?.projectId ?: source.projectId, binding?.environment ?: source.environment, binding?.path ?: "/")
 
         val files = mutableListOf<Pair<VirtualFile, List<MovedReferences.Edit>>>()
@@ -80,7 +93,7 @@ class ReferenceUpdater(private val project: Project) {
         val terminalText = ProjectSecretsSettings.getInstance(project).state.terminalReferences
         val terminal = terminalText?.let { moved.rewriteText(it, defaults) }?.let { terminalText to it }
 
-        return Plan(files, configurations, terminal)
+        return Plan(files, configurations, terminal, rename = renames.isNotEmpty())
     }
 
     /** Makes the [plan]'s changes as one undoable command. On the EDT. */
@@ -125,5 +138,9 @@ class ReferenceUpdater(private val project: Project) {
         /** [plan] in a read action, for callers off the EDT. */
         fun planInReadAction(project: Project, connection: SecretConnection, keys: Collection<String>, source: SecretScope, destination: SecretScope): Plan =
             ReadAction.compute<Plan, RuntimeException> { ReferenceUpdater(project).plan(connection, keys, source, destination) }
+
+        /** [planRename] in a read action, for callers off the EDT. */
+        fun planRenameInReadAction(project: Project, connection: SecretConnection, scope: SecretScope, oldKey: String, newKey: String): Plan =
+            ReadAction.compute<Plan, RuntimeException> { ReferenceUpdater(project).planRename(connection, scope, oldKey, newKey) }
     }
 }

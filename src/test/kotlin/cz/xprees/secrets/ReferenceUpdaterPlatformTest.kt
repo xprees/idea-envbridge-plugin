@@ -82,6 +82,42 @@ class ReferenceUpdaterPlatformTest : BasePlatformTestCase() {
         assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://backend/DB_PASSWORD")
     }
 
+    fun `test a renamed secret's references take the new name everywhere, undoably as one command`() {
+        val env = myFixture.addFileToProject(
+            ".env",
+            "DB_PASSWORD= # infisical://DB_PASSWORD\nOTHER=infisical://backend/DB_PASSWORD\nPROD=infisical://prod:DB_PASSWORD\n",
+        ).virtualFile
+        val runManager = RunManager.getInstance(project)
+        val app = runManager.createConfiguration("App", ApplicationConfigurationType.getInstance().configurationFactories[0])
+        (app.configuration as ApplicationConfiguration).envs = linkedMapOf("DB" to "infisical://DB_PASSWORD", "PLAIN" to "x")
+        runManager.addConfiguration(app)
+
+        val updater = ReferenceUpdater(project)
+        val plan = updater.planRename(connection, SecretScope("p1", "dev", "/"), "DB_PASSWORD", "DATABASE_PASSWORD")
+        assertThat(plan.references).isEqualTo(3)
+        assertThat(plan.summary()).contains("new name")
+        updater.apply(plan)
+
+        val document = FileDocumentManager.getInstance().getDocument(env)!!
+        assertThat(document.text)
+            .isEqualTo("DB_PASSWORD= # infisical://DATABASE_PASSWORD\nOTHER=infisical://backend/DB_PASSWORD\nPROD=infisical://prod:DB_PASSWORD\n")
+        assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://DATABASE_PASSWORD").containsEntry("PLAIN", "x")
+        assertThat(ProjectSecretsSettings.getInstance(project).state.terminalReferences).isEqualTo("infisical://*\nDB=infisical://DATABASE_PASSWORD")
+
+        TestDialogManager.setTestDialog(TestDialog.OK)
+        val undo = UndoManager.getInstance(project)
+        assertThat(undo.isUndoAvailable(null)).isTrue()
+        undo.undo(null)
+        assertThat(document.text).startsWith("DB_PASSWORD= # infisical://DB_PASSWORD\n")
+        assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://DB_PASSWORD")
+        assertThat(ProjectSecretsSettings.getInstance(project).state.terminalReferences).isEqualTo("infisical://*\nDB=infisical://DB_PASSWORD")
+        // one command: nothing of it is left to undo
+        assertThat(document.text).doesNotContain("DATABASE_PASSWORD")
+        undo.redo(null)
+        assertThat(document.text).contains("infisical://DATABASE_PASSWORD")
+        assertThat((app.configuration as ApplicationConfiguration).envs).containsEntry("DB", "infisical://DATABASE_PASSWORD")
+    }
+
     fun `test nothing to update makes no command`() {
         val plan = ReferenceUpdater(project).plan(connection, listOf("NOT_USED"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/x"))
         assertThat(plan.isEmpty).isTrue()

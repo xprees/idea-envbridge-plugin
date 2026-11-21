@@ -333,6 +333,38 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/new" }.body).contains("\"cas\":0")
     }
 
+    fun `test a field is renamed in one check-and-set write, keeping its place, type and the other fields`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val api = SecretScope("secret", "root", "/app/api")
+
+        // "limits" is JSON: renamed with its value left as listed, it stays JSON
+        service.updateSecret(connection, api, "limits", SecretValue("""{"rps":10}"""), null, "rate_limits")
+        val written = mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }
+        assertThat(written.body).contains("\"cas\":1").contains("\"rate_limits\":{\"rps\":10").doesNotContain("\"limits\"")
+        assertThat(mock.secrets.getValue("root").getValue("secret/app/api").keys).containsExactly("key", "rate_limits")
+        assertThat(client(connection).listSecrets(api).associate { it.key to it.value.reveal() })
+            .containsEntry("key", "root-api-key").containsEntry("rate_limits", """{"rps":10}""").doesNotContainKey("limits")
+
+        // with a new value: renamed and changed in the same version
+        service.updateSecret(connection, api, "key", SecretValue("rotated"), null, "api_key")
+        assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }.body).contains("\"cas\":2")
+        assertThat(client(connection).listSecrets(api).associate { it.key to it.value.reveal() }).containsOnly(
+            org.assertj.core.api.Assertions.entry("api_key", "rotated"), org.assertj.core.api.Assertions.entry("rate_limits", """{"rps":10}"""),
+        )
+
+        // a name the secret already has: refused, nothing written
+        val writes = mock.writes.size
+        assertThatThrownBy { service.updateSecret(connection, api, "api_key", SecretValue("x"), null, "rate_limits") }
+            .hasMessageContaining("already has a field rate_limits")
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, api, "api_key", SecretValue("x"), null, "") }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, api, "missing", SecretValue("x"), null, "other") }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.NOT_FOUND)
+        assertThat(mock.writes).hasSize(writes)
+    }
+
     fun `test refused writes say why`() {
         val connection = appRole()
         val service = SecretsService.getInstance()

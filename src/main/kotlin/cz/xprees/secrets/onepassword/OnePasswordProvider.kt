@@ -19,6 +19,7 @@ import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.renameTarget
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import javax.swing.Icon
@@ -280,14 +281,35 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         return WriteOutcome.APPLIED
     }
 
-    /** Changes the field's value; a [comment] that isn't null replaces the item's notes (shown as every field's comment). */
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * Changes the field's value; a [comment] that isn't null replaces the item's notes (shown as every field's comment). A
+     * [newKey] changes the field's label in the same save; refused before saving when another field of the item has that
+     * label, or when the field is a built-in one (a login's username or password, the notes), whose label 1Password keeps.
+     */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         val segments = writableSegments(scope, allowRoot = false)
+        val rename = renameTarget(key, newKey)
         edit(scope.projectId, segments[0]) { json, item ->
             val field = requireField(item, segments, key)
-            OnePasswordEdits.setValue(OnePasswordEdits.field(json, field.id), value.reveal())
+            if (rename != null) {
+                if (field.purpose.isNotEmpty()) {
+                    throw SecretProviderException(
+                        Kind.CONFIGURATION,
+                        "\"$key\" is a built-in field of item ${segments[0]} and 1Password keeps its name; add a field \"$rename\" with New Secret instead",
+                    )
+                }
+                if (item.fields.any { it.id != field.id && keyOf(it) == rename }) {
+                    throw SecretProviderException(
+                        Kind.CONFIGURATION,
+                        "Item ${segments[0]} already has a field \"$rename\" (field labels must be unique within an item for op:// references); choose another name",
+                    )
+                }
+            }
+            val target = OnePasswordEdits.field(json, field.id)
+            OnePasswordEdits.setValue(target, value.reveal())
+            rename?.let { OnePasswordEdits.setLabel(target, it) }
             comment?.let { OnePasswordEdits.setNotes(json, it) }
-            Expect(present = setOf(field.id))
+            Expect(present = setOf(field.id), labels = rename?.let { mapOf(field.id to it) }.orEmpty())
         }
         return WriteOutcome.APPLIED
     }
@@ -393,8 +415,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         }
     }
 
-    /** What a save must show afterwards: fields (by ID) that exist and that are gone. Values aren't compared. */
-    private data class Expect(val present: Set<String> = emptySet(), val absent: Set<String> = emptySet())
+    /** What a save must show afterwards: fields (by ID) that exist and that are gone, and new labels. Values aren't compared. */
+    private data class Expect(val present: Set<String> = emptySet(), val absent: Set<String> = emptySet(), val labels: Map<String, String> = emptyMap())
 
     /** Reads the item, lets [change] edit its JSON (with the parsed item for lookups), and saves it whole. */
     private fun edit(vault: String, item: String, change: (JsonObject, OpItem) -> Expect) {
@@ -409,7 +431,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
     private fun save(vault: String, json: JsonObject, expect: Expect) {
         val result = backend.replaceItem(vault, json)
         val ids = OnePasswordEdits.fieldIds(result) ?: return
-        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids }) throw notApplied("save item ${json.get("title")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()}")
+        val labelsApplied = expect.labels.isEmpty() || OnePasswordEdits.fieldLabels(result).let { labels -> expect.labels.all { (id, label) -> labels[id] == label } }
+        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids } || !labelsApplied) throw notApplied("save item ${json.get("title")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()}")
     }
 
     private fun notApplied(what: String) = SecretProviderException(

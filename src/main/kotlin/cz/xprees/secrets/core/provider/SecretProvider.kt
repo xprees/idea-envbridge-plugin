@@ -145,8 +145,12 @@ interface SecretsClient {
     /**
      * Changes the shared secret [key] in the folder of [scope]: its [value] and, when not null, its [comment]. Same rules as
      * [createSecret]: explicit user action only, CONFIGURATION when this connection can't write.
+     *
+     * With a [newKey] (other than [key]) the secret is also renamed to [newKey], in the same write where the provider allows.
+     * Fails with CONFIGURATION, before anything is written, when [newKey] isn't a valid name for the provider, or a secret
+     * called [newKey] already exists in that folder, or the provider can't rename.
      */
-    fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome =
+    fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String? = null, newKey: String? = null): WriteOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't change secrets")
 
     /**
@@ -174,6 +178,19 @@ data class MoveResult(
     /** Copied to the destination, but the source copy could not be removed (key -> reason): they exist in both places. */
     val notRemoved: Map<String, String> = emptyMap(),
 )
+
+/**
+ * [newKey] when it renames [key] (trimmed, not blank, different), else null. Throws CONFIGURATION for a blank name or one
+ * with surrounding blanks. Shared by the providers' [SecretsClient.updateSecret].
+ */
+fun renameTarget(key: String, newKey: String?): String? {
+    if (newKey == null || newKey == key) return null
+    if (newKey.isBlank()) throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "The new name of $key is empty")
+    if (newKey != newKey.trim()) {
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "The new name \"$newKey\" starts or ends with a blank")
+    }
+    return newKey
+}
 
 /** What a write ([SecretsClient.createSecret], [SecretsClient.updateSecret]) did. */
 enum class WriteOutcome {

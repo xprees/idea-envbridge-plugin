@@ -73,11 +73,14 @@ class SecretsService {
         }
     }
 
-    /** Changes a secret (see [SecretsClient.updateSecret]) and forgets the connection's cached values. Off the EDT. */
-    fun updateSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome {
+    /**
+     * Changes a secret (see [SecretsClient.updateSecret]), renaming it to [newKey] when given, and forgets the connection's
+     * cached values. Off the EDT.
+     */
+    fun updateSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String? = null, newKey: String? = null): WriteOutcome {
         checkWritesAllowed(connection)
         try {
-            return client(connection).updateSecret(scope, key, value, comment)
+            return client(connection).updateSecret(scope, key, value, comment, newKey)
         } finally {
             invalidate(connection.id)
         }

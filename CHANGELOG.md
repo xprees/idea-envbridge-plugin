@@ -14,6 +14,12 @@
 - **Connection dialog: links to where credentials are made** under token-style sign-in methods: the Doppler dashboard and its
   token guide, the Infisical instance and its machine identity guide, the Vault UI and the AppRole guide, 1Password's service
   account and Connect guides
+- **Renaming secrets** from *Edit Secret…*: the dialog has an editable *Key*. A new key renames the secret in the secret manager
+  (Infisical: `newSecretName`; Vault/OpenBao: the field is renamed in one check-and-set write, keeping its place, its type and
+  the other fields; 1Password: the field's label; Doppler: a change request naming the original, its note carried over), keeping
+  the value unless you change it. A name already used in the folder is refused before anything is written. *Update references
+  in this project* (on by default) rewrites run configurations, `.env` files and the terminal's references to the new name, as
+  one command Edit › Undo puts back
 - **Moving secrets updates their references** in the project: run configurations' environment variables, `.env` files (values
   and binding comments) and the terminal's references follow the secrets to their new folder or environment (*Update
   references in this project*, on by default). Edit › Undo puts them back in one step; *Undo Move* in the notification also

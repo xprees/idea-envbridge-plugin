@@ -217,6 +217,26 @@ class DopplerApi(val http: DopplerHttp) {
         }
     }
 
+    /**
+     * Renames secret [originalName] to [name] in [config], setting its raw [value]: the update call with a change request
+     * (`change_requests: [{originalName, name, value}]`, the shape the Doppler CLI and dashboard send).
+     */
+    fun renameSecret(token: String, project: String, config: String, originalName: String, name: String, value: String) {
+        val body = JsonObject().apply {
+            addProperty("project", project)
+            addProperty("config", config)
+            add("change_requests", com.google.gson.JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("originalName", originalName)
+                    addProperty("name", name)
+                    addProperty("value", value)
+                })
+            })
+        }.toString()
+        val response = http.send("POST", "/v3/configs/config/secrets", token, mapOf("project" to project, "config" to config), json = body)
+        if (!response.isSuccess) throw DopplerHttp.failure(response, "Renaming $originalName to $name in $project/$config")
+    }
+
     /** Deletes secret [name]: the same update call with the value null (what `doppler secrets delete` sends). */
     fun deleteSecret(token: String, project: String, config: String, name: String) {
         val body = JsonObject().apply {

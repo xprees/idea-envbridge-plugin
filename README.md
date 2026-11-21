@@ -146,7 +146,7 @@ stops and says to write `infisical://prod:KEY`.
 | Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
 | Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
 | `.env` intentions | *Bind to Secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract Value to Secret Manager…* (creates the secret from the value, then binds the line and clears it) |
-| Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it) and the comment of a secret defined in that folder. Same permissions, prod guard and change requests as creating |
+| Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it), the comment and the key of a secret defined in that folder. Changing the key renames the secret (refused when that name is taken in the folder; the value is kept unless you change it), and *Update references in this project* (on by default) rewrites run configurations, `.env` files and the terminal's references to the new name, undoable with Edit › Undo. Same permissions, prod guard and change requests as creating |
 | Moving secrets | *Move…*, Cut / Paste (the IDE's shortcuts) and drag and drop onto a folder or environment in the tool window, always through a confirmation where destination folder (with completion), environment and overwriting can be changed. Value, comment, tags and metadata are copied first; the originals are removed only after that worked |
 | Deleting secrets | *Delete…* (or the Delete key): type the key to confirm (*Copy Name* copies it), or the number of secrets for several |
 | Read-only | *Settings › Tools › EnvBridge › Read-only*: this IDE never creates or changes secrets and environments; the write actions are turned off and every write is refused before it is sent. Reading and injecting are unaffected |
@@ -237,7 +237,7 @@ cached in memory like any other secrets.
 | Action | In an item (`/Database`, or a section `/Database/Extra`) | At the vault's root (`/`) |
 |---|---|---|
 | New secret | Adds a concealed field with that label (to the section, if given). Refused if the item already has a field with that label. A comment is added to the item's notes as `KEY: comment` | Creates a **Password** item titled with the key, the value in its `password` field (`op://Dev/KEY/password`), the comment as its notes. Refused if an item with that title exists |
-| Edit | Changes the field's value. Fields have no comments: the item's **notes** are shown as the comment, and editing it changes them | — |
+| Edit | Changes the field's value. Fields have no comments: the item's **notes** are shown as the comment, and editing it changes them. A new key changes the field's label (refused if another field of the item has it, and for built-in fields such as a login's username or password) | — |
 | Delete | Removes the field (a built-in one, such as a login's password, is emptied instead). **Items are never deleted** | — |
 | Move | Copies the fields into the destination item, then removes them from the source item; if that fails, you are told which now exist in both. Without *Overwrite*, a field already in the destination stops the move before anything changes | Not a destination: choose an item |
 
@@ -263,7 +263,8 @@ WEB_URL=doppler://PUBLIC_URL?project=web&connection=Work
 - Doppler's own `DOPPLER_PROJECT`, `DOPPLER_CONFIG` and `DOPPLER_ENVIRONMENT` are not injected (`doppler run` sets them).
 - The CLI's `doppler.yaml` (`setup:` with `project` and `config`, or a list of them with a `path` per directory) binds the
   project and config, as `doppler setup` does. The CLI's own `~/.doppler/.doppler.yaml`, which holds its tokens, is never read.
-- **Writes**: *New Secret…*, *Edit Secret…* (value and note; a note is shared by all configs of the project), *Move…* to another
+- **Writes**: *New Secret…*, *Edit Secret…* (value, note and name; a note is shared by all configs of the project and follows a
+  renamed secret to its new name), *Move…* to another
   config (copies the raw value, then deletes the original; a secret that can't be deleted stays in both and is reported),
   *Delete…*, and *New Environment…*, which creates a branch config: name it after its environment, `dev_feature` or
   `dev-feature`. Names must be uppercase letters, digits and underscores. *Read-only* turns all of it off.

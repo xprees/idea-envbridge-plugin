@@ -1,5 +1,6 @@
 package cz.xprees.secrets
 
+import com.google.gson.JsonParser
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.auth.TokenSet
@@ -273,6 +274,39 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         assertThat(delete.body).contains("\"NOT_THERE\":null")
         assertThat(delete.query).containsEntry("project", "backend").containsEntry("config", "dev")
         assertThat(mock.requests.none { it.method == "DELETE" }).isTrue()
+    }
+
+    fun `test a secret is renamed with a change request naming the original, keeping its raw value and note`() {
+        val connection = personal()
+        val service = SecretsService.getInstance()
+        val dev = SecretScope("backend", "dev")
+
+        // DB_URL's listed value is computed; left as it was, the raw value (with its reference) is what is sent
+        val listed = service.secrets(connection, dev, fresh = true).first { it.key == "DB_URL" }.value
+        assertThat(listed.reveal()).isEqualTo("postgres://localhost:5432")
+        assertThat(service.updateSecret(connection, dev, "DB_URL", listed, null, "DATABASE_URL")).isEqualTo(WriteOutcome.APPLIED)
+        val request = JsonParser.parseString(mock.requests.last { it.method == "POST" && it.path == "/v3/configs/config/secrets" }.body).asJsonObject
+        val change = request.getAsJsonArray("change_requests").single().asJsonObject
+        assertThat(change.get("originalName").asString).isEqualTo("DB_URL")
+        assertThat(change.get("name").asString).isEqualTo("DATABASE_URL")
+        assertThat(change.get("value").asString).isEqualTo("postgres://\${DB_HOST}:5432")
+        assertThat(request.has("secrets")).isFalse()
+        assertThat(mock.secrets.getValue("backend/dev")).containsEntry("DATABASE_URL", "postgres://\${DB_HOST}:5432").doesNotContainKey("DB_URL")
+
+        // a changed value is sent as typed; the note follows the secret to its new name
+        service.updateSecret(connection, dev, "DB_PASSWORD", SecretValue("new-pass"), null, "DATABASE_PASSWORD")
+        assertThat(mock.secrets.getValue("backend/dev")).containsEntry("DATABASE_PASSWORD", "new-pass").doesNotContainKey("DB_PASSWORD")
+        assertThat(mock.notes.getValue("backend")).containsEntry("DATABASE_PASSWORD", "rotated monthly")
+
+        // refused before anything is sent: a taken name, a name Doppler doesn't accept, a missing secret
+        val writes = mock.requests.count { it.method == "POST" && it.path == "/v3/configs/config/secrets" }
+        assertThatThrownBy { service.updateSecret(connection, dev, "DB_HOST", SecretValue("localhost"), null, "DATABASE_URL") }
+            .hasMessageContaining("already exists")
+        assertThat(kind { service.updateSecret(connection, dev, "DB_HOST", SecretValue("localhost"), null, "DATABASE_URL") }).isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, dev, "DB_HOST", SecretValue("localhost"), null, "db-host") }.hasMessageContaining("DB_HOST")
+        assertThat(kind { service.updateSecret(connection, dev, "DB_HOST", SecretValue("localhost"), null, "db host") }).isEqualTo(Kind.CONFIGURATION)
+        assertThat(kind { service.updateSecret(connection, dev, "MISSING", SecretValue("x"), null, "OTHER") }).isEqualTo(Kind.NOT_FOUND)
+        assertThat(mock.requests.count { it.method == "POST" && it.path == "/v3/configs/config/secrets" }).isEqualTo(writes)
     }
 
     fun `test secret names must be uppercase`() {

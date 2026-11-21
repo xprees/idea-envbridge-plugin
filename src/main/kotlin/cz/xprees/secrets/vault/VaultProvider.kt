@@ -17,6 +17,9 @@ import cz.xprees.secrets.core.provider.SecretsClient
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SignInInteraction
+import cz.xprees.secrets.core.provider.renameTarget
+import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import javax.swing.Icon
 
@@ -255,13 +258,35 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
         return WriteOutcome.APPLIED
     }
 
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * Changes the field's value; with a [newKey], the field is renamed in the same check-and-set write (keeping its place
+     * among the fields), refused before writing when the secret already has a field [newKey].
+     */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         val path = secretPath(scope)
+        val rename = renameTarget(key, newKey)
         auth.withToken { token ->
             val current = api.readVersioned(token, scope.environment, scope.projectId, path)
             if (!current.fields.has(key)) throw missing(scope, key)
-            current.fields.addProperty(key, value.reveal())
-            api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+            if (rename == null) {
+                current.fields.addProperty(key, value.reveal())
+                api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+                return@withToken
+            }
+            if (current.fields.has(rename)) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.CONFIGURATION,
+                    "${location(scope)} already has a field $rename; choose another name or delete that one first",
+                )
+            }
+            // A value left as it was keeps its JSON type (a number or an object stays one); a changed one is written as text
+            val old = current.fields.get(key)
+            val unchanged = VaultApi.textOf(old) == value.reveal()
+            val renamed = JsonObject()
+            for ((name, element) in current.fields.entrySet()) {
+                if (name == key) renamed.add(rename, if (unchanged) element.deepCopy() else JsonPrimitive(value.reveal())) else renamed.add(name, element.deepCopy())
+            }
+            api.write(token, scope.environment, scope.projectId, path, renamed, current.version)
         }
         return WriteOutcome.APPLIED
     }

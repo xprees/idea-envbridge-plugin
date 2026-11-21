@@ -16,6 +16,7 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.ProjectFileDefaults
@@ -24,6 +25,7 @@ import cz.xprees.secrets.infisical.config.InfisicalProjectConfig
 import cz.xprees.secrets.core.provider.AuthOption
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.renameTarget
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.infisical.api.InfisicalApi
 import cz.xprees.secrets.infisical.api.InfisicalHttp
@@ -148,9 +150,21 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
     }
 
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         checkWritable("secrets")
-        return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
+        val rename = renameTarget(key, newKey) ?: return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
+        // Checked first, so a taken name changes nothing (secrets imported from elsewhere don't count: they live there)
+        val folder = auth.withToken { api.listSecrets(it, scope.copy(recursive = false)) }.filter { it.origin != SecretOrigin.IMPORTED && it.path == scope.path }
+        if (folder.any { it.key == rename }) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "${scope.environment}:${scope.path} already has a secret $rename; choose another name or delete that one first",
+            )
+        }
+        // Listings show values with references expanded: a value left as it was isn't sent, so `${…}` references are kept
+        val current = folder.firstOrNull { it.key == key && it.origin == SecretOrigin.LOCAL }
+        val changed = value.takeIf { current == null || current.value != it }
+        return auth.withToken { api.updateSecret(it, scope, key, changed, comment, rename) }
     }
 
     override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {

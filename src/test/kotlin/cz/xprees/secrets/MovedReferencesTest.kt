@@ -36,4 +36,30 @@ class MovedReferencesTest {
         assertThat(m.rewriteText("X=infisical://DB_PASSWORD?project=p2", defaults)).isNull()
         assertThat(m.rewriteText("X=infisical://DB_PASSWORD?project=p1", defaults)).isEqualTo("X=infisical://backend/DB_PASSWORD?project=p1")
     }
+
+    private fun renamed(scope: SecretScope, old: String = "DB_PASSWORD", new: String = "DATABASE_PASSWORD", scheme: String = "infisical") =
+        MovedReferences.renamed(scheme, scope, old, new) { it == null || it == "Main" }
+
+    @Test
+    fun `references to a renamed secret take its new name, in the same folder and environment`() {
+        val root = renamed(SecretScope("p1", "dev", "/"))
+        assertThat(root.rewriteText("DB=infisical://DB_PASSWORD", defaults)).isEqualTo("DB=infisical://DATABASE_PASSWORD")
+        assertThat(root.rewriteText("DB_PASSWORD= # infisical://dev:DB_PASSWORD?connection=Main", defaults))
+            .isEqualTo("DB_PASSWORD= # infisical://DATABASE_PASSWORD?connection=Main")
+        // other keys, other folders, other environments, other connections and scope imports stay
+        assertThat(root.rewriteText("A=infisical://API_KEY\nB=infisical://other/DB_PASSWORD\nC=infisical://prod:DB_PASSWORD\nD=infisical://*\nE=infisical://DB_PASSWORD?connection=Other", defaults)).isNull()
+        assertThat(root.rewriteText("X=infisical://DB_PASSWORD", defaults.copy(environment = "prod"))).isNull()
+
+        val backend = renamed(SecretScope("p1", "prod", "/backend"))
+        assertThat(backend.rewriteText("X=infisical://prod:backend/DB_PASSWORD?project=p1", defaults)).isEqualTo("X=infisical://prod:backend/DATABASE_PASSWORD?project=p1")
+        assertThat(backend.rewriteText("X=infisical://backend/DB_PASSWORD", defaults)).isNull()
+        // only the reference changes, never the variable named like the secret
+        assertThat(backend.rewriteText("DB_PASSWORD=infisical://prod:backend/DB_PASSWORD", defaults)).isEqualTo("DB_PASSWORD=infisical://prod:backend/DATABASE_PASSWORD")
+    }
+
+    @Test
+    fun `a move can rename too, and only the named keys get a new name`() {
+        val m = MovedReferences("infisical", setOf("DB_PASSWORD", "API_KEY"), SecretScope("p1", "dev", "/"), SecretScope("p1", "dev", "/backend"), { it == null }, mapOf("DB_PASSWORD" to "PASS"))
+        assertThat(m.rewriteText("A=infisical://DB_PASSWORD\nB=infisical://API_KEY", defaults)).isEqualTo("A=infisical://backend/PASS\nB=infisical://backend/API_KEY")
+    }
 }
