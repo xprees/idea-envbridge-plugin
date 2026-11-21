@@ -236,31 +236,39 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
 
     /**
      * Copies the fields to the destination secret (one new version, values and types as stored), then removes them from the
-     * source secret (another new version). A field already at the destination is skipped unless [overwrite]; a failure to
-     * remove the source copy is reported, never a lost field.
+     * source secret (another new version). A field already at the destination stops the move before anything is written
+     * unless [overwrite]; a failure to remove the source copy is reported, never a lost field.
      */
     override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
         val sourcePath = secretPath(source)
         val destinationPath = secretPath(destination)
         if (source.projectId == destination.projectId && source.environment == destination.environment && sourcePath == destinationPath) {
-            return MoveResult(moved = emptyList(), notRemoved = secrets.associate { it.key to "source and destination are the same secret" })
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "${location(source)} is already where the fields are; nothing was moved")
         }
         val keys = secrets.map { it.key }
         val notRemoved = linkedMapOf<String, String>()
         val copied = auth.withToken { token ->
             val from = api.readVersioned(token, source.environment, source.projectId, sourcePath)
             val to = api.readVersioned(token, destination.environment, destination.projectId, destinationPath)
+            // Check everything before writing anything, so a refused move changes nothing
+            val missing = keys.filter { !from.fields.has(it) }
+            if (missing.isNotEmpty()) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.NOT_FOUND,
+                    "${location(source)} has no ${missing.joinToString { "\"$it\"" }} any more; nothing was moved. Refresh and try again",
+                )
+            }
+            val conflicts = keys.filter { to.fields.has(it) }
+            if (conflicts.isNotEmpty() && !overwrite) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.CONFIGURATION,
+                    "${location(destination)} already has ${conflicts.joinToString { "\"$it\"" }}; nothing was moved. Tick Overwrite to replace their values",
+                )
+            }
             val copied = mutableListOf<String>()
             for (key in keys) {
-                val value = from.fields.get(key)
-                when {
-                    value == null -> notRemoved[key] = "not in ${location(source)} any more"
-                    to.fields.has(key) && !overwrite -> notRemoved[key] = "${location(destination)} already has $key"
-                    else -> {
-                        to.fields.add(key, value.deepCopy())
-                        copied += key
-                    }
-                }
+                to.fields.add(key, from.fields.get(key).deepCopy())
+                copied += key
             }
             if (copied.isNotEmpty()) api.write(token, destination.environment, destination.projectId, destinationPath, to.fields, to.version)
             copied
@@ -288,12 +296,17 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
 
     /** Writes [current] without the removed fields; a secret left with none has its latest version deleted (restorable). */
     private fun removeFields(token: String, scope: SecretScope, path: String, current: VaultApi.Versioned) {
+        // Written with check-and-set either way, so a version someone wrote meanwhile is refused, not deleted; the empty version
+        // is then deleted too (only it can be the latest now, apart from a write in the instant between the two calls)
+        api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
         if (current.fields.size() == 0) api.deleteLatest(token, scope.environment, scope.projectId, path)
-        else api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
     }
 
     /** The secret a write goes to: the scope's path, which must name a secret (KV v2 has none at the mount's root). */
     private fun secretPath(scope: SecretScope): String {
+        if (scope.path.split('/').any { it == "." || it == ".." }) {
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "Write the secret's full path, without . or ..")
+        }
         if (scope.path == "/") {
             throw SecretProviderException(
                 SecretProviderException.Kind.CONFIGURATION,

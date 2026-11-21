@@ -70,7 +70,9 @@ class VaultApi(val http: VaultHttp) {
     }
 
     /** A secret as stored: its fields as JSON (types kept) and its current version (0 when it never existed). */
-    data class Versioned(val fields: JsonObject, val version: Int)
+    data class Versioned(val fields: JsonObject, val version: Int) {
+        override fun toString() = "Versioned(fields=${fields.keySet()}, version=$version)"
+    }
 
     /**
      * The latest version of the secret at [path] with its fields as they are stored, for a write that keeps every other field

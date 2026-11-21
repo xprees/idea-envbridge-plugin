@@ -221,7 +221,8 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
         if (unreadable.isNotEmpty()) {
             throw SecretProviderException(Kind.FORBIDDEN, "Can't read the values of ${unreadable.joinToString()} (restricted in Doppler), so they can't be moved")
         }
-        val conflicts = keys.filter { it in existing(destination) }
+        val atDestination = existing(destination).keys
+        val conflicts = keys.filter { it in atDestination }
         if (conflicts.isNotEmpty() && !overwrite) {
             throw SecretProviderException(Kind.CONFIGURATION, "Already in ${where(destination)}: ${conflicts.joinToString()}; choose to overwrite, or move the others")
         }

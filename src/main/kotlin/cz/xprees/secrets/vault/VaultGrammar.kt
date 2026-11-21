@@ -31,6 +31,7 @@ object VaultGrammar : ReferenceGrammar {
         require(segments.size >= 2) { "Reference '$original' needs a mount and a secret path, as in vault://secret/app/db#field" }
         // Vault paths may contain spaces, written encoded (%20); raw whitespace is a typo
         require(pathPart.none(Char::isWhitespace) && segments.none { it.isBlank() }) { "Reference '$original' contains whitespace" }
+        require(segments.none { it == "." || it == ".." }) { "Reference '$original' contains . or .. (write the secret's full path)" }
         val field = ReferenceSyntax.decodeSegment(fieldPart)
         require(field.isNotEmpty()) { "Reference '$original' names no field: add a field after #, or * for every field" }
 

@@ -397,4 +397,11 @@ class DopplerPlatformTest : BasePlatformTestCase() {
         Files.writeString(dir.resolve(".doppler/.doppler.yaml"), "scoped:\n  /:\n    token: dp.ct.x\n")
         assertThat(DopplerProvider().readProjectFile(dir.resolve(".doppler"))).isNull()
     }
+
+    fun `test browser sign-in rides out passing server problems`() {
+        val connection = connection(DopplerAuthMethods.BROWSER)
+        mock.failingPolls = 2
+        assertThat(client(connection).signIn(Interaction(browser = {}))).isEqualTo("alice@example.com (Acme)")
+        assertThat(mock.failingPolls).isZero()
+    }
 }

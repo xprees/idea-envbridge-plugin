@@ -65,13 +65,22 @@ class SecretsService {
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
     fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome {
         checkWritesAllowed(connection)
-        return client(connection).createSecret(scope, key, value, comment).also { invalidate(connection.id) }
+        // Forgotten even after a failure: a write can be half done (the value saved, a note not)
+        try {
+            return client(connection).createSecret(scope, key, value, comment)
+        } finally {
+            invalidate(connection.id)
+        }
     }
 
     /** Changes a secret (see [SecretsClient.updateSecret]) and forgets the connection's cached values. Off the EDT. */
     fun updateSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String? = null): WriteOutcome {
         checkWritesAllowed(connection)
-        return client(connection).updateSecret(scope, key, value, comment).also { invalidate(connection.id) }
+        try {
+            return client(connection).updateSecret(scope, key, value, comment)
+        } finally {
+            invalidate(connection.id)
+        }
     }
 
     /** Moves secrets between folders or environments (see [SecretsClient.moveSecrets]); forgets cached values. Off the EDT. */

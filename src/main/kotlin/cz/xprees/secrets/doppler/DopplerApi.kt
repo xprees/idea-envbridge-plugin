@@ -44,7 +44,9 @@ class DopplerApi(val http: DopplerHttp) {
     )
 
     /** One secret as listed: the computed value (Doppler references resolved), the raw value, and its note. */
-    data class Secret(val name: String, val computed: String?, val raw: String?, val note: String, val hidden: Boolean)
+    data class Secret(val name: String, val computed: String?, val raw: String?, val note: String, val hidden: Boolean) {
+        override fun toString() = "Secret($name, hidden=$hidden)"
+    }
 
     /** What `POST /v3/auth/cli/generate` returned: the code the user confirms, the code to poll with, and where to sign in. */
     class AuthCode(val code: String, val pollingCode: String, val authUrl: String, val pollIntervalMs: Long?) {

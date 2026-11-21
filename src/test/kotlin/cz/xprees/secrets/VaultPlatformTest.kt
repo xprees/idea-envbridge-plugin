@@ -376,9 +376,13 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(client(connection).listSecrets(SecretScope("secret", "team-a", "/app/db")).map { it.key }).containsExactlyInAnyOrder("password", "user")
 
         // an existing field at the destination is kept unless overwriting
-        val clash = service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "team-a", "/app/db"), overwrite = false)
-        assertThat(clash.moved).isEmpty()
-        assertThat(clash.notRemoved).containsKey("password")
+        val writesBefore = mock.writes.size
+        assertThatThrownBy { service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "team-a", "/app/db"), overwrite = false) }
+            .hasMessageContaining("already has \"password\"").hasMessageContaining("nothing was moved")
+        assertThat(mock.writes.size).isEqualTo(writesBefore)
+        // the same secret as source and destination is refused, not reported as copied
+        assertThatThrownBy { service.moveSecrets(connection, source, client(connection).listSecrets(source), source, overwrite = true) }
+            .hasMessageContaining("nothing was moved")
         assertThat(client(connection).listSecrets(source).single().value.reveal()).isEqualTo("root-db-pass")
 
         // moving the last field away deletes the source's latest version (restorable in Vault)

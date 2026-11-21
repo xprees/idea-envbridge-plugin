@@ -394,7 +394,7 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
     private fun save(vault: String, json: JsonObject, expect: Expect) {
         val result = backend.replaceItem(vault, json)
         val ids = OnePasswordEdits.fieldIds(result) ?: return
-        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids }) throw notApplied("save item ${json.get("title")?.asString.orEmpty()}")
+        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids }) throw notApplied("save item ${json.get("title")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()}")
     }
 
     private fun notApplied(what: String) = SecretProviderException(

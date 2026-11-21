@@ -84,6 +84,10 @@ class MockDoppler : AutoCloseable {
     @Volatile
     var declineSignIn = false
 
+    /** The next polls answer 503, like a passing server problem. */
+    @Volatile
+    var failingPolls = 0
+
     val polls = AtomicInteger()
     val revoked = CopyOnWriteArrayList<String>()
 
@@ -141,6 +145,10 @@ class MockDoppler : AutoCloseable {
                 if (declineSignIn) {
                     pending.remove(polling)
                     return respond(exchange, 400, error("Auth code was denied"))
+                }
+                if (failingPolls > 0) {
+                    failingPolls--
+                    return respond(exchange, 503, error("Service unavailable"))
                 }
                 if (polls.incrementAndGet() < approveAfterPolls) return respond(exchange, 409, error("Auth code has not been authorized yet"))
                 pending.remove(polling)
