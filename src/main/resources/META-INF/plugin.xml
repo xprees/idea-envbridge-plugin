@@ -32,7 +32,7 @@
     <resource-bundle>messages.SecretsBundle</resource-bundle>
 
     <extensionPoints>
-        <!-- Secret managers: Infisical, HashiCorp Vault / OpenBao, 1Password, Doppler -->
+        <!-- Secret managers: Infisical, HashiCorp Vault / OpenBao, 1Password, Doppler, AWS Secrets Manager -->
         <extensionPoint qualifiedName="cz.xprees.secrets.provider" interface="cz.xprees.secrets.core.provider.SecretProvider"
                         dynamic="true"/>
         <!-- Reading and replacing the environment variables of one kind of run configuration -->
@@ -44,6 +44,7 @@
         <provider implementation="cz.xprees.secrets.vault.VaultProvider"/>
         <provider implementation="cz.xprees.secrets.onepassword.OnePasswordProvider"/>
         <provider implementation="cz.xprees.secrets.doppler.DopplerProvider"/>
+        <provider implementation="cz.xprees.secrets.aws.AwsSecretsManagerProvider"/>
         <envPatcher implementation="cz.xprees.secrets.run.ExternalSystemEnvPatcher"/>
         <envPatcher implementation="cz.xprees.secrets.run.CommonParametersEnvPatcher"/>
     </extensions>

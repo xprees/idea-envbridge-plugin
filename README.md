@@ -1,12 +1,13 @@
 # EnvBridge
 
 Secrets from your secret manager in the IDE's environment variables, without `.env` files. Works with **Infisical**,
-**HashiCorp Vault**, **OpenBao**, **1Password** and **Doppler**.
+**HashiCorp Vault**, **OpenBao**, **1Password**, **Doppler** and **AWS Secrets Manager**.
 
 <!-- Plugin description -->
 <p><b>Unofficial integration</b>, not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an IBM company),
-the OpenBao project, AgileBits Inc. (1Password) or Doppler Inc. "Infisical", "HashiCorp Vault", "OpenBao", "1Password" and
-"Doppler" are trademarks of their owners and are used only to say which services this plugin works with.</p>
+the OpenBao project, AgileBits Inc. (1Password), Doppler Inc. or Amazon Web Services, Inc. "Infisical", "HashiCorp Vault",
+"OpenBao", "1Password", "Doppler", "AWS" and "AWS Secrets Manager" are trademarks of their owners and are used only to say which
+services this plugin works with.</p>
 
 <p>Use your <b>Infisical</b> secrets in IntelliJ IDEA, WebStorm, PyCharm, GoLand, Rider and the other JetBrains IDEs, so you can run
 and test locally <b>without keeping secrets in <code>.env</code> files</b>. Values are fetched when a run configuration starts and
@@ -64,12 +65,18 @@ handed to the process in memory. Nothing is written to disk.</p>
       from another, or <code>doppler://*</code> for every secret of a config. Sign in <b>through the system browser</b> (like
       <code>doppler login</code>) or with a personal, service account or service token; reads the CLI's <code>doppler.yaml</code>.
       Create, edit, move and delete secrets, and create branch configs</li>
+  <li><b>AWS Secrets Manager</b>: a secret named <code>myapp/dev</code> holding key/value JSON is environment <code>dev</code> of
+      <code>myapp</code>: <code>DB_PASSWORD=aws-sm://myapp/dev#DB_PASSWORD</code>, <code>aws-sm://myapp/dev#*</code> for every key,
+      or <code>aws-sm://#DB_PASSWORD</code> for the bound secret, following the selected environment. Sign in with an access key,
+      an <b>AWS profile</b> (SSO and role profiles through the AWS CLI) or the IDE's environment variables. Create, edit, rename,
+      move and delete keys with check-and-set writes; AWS secrets themselves are never deleted. No AWS SDK: requests are signed by
+      the plugin</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
 
 <p>Settings: <i>Settings › Tools › EnvBridge</i>. The plugin only reads secrets, except when you change one yourself
-(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract Value to Secret Manager…</i>; Infisical, Vault and OpenBao, 1Password, Doppler).
+(<i>New Secret…</i>, <i>Edit Secret…</i>, <i>Move…</i>, <i>Delete…</i>, <i>Extract Value to Secret Manager…</i>; Infisical, Vault and OpenBao, 1Password, Doppler, AWS Secrets Manager).
 <i>Read-only</i> in the settings turns all writing off.</p>
 <!-- Plugin description end -->
 
@@ -292,6 +299,47 @@ Doppler is a hosted service: the API address is `https://api.doppler.com` (it ca
 "Open in dashboard" opens the config in the Doppler dashboard. Doppler can't be self-hosted, so this integration is tested
 against a mock of its API only, not a live account.
 
+### AWS Secrets Manager
+
+A connection is an AWS account in one **region**: pick the region's endpoint (`https://secretsmanager.eu-west-1.amazonaws.com`)
+or type another one (a VPC endpoint, or LocalStack's `http://localhost:4566` with the *Region* option set). EnvBridge follows the
+common convention of **one secret per application and environment holding key/value JSON**: the last segment of a secret's name
+is the **environment**, everything before it the **project** (the name prefix), and the JSON object's top-level fields are the
+keys. `myapp/dev` → project `myapp`, environment `dev`; `team/myapp/prod` → `team/myapp`, `prod`. Names without `/` are listed
+under *(no prefix)*. There are no folders.
+
+```
+DB_PASSWORD=aws-sm://myapp/dev#DB_PASSWORD             key DB_PASSWORD of secret myapp/dev
+AWS=aws-sm://myapp/dev#*                               every key of myapp/dev
+DB_PASSWORD=aws-sm://#DB_PASSWORD                      the bound secret (bound prefix, selected environment)
+PROD_PASSWORD=aws-sm://#DB_PASSWORD?env=prod           the bound prefix, environment prod
+EU_PASSWORD=aws-sm://myapp/prod#DB_PASSWORD?connection=EU
+```
+
+- Values that aren't strings (numbers, booleans, nested objects) are passed as their JSON text. A secret holding a **plain
+  string** instead of JSON is one key named after its name's last segment (`aws-sm://myapp/STRIPE_KEY#STRIPE_KEY`). Binary
+  secrets are not supported.
+- A connection is one region; for a secret in another region, add a connection for it and name it with `?connection=`.
+- *Secret name prefix* (optional) lists only secrets whose names start with it, for large accounts.
+
+| Method | Setup |
+|---|---|
+| **Access key** (default) | Access key ID, secret access key and, for temporary credentials, the session token. All three are kept in the IDE's password storage. Sign-out forgets them; the key itself isn't deactivated |
+| **AWS profile** | A profile name from `~/.aws/credentials` / `~/.aws/config` (default `default`), read when needed and never copied. Profiles with static keys work as they are; **IAM Identity Center (SSO)**, role and `credential_process` profiles get temporary credentials from the AWS CLI v2 (`aws configure export-credentials`, kept in memory only): run `aws sso login --profile <name>` first when the SSO session has expired |
+| **Environment variables** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` of the IDE's process |
+
+**Writing**: *New Secret…* adds a key to the environment's secret (creating the secret if it doesn't exist), *Edit Secret…*
+changes a value or renames a key, *Move…* / *Copy* move keys between environments and prefixes, *Delete…* removes a key (the
+last one leaves `{}`), and *New Environment…* creates the secret `<prefix>/<name>` holding `{}`. **AWS secrets are never
+deleted.** Every write reads the secret, writes a new version that isn't current yet, and makes it current only if nobody changed
+the secret meanwhile (AWS's `UpdateSecretVersionStage` with `RemoveFromVersionId`); otherwise nothing changes and you are asked to
+refresh. Besides `secretsmanager:ListSecrets` and `GetSecretValue`, writing needs `PutSecretValue`, `UpdateSecretVersionStage`
+and, for new environments, `CreateSecret`. Plain-string secrets can change their value but are never converted to JSON.
+Secrets Manager has no per-key comments, so comments are ignored.
+
+"Open in dashboard" opens the secret in the AWS console of its region. Requests are signed with AWS Signature Version 4 by the
+plugin itself (no AWS SDK). Tested against LocalStack and a signature-checking mock, not a live AWS account.
+
 ## Security
 
 - **Credentials** (session tokens, refresh tokens, client secrets) are stored only in the IDE's password storage (system keychain,
@@ -310,6 +358,9 @@ against a mock of its API only, not a live account.
   through its environment (`OP_SERVICE_ACCOUNT_TOKEN`), never through its command line, which other processes can read;
   inherited `OP_SESSION_*`, `OP_CONNECT_*` and `OP_SERVICE_ACCOUNT_TOKEN` variables are removed first. Its output is not logged;
   its error text is shown shortened.
+- **AWS**: the secret access key only computes each request's signature and is never sent. Profile credentials stay in the
+  AWS files and are read when needed; the AWS CLI gets only the profile name on its command line, and the temporary credentials it
+  prints are kept in memory, never logged.
 - See [SECURITY.md](SECURITY.md) for reporting vulnerabilities, and the [threat model](docs/DESIGN.md#threat-model-summary).
 
 ## Building
@@ -327,9 +378,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout and conventions.
 Apache License 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 This is an independent, unofficial project. It is not affiliated with, endorsed by or sponsored by Infisical Inc., HashiCorp (an
-IBM company), the OpenBao project, AgileBits Inc. or Doppler Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
+IBM company), the OpenBao project, AgileBits Inc., Doppler Inc. or Amazon Web Services, Inc. "Infisical" and the Infisical logo are trademarks of Infisical Inc.;
 "HashiCorp" and "Vault" are trademarks of HashiCorp; "OpenBao" is a trademark of the Linux Foundation; "1Password" is a trademark
-of AgileBits Inc.; "Doppler" is a trademark of Doppler Inc. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
-to their documented APIs, runs the 1Password CLI the user installed, and reimplements documented behaviour of their CLIs
+of AgileBits Inc.; "Doppler" is a trademark of Doppler Inc.; "AWS" and "AWS Secrets Manager" are trademarks of Amazon.com, Inc. or its affiliates. This plugin uses none of their logos or other brand assets, and it contains none of their source code. It talks
+to their documented APIs, runs the 1Password CLI and AWS CLI the user installed, and reimplements documented behaviour of their CLIs
 (Infisical's browser sign-in callback and `.infisical.yaml`, Vault's OIDC redirect URI and `~/.vault-token`, 1Password's secret
 reference syntax, Doppler's `doppler login` flow and `doppler.yaml`).
