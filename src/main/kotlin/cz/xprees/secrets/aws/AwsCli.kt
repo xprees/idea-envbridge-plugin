@@ -29,6 +29,10 @@ class AwsCli(private val configuredPath: String?) {
 
     /** Temporary credentials of [profile]. */
     fun exportCredentials(profile: String, cancelled: () -> Boolean = { false }): AwsKeys {
+        // Passed as an argument: a name that looks like an option is refused rather than read by the CLI as one
+        if (profile.isBlank() || profile.startsWith("-")) {
+            throw SecretProviderException(Kind.CONFIGURATION, "\"$profile\" isn't a usable AWS profile name")
+        }
         val output = run(listOf("configure", "export-credentials", "--profile", profile, "--format", "process"), profile, cancelled)
         val o = runCatching { JsonParser.parseString(output).asJsonObject }.getOrNull()
             ?: throw SecretProviderException(Kind.SERVER, "The AWS CLI sent an unexpected answer to export-credentials (not JSON)")
