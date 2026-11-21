@@ -100,8 +100,26 @@ class DopplerGrammarTest {
                 """.trimIndent(),
             )
             assertThat(DopplerProjectFile.find(sub)!!.project).isEqualTo("api")
-            // no entry for the directory itself: the first one
-            assertThat(DopplerProjectFile.find(root)!!.project).isEqualTo("web")
+            // a subdirectory belongs to the entry that holds it
+            assertThat(DopplerProjectFile.find(Files.createDirectories(sub.resolve("src/main")))!!.project).isEqualTo("api")
+            // no entry holds the repository root: no binding from the file, rather than another app's project
+            assertThat(DopplerProjectFile.find(root)).isNull()
+            assertThat(DopplerProjectFile.find(Files.createDirectories(root.resolve("docs")))).isNull()
+
+            // an entry for the file's own directory covers what no deeper entry claims
+            Files.writeString(
+                root.resolve("doppler.yaml"),
+                """
+                setup:
+                  - project: shared
+                    config: dev
+                  - project: api
+                    config: stg
+                    path: services/api
+                """.trimIndent(),
+            )
+            assertThat(DopplerProjectFile.find(root)!!.project).isEqualTo("shared")
+            assertThat(DopplerProjectFile.find(sub)!!.project).isEqualTo("api")
 
             Files.writeString(root.resolve("doppler.yaml"), "not: [a, setup")
             assertThat(DopplerProjectFile.find(sub)).isNull()

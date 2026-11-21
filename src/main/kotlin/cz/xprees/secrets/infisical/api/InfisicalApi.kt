@@ -94,14 +94,18 @@ class InfisicalApi(val http: InfisicalHttp) {
         return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
     }
 
-    /** `PATCH /api/v4/secrets/{name}`: changes the value (and the comment, when given) of a shared secret. */
-    fun updateSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * `PATCH /api/v4/secrets/{name}`: changes the value (and the comment, when given) of a shared secret, and renames it to
+     * [newKey] (`newSecretName`) when given. A null [value] leaves the value as stored (`secretValue` is optional).
+     */
+    fun updateSecret(token: String, scope: SecretScope, key: String, value: SecretValue?, comment: String?, newKey: String? = null): WriteOutcome {
         val body = JsonObject().apply {
             addProperty("projectId", scope.projectId)
             addProperty("environment", scope.environment)
             addProperty("secretPath", scope.path)
-            addProperty("secretValue", value.reveal())
+            value?.let { addProperty("secretValue", it.reveal()) }
             comment?.let { addProperty("secretComment", it) }
+            newKey?.let { addProperty("newSecretName", it) }
             addProperty("type", "shared")
         }
         val response = http.patchJson("/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)

@@ -125,6 +125,24 @@ class InfisicalIntegrationTest : BasePlatformTestCase() {
         assertThat(service.secrets(connection, backend, fresh = true).map { it.key }).doesNotContain(key)
     }
 
+    fun `test a secret is renamed on the instance, keeping its value and comment, and a taken name is refused`() {
+        val service = SecretsService.getInstance()
+        val key = "IT_RENAME_${System.currentTimeMillis()}"
+        val root = SecretScope(projectId, "dev", "/")
+        service.createSecret(connection, root, key, SecretValue("kept"), "renamed by the integration test")
+        try {
+            // the value as listed: not sent, only the new name
+            assertThat(service.updateSecret(connection, root, key, SecretValue("kept"), null, "${key}_NEW")).isEqualTo(WriteOutcome.APPLIED)
+            val listed = service.secrets(connection, root, fresh = true)
+            assertThat(listed.map { it.key }).doesNotContain(key)
+            assertThat(listed.single { it.key == "${key}_NEW" }.let { it.value.reveal() to it.comment }).isEqualTo("kept" to "renamed by the integration test")
+            assertThatThrownBy { service.updateSecret(connection, root, "${key}_NEW", SecretValue("x"), null, "DB_PASSWORD") }
+                .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("already has a secret DB_PASSWORD")
+        } finally {
+            runCatching { service.deleteSecrets(connection, root, listOf(key, "${key}_NEW")) }
+        }
+    }
+
     fun `test a duplicate secret is refused`() {
         val service = SecretsService.getInstance()
         assertThatThrownBy { service.createSecret(connection, SecretScope(projectId, "dev", "/"), "DB_PASSWORD", SecretValue("x")) }

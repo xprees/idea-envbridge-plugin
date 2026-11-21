@@ -47,8 +47,12 @@ object SecretsNotifications {
         ).notify(project)
     }
 
-    fun info(project: Project?, title: String, content: String = "") {
-        group().createNotification(title, escape(content), NotificationType.INFORMATION).notify(project)
+    fun info(project: Project?, title: String, content: String = "", actions: List<Pair<String, () -> Unit>> = emptyList()) {
+        val notification = group().createNotification(title, escape(content).replace("\n", "<br>"), NotificationType.INFORMATION)
+        actions.forEach { (text, run) ->
+            notification.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring(text) { run() })
+        }
+        notification.notify(project)
     }
 
     fun error(project: Project?, title: String, content: String) {

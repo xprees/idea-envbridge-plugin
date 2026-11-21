@@ -126,4 +126,11 @@ class OnePasswordGrammarTest {
         assertThat(SecretReference.parse("op://Private/Database/password", listOf("infisical"))).isNull()
         assertThat(SecretReference.parse("OP://Private/Database/password", listOf("op"))!!.scheme).isEqualTo("op")
     }
+
+    @Test
+    fun `names with emoji round trip`() {
+        val reference = parse("op://Dev/%F0%9F%94%91%20API/password")
+        assertThat(reference.format()).isEqualTo("op://Dev/%F0%9F%94%91 API/password")
+        assertThat(parse(reference.format())).isEqualTo(reference)
+    }
 }

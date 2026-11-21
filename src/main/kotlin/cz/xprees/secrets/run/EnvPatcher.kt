@@ -39,6 +39,22 @@ interface EnvPatcher {
     companion object {
         val EP_NAME: ExtensionPointName<EnvPatcher> = ExtensionPointName.create("cz.xprees.secrets.envPatcher")
 
+        /**
+         * Replaces the stored environment variables of [settings]' configuration with [envs]: the patcher builds a copy with them,
+         * whose public XML form is read back into the stored configuration (so the IDE saves it as usual). False when no
+         * patcher handles the configuration.
+         */
+        fun store(project: com.intellij.openapi.project.Project, settings: com.intellij.execution.RunnerAndConfigurationSettings, envs: Map<String, String>): Boolean {
+            val configuration = settings.configuration
+            val (patcher, _) = find(configuration) ?: return false
+            val updated = patcher.copyWith(configuration, envs)
+            val state = org.jdom.Element("configuration")
+            (updated as RunConfiguration).writeExternal(state)
+            configuration.readExternal(state)
+            project.messageBus.syncPublisher(com.intellij.execution.RunManagerListener.TOPIC).runConfigurationChanged(settings)
+            return true
+        }
+
         /** The first patcher that handles [profile], with the variables it read. */
         fun find(profile: RunProfile): Pair<EnvPatcher, Map<String, String>>? {
             for (patcher in EP_NAME.extensionList) {

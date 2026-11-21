@@ -48,7 +48,7 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
     override fun items(vault: String): List<OpItemSummary> = OnePasswordJson.items(json(run(listOf("item", "list", "--vault", vault))))
 
     override fun itemJson(vault: String, item: String): JsonObject {
-        val args = listOf("item", "get", item, "--vault", vault)
+        val args = listOf("item", "get", positional(item), "--vault", vault)
         // `--reveal` (op 2.24+) makes sure concealed values are in the output; older versions don't know it (and include them)
         val output = try {
             run(args + "--reveal")
@@ -75,7 +75,18 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
         val id = item.str("id")?.takeIf { it.isNotBlank() } ?: throw SecretProviderException(Kind.SERVER, "The item has no ID")
         refuseMaskedValues(item)
         val target = item.getAsJsonObject("vault")?.str("id")?.takeIf { it.isNotBlank() } ?: vault
-        return written(run(listOf("item", "edit", id, "--vault", target), input = item.toString()), "item edit")
+        return written(run(listOf("item", "edit", positional(id), "--vault", target), input = item.toString()), "item edit")
+    }
+
+    /**
+     * An item name or ID as `op`'s positional argument. One starting with `-` would be read as a flag (a reference comes from
+     * the repository, so it isn't trusted); 1Password IDs never start with one, so such an item must be named by its ID.
+     */
+    private fun positional(value: String): String {
+        if (value.startsWith("-")) {
+            throw SecretProviderException(Kind.CONFIGURATION, "1Password item names starting with \"-\" can't be used; refer to the item by its ID")
+        }
+        return value
     }
 
     private fun written(output: String, what: String): JsonObject =

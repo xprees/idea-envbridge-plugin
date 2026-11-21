@@ -1,5 +1,9 @@
 package cz.xprees.secrets.ui.settings
 
+import com.intellij.util.ui.update.UiNotifyConnector
+import com.intellij.ui.dsl.listCellRenderer.listCellRenderer
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.BoundConfigurable
@@ -53,16 +57,31 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
 
     private val binding = ProjectBindingPanel(project)
 
+    /** Starts adding a connection once the page is shown (see [show]). */
+    private var addOnOpen = false
+
     override fun createPanel(): DialogPanel {
         connectionList.cellRenderer = ConnectionRenderer()
+        connectionList.emptyText.apply {
+            text = SecretsBundle.message("settings.connections.empty")
+            appendSecondaryText(SecretsBundle.message("toolwindow.add.connection"), SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) {
+                addConnection(RelativePoint(connectionList, java.awt.Point(JBUI.scale(8), connectionList.height / 2)))
+            }
+        }
         refreshSignInStates()
         val decorated = ToolbarDecorator.createDecorator(connectionList)
-            .setAddAction { addConnection() }
+            // The provider chooser opens under the + button: a popup centred on the focus can end up behind the
+            // modal Settings dialog (it did in Rider)
+            .setAddAction { button -> addConnection(button.preferredPopupPoint) }
             .setEditAction { editConnection() }
             .setRemoveAction { removeConnection() }
             .setPreferredSize(JBUI.size(480, 110))
             .createPanel()
 
+        if (addOnOpen) {
+            addOnOpen = false
+            UiNotifyConnector.doWhenFirstShown(connectionList) { addConnection(RelativePoint(connectionList, java.awt.Point(JBUI.scale(8), JBUI.scale(8)))) }
+        }
         return panel {
             group(SecretsBundle.message("settings.connections")) {
                 row { cell(decorated).align(AlignX.FILL) }
@@ -72,26 +91,32 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                 }
                 row { comment(SecretsBundle.message("settings.connections.comment")) }
             }
-            group(SecretsBundle.message("settings.binding")) {
-                binding.build(this)
-                onApply { binding.apply() }
-                onReset { binding.reset() }
-                onIsModified { binding.isModified() }
-            }
-            group(SecretsBundle.message("settings.terminal")) {
-                lateinit var terminalCheckBox: com.intellij.ui.dsl.builder.Cell<javax.swing.JCheckBox>
-                row {
-                    terminalCheckBox = checkBox(SecretsBundle.message("terminal.enable"))
-                        .bindSelected({ projectSettings.state.terminalEnabled }, { value -> projectSettings.update { terminalEnabled = value } })
+            // Opened without a project (Welcome screen): settings of the IDE's default project would only be a template for
+            // new projects, so the project's sections are left out
+            if (project.isDefault) {
+                row { comment(SecretsBundle.message("settings.no.project"), maxLineLength = 80) }
+            } else {
+                group(SecretsBundle.message("settings.binding")) {
+                    binding.build(this)
+                    onApply { binding.apply() }
+                    onReset { binding.reset() }
+                    onIsModified { binding.isModified() }
                 }
-                row {
-                    textArea().rows(3).align(AlignX.FILL)
-                        .bindText(
-                            { projectSettings.state.terminalReferences ?: ProjectSecretsSettings.DEFAULT_TERMINAL_REFERENCES },
-                            { value -> projectSettings.update { terminalReferences = value } },
-                        )
-                        .comment(SecretsBundle.message("terminal.references.comment"))
-                        .enabledIf(terminalCheckBox.selected)
+                group(SecretsBundle.message("settings.terminal")) {
+                    lateinit var terminalCheckBox: com.intellij.ui.dsl.builder.Cell<javax.swing.JCheckBox>
+                    row {
+                        terminalCheckBox = checkBox(SecretsBundle.message("terminal.enable"))
+                            .bindSelected({ projectSettings.state.terminalEnabled }, { value -> projectSettings.update { terminalEnabled = value } })
+                    }
+                    row {
+                        textArea().rows(3).align(AlignX.FILL)
+                            .bindText(
+                                { projectSettings.state.terminalReferences ?: ProjectSecretsSettings.DEFAULT_TERMINAL_REFERENCES },
+                                { value -> projectSettings.update { terminalReferences = value } },
+                            )
+                            .comment(SecretsBundle.message("terminal.references.comment"))
+                            .enabledIf(terminalCheckBox.selected)
+                    }
                 }
             }
             group(SecretsBundle.message("settings.general")) {
@@ -123,9 +148,11 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                         .comment(SecretsBundle.message("settings.read.only.comment"))
                 }
             }
-            group(SecretsBundle.message("settings.overrides")) {
-                row { cell(overridesPanel()).align(AlignX.FILL) }
-                row { comment(SecretsBundle.message("settings.overrides.comment")) }
+            if (!project.isDefault) {
+                group(SecretsBundle.message("settings.overrides")) {
+                    row { cell(overridesPanel()).align(AlignX.FILL) }
+                    row { comment(SecretsBundle.message("settings.overrides.comment")) }
+                }
             }
         }
     }
@@ -162,25 +189,25 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
 
     private fun selectedConnection(): SecretConnection? = connectionList.selectedValue ?: connectionModel.items.singleOrNull()
 
-    private fun addConnection() {
-        // Several providers: ask which one first
-        val providers = cz.xprees.secrets.core.provider.SecretProvider.all()
+    /** Adds a connection; with several providers, a chooser opens at [where] first. */
+    private fun addConnection(where: RelativePoint) {
+        val providers = SecretProvider.all()
         if (providers.size > 1) {
-            com.intellij.openapi.ui.popup.JBPopupFactory.getInstance().createPopupChooserBuilder(providers)
+            JBPopupFactory.getInstance().createPopupChooserBuilder(providers)
                 .setTitle(SecretsBundle.message("settings.add.connection.provider"))
-                .setRenderer(com.intellij.ui.SimpleListCellRenderer.create { label, provider, _ ->
-                    label.text = provider.displayName
-                    label.icon = provider.icon
+                .setRenderer(listCellRenderer {
+                    icon(value.icon)
+                    text(value.displayName)
                 })
                 .setItemChosenCallback { addConnection(it) }
                 .createPopup()
-                .showInFocusCenter()
+                .show(where)
         } else {
             addConnection(providers.firstOrNull() ?: return)
         }
     }
 
-    private fun addConnection(provider: cz.xprees.secrets.core.provider.SecretProvider) {
+    private fun addConnection(provider: SecretProvider) {
         val dialog = ConnectionDialog(project, null, provider)
         if (!dialog.showAndGet()) return
         val connection = dialog.result ?: return
@@ -246,6 +273,8 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
     }
 
     companion object {
-        fun show(project: Project) = ShowSettingsUtil.getInstance().showSettingsDialog(project, SecretsConfigurable::class.java)
+        /** Opens this page; with [addConnection], it starts adding a connection right away. */
+        fun show(project: Project, addConnection: Boolean = false) =
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, SecretsConfigurable::class.java) { if (addConnection) it.addOnOpen = true }
     }
 }

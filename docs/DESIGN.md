@@ -113,7 +113,7 @@ add a connection for that instance yourself, if you trust it.
 ### Environment resolution for a launch (CLI-compatible)
 
 1. An explicit environment in the reference (`infisical://prod:…`) or the run configuration's Infisical section
-2. `INFISICAL_ENVIRONMENT` set on the run configuration
+2. `ENVBRIDGE_ENVIRONMENT` (or the older `INFISICAL_ENVIRONMENT`) set on the run configuration
 3. The environment picked in the IDE (status bar / binding)
 4. `.infisical.yaml` git-branch override (last segment of the branch name)
 5. `.infisical.yaml` default environment
@@ -625,7 +625,7 @@ note}}`), deleting with a null value, notes and error bodies (`messages`). The m
 - That `workplace.slug` is what the dashboard's `/workplace/<…>` path takes.
 - Branch config names with digits and underscores only (hyphens become underscores); Doppler may allow more.
 - No retry on 429: the error says when to retry. Pagination stops at a short page (≤ 2 000 projects or configs).
-- `INFISICAL_ENVIRONMENT` on a run configuration still picks the config (the core's override variable); `DOPPLER_CONFIG` /
+- `ENVBRIDGE_ENVIRONMENT` (or `INFISICAL_ENVIRONMENT`) on a run configuration picks the config (the core's override variable); `DOPPLER_CONFIG` /
   `DOPPLER_PROJECT` / `DOPPLER_TOKEN` in the IDE's or run configuration's environment are not read.
 
 ## Threat model (summary)

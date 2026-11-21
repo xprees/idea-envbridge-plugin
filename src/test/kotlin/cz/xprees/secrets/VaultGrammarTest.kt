@@ -63,6 +63,8 @@ class VaultGrammarTest {
         assertThatThrownBy { parse("vault://secret/app/db") }.hasMessageContaining("#field")
         assertThatThrownBy { parse("vault://secret#password") }.hasMessageContaining("mount and a secret path")
         assertThatThrownBy { parse("vault://secret/app#") }.hasMessageContaining("names no field")
+        assertThatThrownBy { parse("vault://secret/a/../b#f") }.hasMessageContaining(". or ..")
+        assertThatThrownBy { parse("vault://secret/./a#f") }.hasMessageContaining(". or ..")
         assertThatThrownBy { parse("vault://secret/app#f?env=prod") }.hasMessageContaining("Unknown parameter")
     }
 

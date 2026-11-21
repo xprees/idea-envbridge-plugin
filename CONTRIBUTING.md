@@ -90,6 +90,18 @@ Every change in behaviour needs a test that fails without it.
   ```
 
   A behaviour a fake can't prove (an endpoint's real shape, an error a real server sends) belongs in an integration test too.
+- **Hosted secret managers** (Doppler, 1Password) can't run in Docker. Their integration tests (`DopplerIntegrationTest`,
+  `OnePasswordIntegrationTest`) run against a real test account when its credentials are set, and skip otherwise. Use a
+  dedicated test project / vault: the tests create and delete secrets there (and never touch anything else).
+
+  | Variable (environment, or a repository secret / variable in CI) | Meaning |
+  |---|---|
+  | `ENVBRIDGE_IT_DOPPLER_TOKEN` (secret) | Doppler personal or service account token with read and write access to the test project |
+  | `ENVBRIDGE_IT_DOPPLER_PROJECT`, `ENVBRIDGE_IT_DOPPLER_CONFIG` (variables) | Test project and config (default `envbridge-it` / `dev`) |
+  | `ENVBRIDGE_IT_OP_SERVICE_ACCOUNT_TOKEN` (secret) | 1Password service account token with read and write access to the test vault (CI then installs the `op` CLI) |
+  | `ENVBRIDGE_IT_OP_VAULT` (variable) | Test vault name (default `EnvBridge IT`); `ENVBRIDGE_IT_OP_PATH` points to `op` if it isn't on PATH |
+
+  CI passes these to the *Integration tests* job only; pull requests from forks get no secrets, so those tests skip there.
 - Security behaviour (callback hardening, URL checks, masking, run configuration isolation) has tests. Keep them.
 - **Assert exact results**, and **don't skip, disable or loosen a failing test.** Find the cause.
 

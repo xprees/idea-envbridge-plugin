@@ -26,6 +26,9 @@ class MockInfisical : AutoCloseable {
     /** Values changed through the API: "env:path:KEY" -> new value. */
     val updated = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Secrets renamed through the API (`newSecretName`): "env:path:OLD" -> NEW. Listings show them under the new name. */
+    val renamed = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     /** Environments created through the API: slug -> name. The project listing includes them. */
     val createdEnvironments = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -108,8 +111,11 @@ class MockInfisical : AutoCloseable {
             val path = json.get("secretPath").asString
             if (key == "MISSING") return respond(exchange, 404, """{"message":"Secret not found"}""")
             if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a2","status":"open"}}""")
-            updated["$env:$path:$key"] = json.get("secretValue").asString
-            return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
+            val newName = json.get("newSecretName")?.asString
+            val name = newName ?: key
+            json.get("secretValue")?.asString?.let { updated["$env:$path:$name"] = it }
+            if (newName != null) renamed["$env:$path:$key"] = newName
+            return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$name","environment":"$env","type":"shared"}}""")
         }
         if (request.method == "POST" && request.path == "/api/v1/projects/p1/environments") {
             val json = com.google.gson.JsonParser.parseString(body).asJsonObject
@@ -145,7 +151,16 @@ class MockInfisical : AutoCloseable {
                 }
                 val extra = created.entries.filter { it.key.startsWith("$env:$path:") }
                     .joinToString("") { (k, v) -> """,{"secretKey":"${k.substringAfterLast(':')}","secretValue":"$v","type":"shared"}""" }
-                respond(exchange, 200, """{"secrets":[$secrets$extra],"imports":[]}""")
+                val listed = com.google.gson.JsonParser.parseString("[$secrets$extra]").asJsonArray
+                listed.forEach { element ->
+                    val o = element.asJsonObject
+                    renamed["$env:$path:${o.get("secretKey").asString}"]?.let { newName ->
+                        o.addProperty("secretKey", newName)
+                        o.addProperty("id", "id-$newName")
+                        updated["$env:$path:$newName"]?.let { o.addProperty("secretValue", it) }
+                    }
+                }
+                respond(exchange, 200, """{"secrets":$listed,"imports":[]}""")
             }
 
             else -> respond(exchange, 404, """{"message":"Not found"}""")

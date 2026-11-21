@@ -8,8 +8,8 @@ cd "$(dirname "$0")/../.."
 
 VAULT_IMAGE=${VAULT_IMAGE:-hashicorp/vault:1.20}
 OPENBAO_IMAGE=${OPENBAO_IMAGE:-openbao/openbao:2.4.1}
-# latest: last verified with Infisical v0.167.13 (a pinned tag could not be checked against Docker Hub)
-INFISICAL_IMAGE=${INFISICAL_IMAGE:-infisical/infisical:latest}
+# Pinned so a new Infisical release can't break CI unnoticed; bump it on purpose (and run the integration tests)
+INFISICAL_IMAGE=${INFISICAL_IMAGE:-infisical/infisical:v0.167.13}
 
 scripts/integration/stop.sh >/dev/null 2>&1 || true
 
