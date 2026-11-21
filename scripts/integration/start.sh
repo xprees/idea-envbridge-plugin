@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Starts throwaway Vault, OpenBao and Infisical servers in Docker for the integration tests, then seeds them
+# Starts throwaway Vault, OpenBao, Infisical and LocalStack (AWS Secrets Manager) servers in Docker for the integration
+# tests, then seeds them
 # (scripts/integration/setup.sh). Stop and remove them with scripts/integration/stop.sh.
 #
 #   scripts/integration/start.sh && ./gradlew integrationTest
@@ -10,6 +11,8 @@ VAULT_IMAGE=${VAULT_IMAGE:-hashicorp/vault:1.20}
 OPENBAO_IMAGE=${OPENBAO_IMAGE:-openbao/openbao:2.4.1}
 # Pinned so a new Infisical release can't break CI unnoticed; bump it on purpose (and run the integration tests)
 INFISICAL_IMAGE=${INFISICAL_IMAGE:-infisical/infisical:v0.167.13}
+# The last community release of the 4.x line; later LocalStack images need an account's auth token
+LOCALSTACK_IMAGE=${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0}
 
 scripts/integration/stop.sh >/dev/null 2>&1 || true
 
@@ -29,5 +32,9 @@ docker run -d --name envbridge-it-infisical --network envbridge-it -p 127.0.0.1:
   -e DB_CONNECTION_URI=postgres://infisical:infisical@envbridge-it-postgres:5432/infisical \
   -e REDIS_URL=redis://envbridge-it-redis:6379 \
   -e SITE_URL=http://localhost:8080 -e TELEMETRY_ENABLED=false "$INFISICAL_IMAGE" >/dev/null
+
+# AWS Secrets Manager only; LocalStack doesn't check signatures (the unit tests' mock does)
+docker run -d --name envbridge-it-localstack -p 127.0.0.1:4566:4566 \
+  -e SERVICES=secretsmanager -e EAGER_SERVICE_LOADING=1 "$LOCALSTACK_IMAGE" >/dev/null
 
 scripts/integration/setup.sh
