@@ -60,6 +60,10 @@ class EnvReferencesTest {
         assertThat(ProdGuard.matches("live-eu", "prod*, live*")).isTrue()
         assertThat(ProdGuard.matches("dev", "prod*, live*")).isFalse()
         assertThat(ProdGuard.matches("preprod", "prod*")).isFalse()
+        // the default covers Doppler's production configs (prd, prd_eu) too
+        val default = cz.xprees.secrets.core.settings.SecretsAppSettings.DEFAULT_PROD_GUARD_PATTERN
+        assertThat(listOf("prod", "production-eu", "prd", "prd_eu", "live").all { ProdGuard.matches(it, default) }).isTrue()
+        assertThat(listOf("dev", "stg", "preprod").none { ProdGuard.matches(it, default) }).isTrue()
         assertThat(ProdGuard.matches("stage1", "stage?")).isTrue()
         assertThat(ProdGuard.matches("prod", "")).isFalse()
     }

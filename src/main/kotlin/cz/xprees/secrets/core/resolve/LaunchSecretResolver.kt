@@ -37,8 +37,8 @@ class LaunchSecretResolver(private val project: Project) {
      */
     fun resolve(plan: EnvResolution.Plan, fresh: Boolean = true, environment: String? = null): EnvResolution.Result {
         val bindings = SecretBindingService.getInstance(project)
-        // "Run with environment…" wins over INFISICAL_ENVIRONMENT on the configuration
-        val environmentOverride = environment ?: plan.explicit[SecretBindingService.ENVIRONMENT_VARIABLE]
+        // "Run with environment…" wins over ENVBRIDGE_ENVIRONMENT (or INFISICAL_ENVIRONMENT) on the configuration
+        val environmentOverride = environment ?: SecretBindingService.environmentOverride(plan.explicit)
         val service = SecretsService.getInstance()
         fun providerOf(reference: SecretReference) = SecretProvider.byScheme(reference.scheme)
             ?: throw SecretProviderException(Kind.CONFIGURATION, "Unknown reference scheme ${reference.scheme}://")

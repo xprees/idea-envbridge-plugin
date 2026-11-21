@@ -333,6 +333,38 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/new" }.body).contains("\"cas\":0")
     }
 
+    fun `test a field is renamed in one check-and-set write, keeping its place, type and the other fields`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val api = SecretScope("secret", "root", "/app/api")
+
+        // "limits" is JSON: renamed with its value left as listed, it stays JSON
+        service.updateSecret(connection, api, "limits", SecretValue("""{"rps":10}"""), null, "rate_limits")
+        val written = mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }
+        assertThat(written.body).contains("\"cas\":1").contains("\"rate_limits\":{\"rps\":10").doesNotContain("\"limits\"")
+        assertThat(mock.secrets.getValue("root").getValue("secret/app/api").keys).containsExactly("key", "rate_limits")
+        assertThat(client(connection).listSecrets(api).associate { it.key to it.value.reveal() })
+            .containsEntry("key", "root-api-key").containsEntry("rate_limits", """{"rps":10}""").doesNotContainKey("limits")
+
+        // with a new value: renamed and changed in the same version
+        service.updateSecret(connection, api, "key", SecretValue("rotated"), null, "api_key")
+        assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/app/api" }.body).contains("\"cas\":2")
+        assertThat(client(connection).listSecrets(api).associate { it.key to it.value.reveal() }).containsOnly(
+            org.assertj.core.api.Assertions.entry("api_key", "rotated"), org.assertj.core.api.Assertions.entry("rate_limits", """{"rps":10}"""),
+        )
+
+        // a name the secret already has: refused, nothing written
+        val writes = mock.writes.size
+        assertThatThrownBy { service.updateSecret(connection, api, "api_key", SecretValue("x"), null, "rate_limits") }
+            .hasMessageContaining("already has a field rate_limits")
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, api, "api_key", SecretValue("x"), null, "") }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, api, "missing", SecretValue("x"), null, "other") }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.NOT_FOUND)
+        assertThat(mock.writes).hasSize(writes)
+    }
+
     fun `test refused writes say why`() {
         val connection = appRole()
         val service = SecretsService.getInstance()
@@ -376,9 +408,13 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(client(connection).listSecrets(SecretScope("secret", "team-a", "/app/db")).map { it.key }).containsExactlyInAnyOrder("password", "user")
 
         // an existing field at the destination is kept unless overwriting
-        val clash = service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "team-a", "/app/db"), overwrite = false)
-        assertThat(clash.moved).isEmpty()
-        assertThat(clash.notRemoved).containsKey("password")
+        val writesBefore = mock.writes.size
+        assertThatThrownBy { service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "team-a", "/app/db"), overwrite = false) }
+            .hasMessageContaining("already has \"password\"").hasMessageContaining("nothing was moved")
+        assertThat(mock.writes.size).isEqualTo(writesBefore)
+        // the same secret as source and destination is refused, not reported as copied
+        assertThatThrownBy { service.moveSecrets(connection, source, client(connection).listSecrets(source), source, overwrite = true) }
+            .hasMessageContaining("nothing was moved")
         assertThat(client(connection).listSecrets(source).single().value.reveal()).isEqualTo("root-db-pass")
 
         // moving the last field away deletes the source's latest version (restorable in Vault)

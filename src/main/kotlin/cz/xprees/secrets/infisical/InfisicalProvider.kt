@@ -10,11 +10,13 @@ import cz.xprees.secrets.core.model.SecretValue
 
 import cz.xprees.secrets.core.provider.WriteOutcome
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.ProjectFileDefaults
@@ -23,6 +25,7 @@ import cz.xprees.secrets.infisical.config.InfisicalProjectConfig
 import cz.xprees.secrets.core.provider.AuthOption
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.renameTarget
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.infisical.api.InfisicalApi
 import cz.xprees.secrets.infisical.api.InfisicalHttp
@@ -85,30 +88,42 @@ object InfisicalAuthMethods {
     val ALL = listOf(
         AuthMethod(
             id = BROWSER,
-            displayName = "Browser sign-in",
-            description = "Sign in with your Infisical account in the system browser, as the Infisical CLI does. No setup needed; " +
-                "the session has your permissions.",
+            displayName = SecretsBundle.message("auth.infisical.browser.name"),
+            description = SecretsBundle.message("auth.infisical.browser.description"),
         ),
         AuthMethod(
             id = OAUTH,
-            displayName = "OAuth application",
-            description = "Least privilege: a read-only (secrets:read) token from an OAuth application your organization registered, " +
-                "approved in the browser. Register the redirect URI http://127.0.0.1:<port>/callback.",
+            displayName = SecretsBundle.message("auth.infisical.oauth.name"),
+            description = SecretsBundle.message("auth.infisical.oauth.description"),
             options = listOf(
-                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
-                AuthOption(OPTION_CALLBACK_PORT, "Redirect port:", required = false, hint = DEFAULT_CALLBACK_PORT.toString()),
+                AuthOption(OPTION_CLIENT_ID, SecretsBundle.message("auth.infisical.option.clientId.label")),
+                AuthOption(
+                    OPTION_CALLBACK_PORT,
+                    SecretsBundle.message("auth.infisical.option.callbackPort.label"),
+                    required = false,
+                    hint = DEFAULT_CALLBACK_PORT.toString(),
+                ),
             ),
-            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, SecretsBundle.message("auth.infisical.option.clientSecret.label"))),
         ),
         AuthMethod(
             id = MACHINE_IDENTITY,
-            displayName = "Machine identity (Universal Auth)",
-            description = "A machine identity's client ID and secret, for setups without a browser or with dedicated identities.",
-            options = listOf(
-                AuthOption(OPTION_CLIENT_ID, "Client ID:"),
-                AuthOption(OPTION_ORGANIZATION_SLUG, "Organization slug:", required = false, hint = "optional"),
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.dashboard", "Infisical")) { it.trimEnd('/') },
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.identity"), "https://infisical.com/docs/documentation/platform/identities/universal-auth"),
             ),
-            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, "Client secret:")),
+            displayName = SecretsBundle.message("auth.infisical.machine.identity.name"),
+            description = SecretsBundle.message("auth.infisical.machine.identity.description"),
+            options = listOf(
+                AuthOption(OPTION_CLIENT_ID, SecretsBundle.message("auth.infisical.option.clientId.label")),
+                AuthOption(
+                    OPTION_ORGANIZATION_SLUG,
+                    SecretsBundle.message("auth.infisical.option.organizationSlug.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.infisical.option.organizationSlug.hint"),
+                ),
+            ),
+            secretOptions = listOf(AuthOption(OPTION_CLIENT_SECRET, SecretsBundle.message("auth.infisical.option.clientSecret.label"))),
         ),
     )
 }
@@ -135,9 +150,21 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
     }
 
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         checkWritable("secrets")
-        return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
+        val rename = renameTarget(key, newKey) ?: return auth.withToken { api.updateSecret(it, scope, key, value, comment) }
+        // Checked first, so a taken name changes nothing (secrets imported from elsewhere don't count: they live there)
+        val folder = auth.withToken { api.listSecrets(it, scope.copy(recursive = false)) }.filter { it.origin != SecretOrigin.IMPORTED && it.path == scope.path }
+        if (folder.any { it.key == rename }) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "${scope.environment}:${scope.path} already has a secret $rename; choose another name or delete that one first",
+            )
+        }
+        // Listings show values with references expanded: a value left as it was isn't sent, so `${…}` references are kept
+        val current = folder.firstOrNull { it.key == key && it.origin == SecretOrigin.LOCAL }
+        val changed = value.takeIf { current == null || current.value != it }
+        return auth.withToken { api.updateSecret(it, scope, key, changed, comment, rename) }
     }
 
     override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {

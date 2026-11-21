@@ -9,7 +9,7 @@ import cz.xprees.secrets.core.settings.SecretsAppSettings
  * Production environments: they are marked (status bar, environment pickers) and, unless turned off in the settings, ask for a
  * confirmation before secrets from them reach a process or a terminal, and before secrets in them are created or changed.
  * A project's own list of production environments (picked in its settings) wins over the name pattern (default
- * `prod*, production*, live*`), for teams whose environments are named differently.
+ * `prod*, production*, prd*, live*` — `prd` is Doppler's production config), for teams whose environments are named differently.
  */
 object ProdGuard {
     /** Whether [environment] is a production environment for [project]. */

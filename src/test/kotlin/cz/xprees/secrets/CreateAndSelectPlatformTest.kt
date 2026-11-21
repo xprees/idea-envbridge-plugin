@@ -135,6 +135,47 @@ class CreateAndSelectPlatformTest : BasePlatformTestCase() {
         assertThatThrownBy { service.updateSecret(oauth, scope, "API_KEY", SecretValue("x")) }.hasMessageContaining("read-only")
     }
 
+    fun `test a secret is renamed with newSecretName, and a taken name is refused before anything is sent`() {
+        val service = SecretsService.getInstance()
+        val scope = SecretScope("p1", "dev", "/")
+        // The value left as listed isn't sent (a reference in it is kept); the rename is
+        assertThat(service.updateSecret(connection, scope, "API_KEY", SecretValue("dev-key"), null, "SERVICE_KEY")).isEqualTo(WriteOutcome.APPLIED)
+        val request = mock.requests.last { it.method == "PATCH" }
+        assertThat(request.path).isEqualTo("/api/v4/secrets/API_KEY")
+        assertThat(request.body).contains("\"newSecretName\":\"SERVICE_KEY\"").doesNotContain("secretValue").doesNotContain("secretComment")
+        assertThat(service.secrets(connection, scope, fresh = true).associate { it.key to it.value.reveal() })
+            .containsEntry("SERVICE_KEY", "dev-key").doesNotContainKey("API_KEY")
+
+        // A changed value and comment go with the rename, in one request
+        service.updateSecret(connection, scope, "DB_PASSWORD", SecretValue("new-pass"), "renamed", "DATABASE_PASSWORD")
+        assertThat(mock.requests.last { it.method == "PATCH" }.body)
+            .contains("\"newSecretName\":\"DATABASE_PASSWORD\"").contains("\"secretValue\":\"new-pass\"").contains("\"secretComment\":\"renamed\"")
+        assertThat(service.secrets(connection, scope, fresh = true).associate { it.key to it.value.reveal() }).containsEntry("DATABASE_PASSWORD", "new-pass")
+
+        // Taken, blank or padded names: refused, nothing sent
+        val patches = mock.requests.count { it.method == "PATCH" }
+        val taken = assertThatThrownBy { service.updateSecret(connection, scope, "ConnectionStrings__Default", SecretValue("x"), null, "SERVICE_KEY") }
+        taken.isInstanceOf(SecretProviderException::class.java).hasMessageContaining("already has a secret SERVICE_KEY")
+        assertThat(kindOf { service.updateSecret(connection, scope, "ConnectionStrings__Default", SecretValue("x"), null, "SERVICE_KEY") })
+            .isEqualTo(SecretProviderException.Kind.CONFIGURATION)
+        assertThat(kindOf { service.updateSecret(connection, scope, "ConnectionStrings__Default", SecretValue("x"), null, " ") })
+            .isEqualTo(SecretProviderException.Kind.CONFIGURATION)
+        assertThat(kindOf { service.updateSecret(connection, scope, "ConnectionStrings__Default", SecretValue("x"), null, " X") })
+            .isEqualTo(SecretProviderException.Kind.CONFIGURATION)
+        assertThat(mock.requests.count { it.method == "PATCH" }).isEqualTo(patches)
+        // The same key is no rename: a plain change
+        service.updateSecret(connection, scope, "ConnectionStrings__Default", SecretValue("y"), null, "ConnectionStrings__Default")
+        assertThat(mock.requests.last { it.method == "PATCH" }.body).doesNotContain("newSecretName")
+    }
+
+    private fun kindOf(call: () -> Unit): SecretProviderException.Kind? =
+        try {
+            call()
+            null
+        } catch (e: SecretProviderException) {
+            e.kind
+        }
+
     fun `test read-only in the settings stops every write before it is sent`() {
         val service = SecretsService.getInstance()
         val scope = SecretScope("p1", "dev", "/")

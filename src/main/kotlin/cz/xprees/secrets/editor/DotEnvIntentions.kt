@@ -1,5 +1,6 @@
 package cz.xprees.secrets.editor
 
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.codeInsight.intention.IntentionAction
 import cz.xprees.secrets.run.SecretsNotifications
 import cz.xprees.secrets.core.model.SecretScope
@@ -12,7 +13,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
-import com.intellij.ui.SimpleListCellRenderer
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProvider
@@ -82,9 +82,9 @@ class DotEnvBindToSecretIntention : IntentionAction {
                 if (choices.isEmpty()) return
                 JBPopupFactory.getInstance().createPopupChooserBuilder(choices)
                     .setTitle(SecretsBundle.message("dotenv.bind.choose.title", line.name, binding.environment, SecretsBundle.message("dotenv.bind.all.folders")))
-                    .setRenderer(SimpleListCellRenderer.create("") { choice ->
-                        val comment = choice.comment.lines().firstOrNull()?.takeIf { it.isNotBlank() }?.let { "  —  $it" }.orEmpty()
-                        "${choice.key}    ${choice.path}$comment"
+                    .setRenderer(textListCellRenderer { choice ->
+                        val comment = choice?.comment?.lines()?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { "  —  $it" }.orEmpty()
+                        choice?.let { "${it.key}    ${it.path}$comment" }
                     })
                     .setNamerForFiltering { "${it.key} ${it.path}" }
                     .setItemChosenCallback { choice ->

@@ -418,6 +418,31 @@ class OnePasswordPlatformTest : BasePlatformTestCase() {
         assertThat(fake.calls()).noneMatch { it.startsWith("item delete") }
     }
 
+    fun `test CLI renames a field by its label, refusing taken labels and built-in fields before saving`() {
+        if (!canRunFakeOp) return
+        val connection = desktop()
+        service.updateSecret(connection, scope("/Database"), "port", SecretValue("5432"), null, "db port")
+        val item = fake.item(DEV, DATABASE)
+        assertThat(fieldOf(item, "port")).isNull()
+        assertThat(fieldOf(item, "db port")!!.let { it.get("id").asString to it.get("value").asString }).isEqualTo("p1" to "5432")
+        assertThat(fields(connection, "/Database")).contains("db port" to "5432")
+        assertNotInArgv("5432", "db port")
+
+        val edits = fake.calls().count { it.startsWith("item edit") }
+        // another field of the item (in another section, too) has that label; a built-in field keeps its label
+        assertThat(kindOf { service.updateSecret(connection, scope("/Database/Extra"), "api key", SecretValue("extra-key"), null, "username") })
+            .isEqualTo(Kind.CONFIGURATION)
+        assertThatThrownBy { service.updateSecret(connection, scope("/Database"), "password", SecretValue("db-pass"), null, "db password") }
+            .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("built-in field")
+        assertThat(kindOf { service.updateSecret(connection, scope("/Database"), "db port", SecretValue("5432"), null, "  ") }).isEqualTo(Kind.CONFIGURATION)
+        assertThat(fake.calls().count { it.startsWith("item edit") }).isEqualTo(edits)
+
+        // an op that ignores the piped item (the label stays) is not taken for success
+        fake.ignoreEdits = true
+        assertThatThrownBy { service.updateSecret(connection, scope("/Database/Extra"), "api key", SecretValue("extra-key"), null, "API_KEY") }
+            .isInstanceOf(SecretProviderException::class.java).hasMessageContaining("didn't apply the change")
+    }
+
     fun `test CLI moves fields between items and reports a source it could not change`() {
         if (!canRunFakeOp) return
         val connection = desktop()
@@ -474,6 +499,21 @@ class OnePasswordPlatformTest : BasePlatformTestCase() {
         // items are only ever saved, never deleted
         assertThat(connect.requests.map { it.method }.toSet()).containsOnly("GET", "PUT")
         assertThat(connect.requests).allMatch { it.authorization == "Bearer ${connect.token}" }
+    }
+
+    fun `test Connect renames a field with the item's version, and refuses a taken label without a PUT`() {
+        val connection = connectServer()
+        service.updateSecret(connection, scope("/Stripe"), "credential", SecretValue("sk_live_1"), "rotated", "api credential")
+        val item = connect.item(DEV, OnePasswordFixtures.STRIPE)!!
+        assertThat(fieldOf(item, "credential")).isNull()
+        assertThat(fieldOf(item, "api credential")!!.get("value").asString).isEqualTo("sk_live_1")
+        assertThat(notesOf(item)).isEqualTo("rotated")
+        assertThat(item.get("version").asInt).isEqualTo(2)
+        assertThat(JsonParser.parseString(connect.requests.single { it.method == "PUT" }.body).asJsonObject.get("version").asInt).isEqualTo(1)
+
+        assertThat(kindOf { service.updateSecret(connection, scope("/Stripe/Webhooks"), "secret", SecretValue("whsec_1"), null, "api credential") })
+            .isEqualTo(Kind.CONFIGURATION)
+        assertThat(connect.requests.count { it.method == "PUT" }).isEqualTo(1)
     }
 
     fun `test Connect creates a password item at the root and refuses a taken title`() {
@@ -541,5 +581,15 @@ class OnePasswordPlatformTest : BasePlatformTestCase() {
 
         // the vault's root isn't a destination
         assertThat(kindOf { service.moveSecrets(connection, scope("/Stripe"), database.take(1), scope("/"), false) }).isEqualTo(Kind.CONFIGURATION)
+    }
+
+    fun `test a move to the source item named another way keeps the fields`() {
+        val connection = connectServer()
+        val database = client(connection).listSecrets(scope("/Database")).filter { it.key == "port" }
+        // "/database" resolves to the same item as "/Database" (titles match regardless of case): with Overwrite, copying onto
+        // the same fields and then removing them from the "source" would delete them
+        assertThat(service.moveSecrets(connection, scope("/Database"), database, scope("/database"), true).moved).containsExactly("port")
+        assertThat(fieldOf(connect.item(DEV, DATABASE)!!, "port")).isNotNull()
+        assertThat(fields(connection, "/Database").map { it.first }).contains("port")
     }
 }

@@ -55,19 +55,14 @@ class AddSecretsToRunConfigurationAction : DumbAwareAction(AllIcons.General.Add)
          */
         fun addTo(project: Project, settings: RunnerAndConfigurationSettings, additions: Map<String, String>): List<String> {
             val configuration = settings.configuration
-            val (patcher, current) = EnvPatcher.find(configuration) ?: return additions.keys.toList()
+            val (_, current) = EnvPatcher.find(configuration) ?: return additions.keys.toList()
             val resolver = LaunchSecretResolver.getInstance(project)
             val skipped = additions.keys.filter { name ->
                 val existing = current[name]
                 existing != null && existing.isNotEmpty() && !resolver.hasReferences(mapOf(name to existing))
             }
             val merged = LinkedHashMap(current).apply { putAll(additions.filterKeys { it !in skipped }) }
-            val updated = patcher.copyWith(configuration, merged)
-            // Copy the updated state back into the stored configuration through its public XML form
-            val state = Element("configuration")
-            (updated as com.intellij.execution.configurations.RunConfiguration).writeExternal(state)
-            configuration.readExternal(state)
-            project.messageBus.syncPublisher(RunManagerListener.TOPIC).runConfigurationChanged(settings)
+            EnvPatcher.store(project, settings, merged)
             return skipped
         }
     }

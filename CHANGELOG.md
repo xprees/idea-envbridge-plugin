@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Secrets tool window, compact and keyboard-friendly.** The copy variants are in a *Copy* submenu; the toolbar keeps the everyday
+  actions (sign-out stays in the settings and the connection's menu). Copy, cut and paste secrets between folders and environments
+  (*Paste* copies or moves them, with confirmation). The IDE's standard shortcuts from your keymap work in the tree: Alt+Insert
+  new secret, F4 edit, Shift+F6 rename, Ctrl+C / Ctrl+X / Ctrl+V, Delete, F6 move, Ctrl+Alt+Shift+C copy reference, Ctrl+Q reveal,
+  Ctrl+Alt+Y refresh; the context menu shows them. *New Environment…* in a project's context menu, for providers that can create one
+- **Masked secret hints:** a click selects the secret in the Secrets tool window; the right-click menu has *Preview Secret Value*
+  (shown next to the caret until the next keystroke) and *Copy Secret Value*
+- **Connection dialog: links to where credentials are made** under token-style sign-in methods: the Doppler dashboard and its
+  token guide, the Infisical instance and its machine identity guide, the Vault UI and the AppRole guide, 1Password's service
+  account and Connect guides
+- **Renaming secrets** from *Edit Secret…*: the dialog has an editable *Key*. A new key renames the secret in the secret manager
+  (Infisical: `newSecretName`; Vault/OpenBao: the field is renamed in one check-and-set write, keeping its place, its type and
+  the other fields; 1Password: the field's label; Doppler: a change request naming the original, its note carried over), keeping
+  the value unless you change it. A name already used in the folder is refused before anything is written. *Update references
+  in this project* (on by default) rewrites run configurations, `.env` files and the terminal's references to the new name, as
+  one command Edit › Undo puts back
+- **Moving secrets updates their references** in the project: run configurations' environment variables, `.env` files (values
+  and binding comments) and the terminal's references follow the secrets to their new folder or environment (*Update
+  references in this project*, on by default). Edit › Undo puts them back in one step; *Undo Move* in the notification also
+  moves the secrets back
 - **1Password: writing.** *New Secret…*, *Edit Secret…*, *Move…*, *Delete…* and *Extract value to …* work for 1Password
   connections (all three access methods): a secret is a field of an item; a new secret at a vault's root becomes a Password item
   (`op://vault/KEY/password`); the item's notes are the secrets' comment; fields are moved between items (copy first, remove
@@ -31,11 +51,30 @@
   set on the connection. Creating, editing, moving and deleting fields, with check-and-set (a change made meanwhile is refused,
   other fields keep their values and types)
 - Choosing the secret manager when adding a connection, once there are several
-- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker
+- Opt-in integration tests against real Doppler and 1Password test accounts (run when their credentials are set as
+  repository secrets)
+- Integration tests against real HashiCorp Vault, OpenBao and self-hosted Infisical servers in Docker (images pinned)
   (`scripts/integration/start.sh`, `./gradlew integrationTest`), run in CI
 
 ### Fixed
 
+- Settings: adding a connection could do nothing (seen in Rider): the provider chooser opened centred on the focus and could end up
+  behind the Settings dialog; it now opens under the + button. An empty connection list has an *Add a connection…* link
+- Secrets tool window without connections: the empty tree has an *Add a connection…* link that opens the settings and starts adding
+- Settings opened without a project (Welcome screen) show only what applies to every project (connections, general options),
+  instead of project sections that would only have changed the template for new projects
+- Settings: a project bound to a connection removed since kept *Apply* enabled without any change
+- Doppler: browser sign-in failed with *HTTP 400: Invalid CLI version*; it now tells Doppler a CLI release version, as the Doppler
+  CLI does
+- 1Password: moving fields to the source item named another way (a title in other letter case) could delete them
+- Editing a connection (a new token or password, another namespace or option) takes effect right away instead of after the
+  old session expires
+- Doppler: production configs (`prd`, `prd_*`) are production for the prod guard; a `doppler.yaml` list binds the entry that
+  holds the project directory (or nothing), not the first one; a passing server problem no longer ends a browser sign-in
+- Vault: a move that would overwrite without Overwrite, or whose source field is gone, changes nothing and says why;
+  removing a secret's last field is protected by check-and-set; `.` / `..` in paths are refused
+- 1Password names with emoji work in references; item names starting with `-` are refused rather than passed to the CLI
+- *Settings › This Project* no longer reads project files on the UI thread, and uses the selected connection's provider
 - Changing secrets (and other requests with a body) on Infisical instances served over plain `http://` (a local self-hosted one)
   failed with HTTP 405: such requests now use HTTP/1.1 instead of an HTTP/2 upgrade
 - OpenBao: an expired or revoked token is recognised although the server only says "permission denied", so the plugin signs in
@@ -43,6 +82,9 @@
 
 ### Changed
 
+- The run configuration variable that picks the environment is `ENVBRIDGE_ENVIRONMENT` (for every secret manager);
+  `INFISICAL_ENVIRONMENT` keeps working
+- Intention and inspection descriptions no longer assume Infisical
 - Actions and messages shared by every secret manager no longer say "Infisical": *Run with Secrets Environment…*, *Add Secrets
   to Run Configuration…*, *New Terminal Tab with Secrets*, *Load Secrets into This Terminal*, *Bind to Secret…*, *Extract Value
   to Secret Manager…*

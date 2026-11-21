@@ -56,6 +56,9 @@ object OnePasswordEdits {
 
     fun setValue(field: JsonObject, value: String) = field.addProperty("value", value)
 
+    /** Renames [field] (its label is its key in listings and `op://` references). */
+    fun setLabel(field: JsonObject, label: String) = field.addProperty("label", label)
+
     /** Puts [field] into [section] (null: the item's top level). */
     fun setSection(field: JsonObject, section: OpSection?) {
         if (section == null) field.remove("section") else field.add("section", sectionRef(section))
@@ -85,6 +88,10 @@ object OnePasswordEdits {
     /** IDs of the item's fields (to check that a write took effect). */
     fun fieldIds(item: JsonObject): Set<String>? =
         item.getAsJsonArray("fields")?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject?.str("id") }?.toSet()
+
+    /** Labels of the item's fields by ID (to check that a rename took effect). */
+    fun fieldLabels(item: JsonObject): Map<String, String> =
+        item.getAsJsonArray("fields")?.mapNotNull { e -> e.takeIf { it.isJsonObject }?.asJsonObject?.let { o -> o.str("id")?.let { it to o.str("label").orEmpty() } } }?.toMap().orEmpty()
 
     private fun notesField(notes: String) = field(NOTES_ID, NOTES_ID, notes, "STRING", section = null).apply { addProperty("purpose", NOTES_PURPOSE) }
 

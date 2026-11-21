@@ -84,6 +84,10 @@ class MockDoppler : AutoCloseable {
     @Volatile
     var declineSignIn = false
 
+    /** The next polls answer 503, like a passing server problem. */
+    @Volatile
+    var failingPolls = 0
+
     val polls = AtomicInteger()
     val revoked = CopyOnWriteArrayList<String>()
 
@@ -141,6 +145,10 @@ class MockDoppler : AutoCloseable {
                 if (declineSignIn) {
                     pending.remove(polling)
                     return respond(exchange, 400, error("Auth code was denied"))
+                }
+                if (failingPolls > 0) {
+                    failingPolls--
+                    return respond(exchange, 503, error("Service unavailable"))
                 }
                 if (polls.incrementAndGet() < approveAfterPolls) return respond(exchange, 409, error("Auth code has not been authorized yet"))
                 pending.remove(polling)
@@ -230,6 +238,28 @@ class MockDoppler : AutoCloseable {
                 if (!allowed(project, config)) return respond(exchange, 403, error("This token does not have access to requested config"))
                 if ("$project/$config" in lockedConfigs) return respond(exchange, 400, error("This config is locked and cannot be modified"))
                 val target = secrets["$project/$config"] ?: return respond(exchange, 404, error("Could not find requested config"))
+                // The CLI's and dashboard's shape: change requests, which can rename (originalName -> name)
+                json.getAsJsonArray("change_requests")?.let { requests ->
+                    val list = requests.map { it.asJsonObject }
+                    for (r in list) {
+                        val original = r.get("originalName")?.asString ?: r.get("name").asString
+                        val name = r.get("name").asString
+                        if (original != name && !target.containsKey(original)) return respond(exchange, 404, error("Could not find requested secret"))
+                        if (original != name && target.containsKey(name)) return respond(exchange, 400, error("A secret named $name already exists"))
+                    }
+                    for (r in list) {
+                        val original = r.get("originalName")?.asString ?: r.get("name").asString
+                        val name = r.get("name").asString
+                        if (r.get("shouldDelete")?.asBoolean == true) {
+                            target.remove(original)
+                            continue
+                        }
+                        val value = r.get("value")?.takeIf { !it.isJsonNull }?.asString ?: target[original].orEmpty()
+                        target.remove(original)
+                        target[name] = value
+                    }
+                    return respond(exchange, 200, """{"secrets":{},"success":true}""")
+                }
                 val changes = json.getAsJsonObject("secrets").entrySet()
                 // A null value deletes the secret (what `doppler secrets delete` sends)
                 changes.filter { it.value.isJsonNull }.forEach { (k, _) ->

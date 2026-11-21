@@ -60,8 +60,17 @@ class DopplerAuth(private val connection: SecretConnection, private val api: Dop
         val session = loadSession()
         if (session != null && session.accessToken == token && session.extra[EXTRA_CHECKED] == "true") return session.toMe()
         val me = withToken(api::me)
-        storeSession(TokenSet(accessToken = token, account = me.describe(connection.name), extra = me.toExtra()))
+        // Not if the user signed out (or changed the token) meanwhile: that would bring the session back
+        synchronized(this) {
+            if (stillCurrent(token)) storeSession(TokenSet(accessToken = token, account = me.describe(connection.name), extra = me.toExtra()))
+        }
         return me
+    }
+
+    /** Whether [token] is still this connection's token (the browser session's, or the pasted one). */
+    private fun stillCurrent(token: String): Boolean = when (method) {
+        DopplerAuthMethods.TOKEN -> CredentialVault.get(connection.id, CredentialVault.secretOptionSlot(DopplerAuthMethods.OPTION_TOKEN)) == token
+        else -> loadSession()?.accessToken == token
     }
 
     fun signIn(interaction: SignInInteraction): String = when (method) {
@@ -107,9 +116,19 @@ class DopplerAuth(private val connection: SecretConnection, private val api: Dop
 
         val interval = pollIntervalOverrideMs ?: code.pollIntervalMs?.coerceIn(500, 10_000) ?: DEFAULT_POLL_INTERVAL_MS
         val deadline = System.currentTimeMillis() + timeoutMs
+        var failures = 0
         while (true) {
             if (interaction.isCancelled()) throw SecretProviderException(Kind.CANCELLED, "Sign-in cancelled")
-            when (val poll = api.pollAuthCode(code.pollingCode)) {
+            // A passing network or server problem doesn't end the sign-in the user is completing in the browser; a declined or
+            // expired code does
+            val poll = try {
+                api.pollAuthCode(code.pollingCode).also { failures = 0 }
+            } catch (e: SecretProviderException) {
+                if (e.kind != Kind.NETWORK && e.kind != Kind.SERVER) throw e
+                if (++failures >= MAX_POLL_FAILURES || System.currentTimeMillis() >= deadline) throw e
+                DopplerApi.Poll.Pending
+            }
+            when (poll) {
                 is DopplerApi.Poll.Authorized -> {
                     interaction.status("Completing the sign-in…")
                     val me = runCatching { api.me(poll.token) }.getOrNull()
@@ -162,6 +181,8 @@ class DopplerAuth(private val connection: SecretConnection, private val api: Dop
         private val LOG = logger<DopplerAuth>()
 
         const val DEFAULT_POLL_INTERVAL_MS = 2_000L
+        /** Network or server failures in a row that end a browser sign-in. */
+        const val MAX_POLL_FAILURES = 5
         const val EXTRA_CHECKED = "checked"
         const val EXTRA_WORKPLACE = "workplace"
         const val EXTRA_WORKPLACE_NAME = "workplaceName"

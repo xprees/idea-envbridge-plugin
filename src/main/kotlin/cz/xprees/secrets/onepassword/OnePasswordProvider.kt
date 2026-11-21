@@ -1,6 +1,7 @@
 package cz.xprees.secrets.onepassword
 
 import com.google.gson.JsonObject
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.ProviderEnvironment
@@ -18,6 +19,7 @@ import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.renameTarget
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import javax.swing.Icon
@@ -66,36 +68,50 @@ object OnePasswordAuthMethods {
     const val OPTION_SERVICE_ACCOUNT_TOKEN = "serviceAccountToken"
     const val OPTION_CONNECT_TOKEN = "connectToken"
 
-    private val OP_PATH = AuthOption(OPTION_OP_PATH, "1Password CLI (op):", required = false, hint = "found on PATH or in the usual install locations")
+    private val OP_PATH = AuthOption(
+        OPTION_OP_PATH,
+        SecretsBundle.message("auth.onepassword.option.opPath.label"),
+        required = false,
+        hint = SecretsBundle.message("auth.onepassword.option.opPath.hint"),
+    )
 
     val ALL = listOf(
         AuthMethod(
             id = DESKTOP_APP,
-            displayName = "1Password app (through the CLI)",
-            description = "The 1Password CLI (op) asks your 1Password app to approve access (Touch ID, Windows Hello, your system " +
-                "password…), so no password or token is entered here. Needs the CLI and, in the app, Settings › Developer › " +
-                "Integrate with 1Password CLI.",
+            displayName = SecretsBundle.message("auth.onepassword.desktop.app.name"),
+            description = SecretsBundle.message("auth.onepassword.desktop.app.description"),
             options = listOf(
-                AuthOption(OPTION_ACCOUNT, "Account:", required = false, hint = "shorthand, sign-in address or ID; empty: the CLI's default"),
+                AuthOption(
+                    OPTION_ACCOUNT,
+                    SecretsBundle.message("auth.onepassword.option.account.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.onepassword.option.account.hint"),
+                ),
                 OP_PATH,
             ),
             usesBaseUrl = false,
         ),
         AuthMethod(
             id = SERVICE_ACCOUNT,
-            displayName = "Service account (through the CLI)",
-            description = "A 1Password service account token, kept in the IDE's password storage and given to the CLI (op) only in " +
-                "its environment (OP_SERVICE_ACCOUNT_TOKEN), never on its command line. The service account sees only the vaults " +
-                "it was granted.",
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.op.service"), "https://developer.1password.com/docs/service-accounts/get-started/"),
+            ),
+            displayName = SecretsBundle.message("auth.onepassword.service.account.name"),
+            description = SecretsBundle.message("auth.onepassword.service.account.description"),
             options = listOf(OP_PATH),
-            secretOptions = listOf(AuthOption(OPTION_SERVICE_ACCOUNT_TOKEN, "Service account token:")),
+            secretOptions = listOf(
+                AuthOption(OPTION_SERVICE_ACCOUNT_TOKEN, SecretsBundle.message("auth.onepassword.option.serviceAccountToken.label")),
+            ),
             usesBaseUrl = false,
         ),
         AuthMethod(
             id = CONNECT,
-            displayName = "1Password Connect server",
-            description = "A self-hosted 1Password Connect server (its address above) and an access token for it.",
-            secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, "Access token:")),
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.op.connect"), "https://developer.1password.com/docs/connect/get-started/"),
+            ),
+            displayName = SecretsBundle.message("auth.onepassword.connect.name"),
+            description = SecretsBundle.message("auth.onepassword.connect.description"),
+            secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, SecretsBundle.message("auth.onepassword.option.connectToken.label"))),
         ),
     )
 }
@@ -265,14 +281,35 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         return WriteOutcome.APPLIED
     }
 
-    /** Changes the field's value; a [comment] that isn't null replaces the item's notes (shown as every field's comment). */
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * Changes the field's value; a [comment] that isn't null replaces the item's notes (shown as every field's comment). A
+     * [newKey] changes the field's label in the same save; refused before saving when another field of the item has that
+     * label, or when the field is a built-in one (a login's username or password, the notes), whose label 1Password keeps.
+     */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         val segments = writableSegments(scope, allowRoot = false)
+        val rename = renameTarget(key, newKey)
         edit(scope.projectId, segments[0]) { json, item ->
             val field = requireField(item, segments, key)
-            OnePasswordEdits.setValue(OnePasswordEdits.field(json, field.id), value.reveal())
+            if (rename != null) {
+                if (field.purpose.isNotEmpty()) {
+                    throw SecretProviderException(
+                        Kind.CONFIGURATION,
+                        "\"$key\" is a built-in field of item ${segments[0]} and 1Password keeps its name; add a field \"$rename\" with New Secret instead",
+                    )
+                }
+                if (item.fields.any { it.id != field.id && keyOf(it) == rename }) {
+                    throw SecretProviderException(
+                        Kind.CONFIGURATION,
+                        "Item ${segments[0]} already has a field \"$rename\" (field labels must be unique within an item for op:// references); choose another name",
+                    )
+                }
+            }
+            val target = OnePasswordEdits.field(json, field.id)
+            OnePasswordEdits.setValue(target, value.reveal())
+            rename?.let { OnePasswordEdits.setLabel(target, it) }
             comment?.let { OnePasswordEdits.setNotes(json, it) }
-            Expect(present = setOf(field.id))
+            Expect(present = setOf(field.id), labels = rename?.let { mapOf(field.id to it) }.orEmpty())
         }
         return WriteOutcome.APPLIED
     }
@@ -328,16 +365,21 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
 
         // Within one item: change the fields' section in one save
         val sameVault = sourceVault == destination.projectId || source.projectId == destination.projectId
-        val destinationIsSource = sameVault && (to[0] == from[0] || to[0] == sourceItem.id || to[0] == sourceItem.title)
-        if (destinationIsSource) {
+        fun moveWithinSourceItem(): MoveResult {
             val section = to.getOrNull(1)?.let { requireSection(sourceItem, it, to[0]) }
             picked.forEach { (_, field) -> OnePasswordEdits.setSection(OnePasswordEdits.field(sourceJson, field.id), section) }
             save(source.projectId, sourceJson, Expect(present = picked.map { it.second.id }.toSet()))
             return MoveResult(keys)
         }
+        if (sameVault && (to[0] == from[0] || to[0] == sourceItem.id || to[0] == sourceItem.title)) return moveWithinSourceItem()
 
         val destinationJson = backend.itemJson(destination.projectId, to[0])
         val destinationItem = OnePasswordJson.item(destinationJson)
+        // The destination may name the source item another way (a title in other letter case, matched leniently): copying onto
+        // the same fields and then removing them from the "source" would delete them
+        if (sourceItem.id.isNotEmpty() && destinationItem.id == sourceItem.id && vaultOf(destinationJson, destination.projectId) == sourceVault) {
+            return moveWithinSourceItem()
+        }
         val section = to.getOrNull(1)?.let { requireSection(destinationItem, it, to[0]) }
         val existing = picked.associate { (key, _) -> key to findField(destinationItem, null, key) }
         val conflicts = existing.filterValues { it != null }.keys
@@ -373,8 +415,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         }
     }
 
-    /** What a save must show afterwards: fields (by ID) that exist and that are gone. Values aren't compared. */
-    private data class Expect(val present: Set<String> = emptySet(), val absent: Set<String> = emptySet())
+    /** What a save must show afterwards: fields (by ID) that exist and that are gone, and new labels. Values aren't compared. */
+    private data class Expect(val present: Set<String> = emptySet(), val absent: Set<String> = emptySet(), val labels: Map<String, String> = emptyMap())
 
     /** Reads the item, lets [change] edit its JSON (with the parsed item for lookups), and saves it whole. */
     private fun edit(vault: String, item: String, change: (JsonObject, OpItem) -> Expect) {
@@ -389,7 +431,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
     private fun save(vault: String, json: JsonObject, expect: Expect) {
         val result = backend.replaceItem(vault, json)
         val ids = OnePasswordEdits.fieldIds(result) ?: return
-        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids }) throw notApplied("save item ${json.get("title")?.asString.orEmpty()}")
+        val labelsApplied = expect.labels.isEmpty() || OnePasswordEdits.fieldLabels(result).let { labels -> expect.labels.all { (id, label) -> labels[id] == label } }
+        if (!ids.containsAll(expect.present) || expect.absent.any { it in ids } || !labelsApplied) throw notApplied("save item ${json.get("title")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()}")
     }
 
     private fun notApplied(what: String) = SecretProviderException(

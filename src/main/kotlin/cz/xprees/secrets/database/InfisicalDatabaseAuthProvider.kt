@@ -52,8 +52,14 @@ class InfisicalDatabaseAuthProvider : DatabaseAuthProvider {
     }
 
     /**
-     * The user and password fields, holding references (stored as data source properties, never as credentials). This
-     * overload exists in every supported IDE: 2026.1 deprecated it for `configureWidget`, which 2026.3 removed again.
+     * The user and password fields, holding references (stored as data source properties, never as credentials).
+     *
+     * Deliberately still this deprecated method: it is the only widget API every supported IDE has. Its replacements differ per
+     * generation and none spans them all: 2026.1 (261) offers `configureWidget(AuthWidgetBuilder, …)`, which 2026.2 (262)
+     * removed again in favour of `getAuthParams(DatabaseConnectionConfig)`, absent from 261. In each of them the data source
+     * dialog (`DatabaseAuthPanel.initWidget`) calls this method first and uses its widget when non-null, falling back to the
+     * generation's own replacement only otherwise, so overriding it keeps the same fields everywhere. Revisit when sinceBuild
+     * reaches 262: then implement `getAuthParams` and drop this override.
      */
     @Suppress("OVERRIDE_DEPRECATION")
     override fun createWidget(project: Project?, credentials: DatabaseCredentials, config: DatabaseConnectionConfig): DatabaseAuthProvider.AuthWidget =

@@ -44,7 +44,9 @@ class DopplerApi(val http: DopplerHttp) {
     )
 
     /** One secret as listed: the computed value (Doppler references resolved), the raw value, and its note. */
-    data class Secret(val name: String, val computed: String?, val raw: String?, val note: String, val hidden: Boolean)
+    data class Secret(val name: String, val computed: String?, val raw: String?, val note: String, val hidden: Boolean) {
+        override fun toString() = "Secret($name, hidden=$hidden)"
+    }
 
     /** What `POST /v3/auth/cli/generate` returned: the code the user confirms, the code to poll with, and where to sign in. */
     class AuthCode(val code: String, val pollingCode: String, val authUrl: String, val pollIntervalMs: Long?) {
@@ -80,13 +82,14 @@ class DopplerApi(val http: DopplerHttp) {
 
     // ---- Browser sign-in (the Doppler CLI's flow) --------------------------------------------------------------------
 
+
     /** Starts a browser sign-in. [hostname] names the token in the user's Doppler token list. */
     fun generateAuthCode(hostname: String, os: String, arch: String): AuthCode {
         // As the Doppler CLI does (pkg/http/api.go GenerateAuthCode): GET with the machine's details, no token
         val response = http.send(
             "GET",
             "/v3/auth/cli/generate/2",
-            query = mapOf("hostname" to hostname, "version" to "envbridge", "os" to os, "arch" to arch),
+            query = mapOf("hostname" to hostname, "version" to CLI_VERSION, "os" to os, "arch" to arch),
         )
         if (!response.isSuccess) throw DopplerHttp.failure(response, "Starting the Doppler sign-in")
         val o = response.json().asJsonObject
@@ -214,6 +217,26 @@ class DopplerApi(val http: DopplerHttp) {
         }
     }
 
+    /**
+     * Renames secret [originalName] to [name] in [config], setting its raw [value]: the update call with a change request
+     * (`change_requests: [{originalName, name, value}]`, the shape the Doppler CLI and dashboard send).
+     */
+    fun renameSecret(token: String, project: String, config: String, originalName: String, name: String, value: String) {
+        val body = JsonObject().apply {
+            addProperty("project", project)
+            addProperty("config", config)
+            add("change_requests", com.google.gson.JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("originalName", originalName)
+                    addProperty("name", name)
+                    addProperty("value", value)
+                })
+            })
+        }.toString()
+        val response = http.send("POST", "/v3/configs/config/secrets", token, mapOf("project" to project, "config" to config), json = body)
+        if (!response.isSuccess) throw DopplerHttp.failure(response, "Renaming $originalName to $name in $project/$config")
+    }
+
     /** Deletes secret [name]: the same update call with the value null (what `doppler secrets delete` sends). */
     fun deleteSecret(token: String, project: String, config: String, name: String) {
         val body = JsonObject().apply {
@@ -253,6 +276,13 @@ class DopplerApi(val http: DopplerHttp) {
     }
 
     companion object {
+        /**
+         * The `version` the sign-in endpoint is told. Doppler accepts only a CLI release version (`v<major>.<minor>.<patch>`, as
+         * release builds of the CLI send) and answers anything else with HTTP 400 "Invalid CLI version"; the token's name
+         * ([generateAuthCode]'s hostname) still says EnvBridge.
+         */
+        const val CLI_VERSION = "v3.77.1"
+
         const val PER_PAGE = 100
         const val MAX_PAGES = 20
 

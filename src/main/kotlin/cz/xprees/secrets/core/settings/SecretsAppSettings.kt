@@ -111,7 +111,7 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
         const val DEFAULT_CACHE_TTL_SECONDS = 300
         const val DEFAULT_REVEAL_SECONDS = 10
         const val DEFAULT_CLIPBOARD_CLEAR_SECONDS = 30
-        const val DEFAULT_PROD_GUARD_PATTERN = "prod*, production*, live*"
+        const val DEFAULT_PROD_GUARD_PATTERN = "prod*, production*, prd*, live*"
 
         @JvmField
         val TOPIC: Topic<Listener> = Topic.create("EnvBridge connections", Listener::class.java)

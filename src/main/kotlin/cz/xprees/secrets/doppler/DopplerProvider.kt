@@ -1,5 +1,6 @@
 package cz.xprees.secrets.doppler
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -16,6 +17,7 @@ import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SecretsClient
+import cz.xprees.secrets.core.provider.renameTarget
 import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.reference.ReferenceGrammar
@@ -91,16 +93,24 @@ object DopplerAuthMethods {
     val ALL = listOf(
         AuthMethod(
             id = BROWSER,
-            displayName = "Browser sign-in",
-            description = "Sign in with your Doppler account in the system browser, as `doppler login` does: check that the browser " +
-                "shows the code the IDE shows, and approve. The token is kept in the IDE's password storage and revoked on sign-out.",
+            displayName = SecretsBundle.message("auth.doppler.browser.name"),
+            description = SecretsBundle.message("auth.doppler.browser.description"),
         ),
         AuthMethod(
             id = TOKEN,
-            displayName = "Token",
-            description = "A personal token (dp.pt.…), a service account token (dp.sa.…) or a service token (dp.st.…, which reads " +
-                "one config only). Kept in the IDE's password storage; sign-out forgets it but doesn't revoke it.",
-            secretOptions = listOf(AuthOption(OPTION_TOKEN, "Token:", hint = "dp.pt.…, dp.sa.… or dp.st.…")),
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.dashboard", "Doppler")) { DopplerProvider.dashboardBase(DopplerProvider.apiOrigin(it)) },
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.tokens"), "https://docs.doppler.com/reference/api#authentication"),
+            ),
+            displayName = SecretsBundle.message("auth.doppler.token.name"),
+            description = SecretsBundle.message("auth.doppler.token.description"),
+            secretOptions = listOf(
+                AuthOption(
+                    OPTION_TOKEN,
+                    SecretsBundle.message("auth.doppler.option.token.label"),
+                    hint = SecretsBundle.message("auth.doppler.option.token.hint"),
+                ),
+            ),
         ),
     )
 }
@@ -184,13 +194,34 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
         return WriteOutcome.APPLIED
     }
 
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * Sets the secret's value (and note). With a [newKey], renames it in the same request (a change request naming the
+     * original); the note, which Doppler keeps per project and name, is saved under the new name too.
+     */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         checkNoFolder(scope)
         checkName(key)
-        val current = existing(scope)[key]
+        val rename = renameTarget(key, newKey)?.also(::checkName)
+        val secrets = existing(scope)
+        val current = secrets[key]
             ?: throw SecretProviderException(Kind.NOT_FOUND, "$key doesn't exist in ${where(scope)}; create it instead")
-        auth.withToken { api.setSecrets(it, scope.projectId, scope.environment, mapOf(key to value.reveal())) }
-        if (comment != null && comment != current.note) saveNote(scope.projectId, key, comment)
+        if (rename == null) {
+            auth.withToken { api.setSecrets(it, scope.projectId, scope.environment, mapOf(key to value.reveal())) }
+            if (comment != null && comment != current.note) saveNote(scope.projectId, key, comment)
+            return WriteOutcome.APPLIED
+        }
+        if (rename in secrets) {
+            throw SecretProviderException(Kind.CONFIGURATION, "$rename already exists in ${where(scope)}; choose another name or delete that one first")
+        }
+        // Listings (and so the dialog) show the computed value: left as it was, the raw one is kept so `${…}` references keep working
+        val raw = current.raw?.takeIf { value.reveal() == current.computed } ?: value.reveal()
+        auth.withToken { api.renameSecret(it, scope.projectId, scope.environment, key, rename, raw) }
+        if (comment != null && comment != current.note) {
+            saveNote(scope.projectId, rename, comment)
+        } else if (current.note.isNotEmpty()) {
+            // Carried over to the new name, best effort: the rename is what matters
+            runCatching { auth.withToken { api.setNote(it, scope.projectId, rename, current.note) } }
+        }
         return WriteOutcome.APPLIED
     }
 
@@ -221,7 +252,8 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
         if (unreadable.isNotEmpty()) {
             throw SecretProviderException(Kind.FORBIDDEN, "Can't read the values of ${unreadable.joinToString()} (restricted in Doppler), so they can't be moved")
         }
-        val conflicts = keys.filter { it in existing(destination) }
+        val atDestination = existing(destination).keys
+        val conflicts = keys.filter { it in atDestination }
         if (conflicts.isNotEmpty() && !overwrite) {
             throw SecretProviderException(Kind.CONFIGURATION, "Already in ${where(destination)}: ${conflicts.joinToString()}; choose to overwrite, or move the others")
         }

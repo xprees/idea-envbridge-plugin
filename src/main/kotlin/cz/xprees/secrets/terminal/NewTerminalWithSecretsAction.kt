@@ -4,12 +4,14 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.terminal.frontend.toolwindow.TerminalToolWindowTabsManager
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.EnvResolution
@@ -17,7 +19,6 @@ import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.ProdGuard
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.run.SecretsNotifications
-import org.jetbrains.plugins.terminal.TerminalToolWindowManager
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -52,12 +53,20 @@ class NewTerminalWithSecretsAction : DumbAwareAction(AllIcons.Nodes.Padlock) {
                 ActionManager.getInstance().tryToExecute(newTab, null, toolWindow.component, ActionPlaceName, true)
             }
         } else {
-            @Suppress("DEPRECATION")
-            TerminalToolWindowManager.getInstance(project).createNewSession()
+            // What the terminal's own New Tab action does (it replaces the deprecated TerminalToolWindowManager.createNewSession()).
+            // The shell still starts through SecretsTerminalCustomizer, which takes the offer.
+            try {
+                @Suppress("UnstableApiUsage")
+                TerminalToolWindowTabsManager.getInstance(project).createTabBuilder().requestFocus(true).createTab()
+            } catch (e: NoClassDefFoundError) {
+                // The terminal's frontend module isn't loaded here (e.g. the backend of a remote development session)
+                LOG.warn("Could not open a terminal tab", e)
+            }
         }
     }
 
     private companion object {
+        val LOG = logger<NewTerminalWithSecretsAction>()
         const val TERMINAL_TOOL_WINDOW_ID = "Terminal"
         const val NEW_TAB_ACTION_ID = "Terminal.NewTab"
         const val ActionPlaceName = "EnvBridge.NewTerminalWithSecrets"

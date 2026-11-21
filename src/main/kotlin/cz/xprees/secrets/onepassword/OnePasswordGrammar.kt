@@ -114,10 +114,11 @@ object OnePasswordGrammar : ReferenceGrammar {
         segment == "*" || segment == "**" -> segment.replace("*", "%2A")
         segment.all(::allowedRaw) && segment == segment.trim() -> segment
         else -> buildString {
-            for (c in segment) {
-                if (allowedRaw(c) && c != ' ') append(c)
-                else if (c == ' ') append(' ')
-                else c.toString().toByteArray(StandardCharsets.UTF_8).forEach { append('%').append("%02X".format(it.toInt() and 0xFF)) }
+            // By code point: a character outside the BMP (an emoji) is two chars, and encoding one half alone gives "?"
+            segment.codePoints().forEach { cp ->
+                val text = String(Character.toChars(cp))
+                if (text.length == 1 && allowedRaw(text[0])) append(text[0])
+                else text.toByteArray(StandardCharsets.UTF_8).forEach { append('%').append("%02X".format(it.toInt() and 0xFF)) }
             }
         }.let { encoded ->
             // Leading or trailing spaces must be encoded, or they'd be lost

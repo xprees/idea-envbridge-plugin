@@ -1,5 +1,6 @@
 package cz.xprees.secrets.vault
 
+import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.SecretsIcons
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -16,6 +17,9 @@ import cz.xprees.secrets.core.provider.SecretsClient
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SignInInteraction
+import cz.xprees.secrets.core.provider.renameTarget
+import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import javax.swing.Icon
 
@@ -79,52 +83,94 @@ object VaultAuthMethods {
 
     /** Options every method has: where to sign in and what to show. */
     private val COMMON = listOf(
-        AuthOption(OPTION_NAMESPACE, "Namespace:", required = false, hint = "root (Vault Enterprise, HCP Vault, OpenBao)"),
-        AuthOption(OPTION_NAMESPACES, "More namespaces:", required = false, hint = "optional, comma-separated: team-a, team-a/dev"),
-        AuthOption(OPTION_MOUNTS, "KV v2 mounts:", required = false, hint = "listed from the server; or comma-separated: secret, kv"),
+        AuthOption(
+            OPTION_NAMESPACE,
+            SecretsBundle.message("auth.vault.option.namespace.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.namespace.hint"),
+        ),
+        AuthOption(
+            OPTION_NAMESPACES,
+            SecretsBundle.message("auth.vault.option.namespaces.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.namespaces.hint"),
+        ),
+        AuthOption(
+            OPTION_MOUNTS,
+            SecretsBundle.message("auth.vault.option.mounts.label"),
+            required = false,
+            hint = SecretsBundle.message("auth.vault.option.mounts.hint"),
+        ),
     )
 
-    private fun mount(default: String) = AuthOption(OPTION_MOUNT, "Auth mount path:", required = false, hint = default)
+    private fun mount(default: String) =
+        AuthOption(OPTION_MOUNT, SecretsBundle.message("auth.vault.option.authMount.label"), required = false, hint = default)
 
     val ALL = listOf(
         AuthMethod(
             id = OIDC,
-            displayName = "OIDC (browser)",
-            description = "Sign in with your identity provider in the system browser, as `vault login -method=oidc` does. The role must " +
-                "allow the redirect URI http://localhost:<port>/oidc/callback (the Vault CLI's).",
+            displayName = SecretsBundle.message("auth.vault.oidc.name"),
+            description = SecretsBundle.message("auth.vault.oidc.description"),
             options = listOf(
-                AuthOption(OPTION_ROLE, "Role:", required = false, hint = "the mount's default role"),
+                AuthOption(
+                    OPTION_ROLE,
+                    SecretsBundle.message("auth.vault.option.role.label"),
+                    required = false,
+                    hint = SecretsBundle.message("auth.vault.option.role.hint"),
+                ),
                 mount(OIDC),
-                AuthOption(OPTION_CALLBACK_PORT, "Redirect port:", required = false, hint = DEFAULT_CALLBACK_PORT.toString()),
+                AuthOption(
+                    OPTION_CALLBACK_PORT,
+                    SecretsBundle.message("auth.vault.option.callbackPort.label"),
+                    required = false,
+                    hint = DEFAULT_CALLBACK_PORT.toString(),
+                ),
             ) + COMMON,
         ),
         AuthMethod(
             id = TOKEN,
-            displayName = "Token",
-            description = "A Vault token. Left empty, the Vault CLI's token (~/.vault-token, from `vault login`) is used.",
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink(SecretsBundle.message("auth.link.vault.ui")) { it.trimEnd('/') + "/ui/" },
+            ),
+            displayName = SecretsBundle.message("auth.vault.token.name"),
+            description = SecretsBundle.message("auth.vault.token.description"),
             options = COMMON,
-            secretOptions = listOf(AuthOption(OPTION_TOKEN, "Token:", required = false, hint = "~/.vault-token")),
+            secretOptions = listOf(AuthOption(
+                OPTION_TOKEN,
+                SecretsBundle.message("auth.vault.option.token.label"),
+                required = false,
+                hint = SecretsBundle.message("auth.vault.option.token.hint"),
+            )),
         ),
         AuthMethod(
             id = APPROLE,
-            displayName = "AppRole",
-            description = "A role ID and secret ID, for machines and dedicated identities.",
-            options = listOf(AuthOption(OPTION_ROLE_ID, "Role ID:"), mount(APPROLE)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_SECRET_ID, "Secret ID:")),
+            setupLinks = listOf(
+                cz.xprees.secrets.core.provider.SetupLink.fixed(SecretsBundle.message("auth.link.approle"), "https://developer.hashicorp.com/vault/docs/auth/approle"),
+            ),
+            displayName = SecretsBundle.message("auth.vault.approle.name"),
+            description = SecretsBundle.message("auth.vault.approle.description"),
+            options = listOf(AuthOption(OPTION_ROLE_ID, SecretsBundle.message("auth.vault.option.roleId.label")), mount(APPROLE)) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_SECRET_ID, SecretsBundle.message("auth.vault.option.secretId.label"))),
         ),
         AuthMethod(
             id = USERPASS,
-            displayName = "Username and password",
-            description = "The userpass auth method.",
-            options = listOf(AuthOption(OPTION_USERNAME, "Username:"), mount(USERPASS)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_PASSWORD, "Password:")),
+            displayName = SecretsBundle.message("auth.vault.userpass.name"),
+            description = SecretsBundle.message("auth.vault.userpass.description"),
+            options = listOf(
+                AuthOption(OPTION_USERNAME, SecretsBundle.message("auth.vault.option.username.label")),
+                mount(USERPASS),
+            ) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_PASSWORD, SecretsBundle.message("auth.vault.option.password.label"))),
         ),
         AuthMethod(
             id = LDAP,
-            displayName = "LDAP",
-            description = "Your directory username and password (the LDAP auth method).",
-            options = listOf(AuthOption(OPTION_USERNAME, "Username:"), mount(LDAP)) + COMMON,
-            secretOptions = listOf(AuthOption(OPTION_PASSWORD, "Password:")),
+            displayName = SecretsBundle.message("auth.vault.ldap.name"),
+            description = SecretsBundle.message("auth.vault.ldap.description"),
+            options = listOf(
+                AuthOption(OPTION_USERNAME, SecretsBundle.message("auth.vault.option.username.label")),
+                mount(LDAP),
+            ) + COMMON,
+            secretOptions = listOf(AuthOption(OPTION_PASSWORD, SecretsBundle.message("auth.vault.option.password.label"))),
         ),
     )
 }
@@ -212,13 +258,35 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
         return WriteOutcome.APPLIED
     }
 
-    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?): WriteOutcome {
+    /**
+     * Changes the field's value; with a [newKey], the field is renamed in the same check-and-set write (keeping its place
+     * among the fields), refused before writing when the secret already has a field [newKey].
+     */
+    override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         val path = secretPath(scope)
+        val rename = renameTarget(key, newKey)
         auth.withToken { token ->
             val current = api.readVersioned(token, scope.environment, scope.projectId, path)
             if (!current.fields.has(key)) throw missing(scope, key)
-            current.fields.addProperty(key, value.reveal())
-            api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+            if (rename == null) {
+                current.fields.addProperty(key, value.reveal())
+                api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
+                return@withToken
+            }
+            if (current.fields.has(rename)) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.CONFIGURATION,
+                    "${location(scope)} already has a field $rename; choose another name or delete that one first",
+                )
+            }
+            // A value left as it was keeps its JSON type (a number or an object stays one); a changed one is written as text
+            val old = current.fields.get(key)
+            val unchanged = VaultApi.textOf(old) == value.reveal()
+            val renamed = JsonObject()
+            for ((name, element) in current.fields.entrySet()) {
+                if (name == key) renamed.add(rename, if (unchanged) element.deepCopy() else JsonPrimitive(value.reveal())) else renamed.add(name, element.deepCopy())
+            }
+            api.write(token, scope.environment, scope.projectId, path, renamed, current.version)
         }
         return WriteOutcome.APPLIED
     }
@@ -236,31 +304,39 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
 
     /**
      * Copies the fields to the destination secret (one new version, values and types as stored), then removes them from the
-     * source secret (another new version). A field already at the destination is skipped unless [overwrite]; a failure to
-     * remove the source copy is reported, never a lost field.
+     * source secret (another new version). A field already at the destination stops the move before anything is written
+     * unless [overwrite]; a failure to remove the source copy is reported, never a lost field.
      */
     override fun moveSecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope, overwrite: Boolean): MoveResult {
         val sourcePath = secretPath(source)
         val destinationPath = secretPath(destination)
         if (source.projectId == destination.projectId && source.environment == destination.environment && sourcePath == destinationPath) {
-            return MoveResult(moved = emptyList(), notRemoved = secrets.associate { it.key to "source and destination are the same secret" })
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "${location(source)} is already where the fields are; nothing was moved")
         }
         val keys = secrets.map { it.key }
         val notRemoved = linkedMapOf<String, String>()
         val copied = auth.withToken { token ->
             val from = api.readVersioned(token, source.environment, source.projectId, sourcePath)
             val to = api.readVersioned(token, destination.environment, destination.projectId, destinationPath)
+            // Check everything before writing anything, so a refused move changes nothing
+            val missing = keys.filter { !from.fields.has(it) }
+            if (missing.isNotEmpty()) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.NOT_FOUND,
+                    "${location(source)} has no ${missing.joinToString { "\"$it\"" }} any more; nothing was moved. Refresh and try again",
+                )
+            }
+            val conflicts = keys.filter { to.fields.has(it) }
+            if (conflicts.isNotEmpty() && !overwrite) {
+                throw SecretProviderException(
+                    SecretProviderException.Kind.CONFIGURATION,
+                    "${location(destination)} already has ${conflicts.joinToString { "\"$it\"" }}; nothing was moved. Tick Overwrite to replace their values",
+                )
+            }
             val copied = mutableListOf<String>()
             for (key in keys) {
-                val value = from.fields.get(key)
-                when {
-                    value == null -> notRemoved[key] = "not in ${location(source)} any more"
-                    to.fields.has(key) && !overwrite -> notRemoved[key] = "${location(destination)} already has $key"
-                    else -> {
-                        to.fields.add(key, value.deepCopy())
-                        copied += key
-                    }
-                }
+                to.fields.add(key, from.fields.get(key).deepCopy())
+                copied += key
             }
             if (copied.isNotEmpty()) api.write(token, destination.environment, destination.projectId, destinationPath, to.fields, to.version)
             copied
@@ -288,12 +364,17 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
 
     /** Writes [current] without the removed fields; a secret left with none has its latest version deleted (restorable). */
     private fun removeFields(token: String, scope: SecretScope, path: String, current: VaultApi.Versioned) {
+        // Written with check-and-set either way, so a version someone wrote meanwhile is refused, not deleted; the empty version
+        // is then deleted too (only it can be the latest now, apart from a write in the instant between the two calls)
+        api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
         if (current.fields.size() == 0) api.deleteLatest(token, scope.environment, scope.projectId, path)
-        else api.write(token, scope.environment, scope.projectId, path, current.fields, current.version)
     }
 
     /** The secret a write goes to: the scope's path, which must name a secret (KV v2 has none at the mount's root). */
     private fun secretPath(scope: SecretScope): String {
+        if (scope.path.split('/').any { it == "." || it == ".." }) {
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "Write the secret's full path, without . or ..")
+        }
         if (scope.path == "/") {
             throw SecretProviderException(
                 SecretProviderException.Kind.CONFIGURATION,
