@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Moving secrets updates their references** in the project: run configurations' environment variables, `.env` files (values
+  and binding comments) and the terminal's references follow the secrets to their new folder or environment (*Update
+  references in this project*, on by default). Edit › Undo puts them back in one step; *Undo Move* in the notification also
+  moves the secrets back
 - **1Password: writing.** *New Secret…*, *Edit Secret…*, *Move…*, *Delete…* and *Extract value to …* work for 1Password
   connections (all three access methods): a secret is a field of an item; a new secret at a vault's root becomes a Password item
   (`op://vault/KEY/password`); the item's notes are the secrets' comment; fields are moved between items (copy first, remove
