@@ -13,8 +13,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * A tiny fake Vault / OpenBao server for tests: KV v2 mounts with secrets per namespace, the token endpoints, and the
- * AppRole, userpass, LDAP and OIDC sign-ins.
+ * A tiny fake Vault / OpenBao server for tests: KV v2 and KV v1 mounts with secrets per namespace (the same mounts in every
+ * namespace), the mount preflight the Vault CLI uses, the token endpoints, and the AppRole, userpass, LDAP and OIDC sign-ins.
+ * Paths of mounts not in [mounts] (`forbidden`, `ro`) are answered as KV v2, except by the preflight (403, as for a mount
+ * that doesn't exist).
  */
 class MockVault : AutoCloseable {
     data class Request(val method: String, val path: String, val query: Map<String, String>, val token: String?, val namespace: String?, val body: String)
@@ -32,11 +34,29 @@ class MockVault : AutoCloseable {
                     "secret/app/api" to mapOf("key" to "root-api-key", "limits" to mapOf("rps" to 10)),
                     "secret/app" to mapOf("name" to "the app"),
                     "secret/other/x" to mapOf("y" to "z"),
+                    "kv1/app/db" to mapOf("password" to "v1-db-pass", "user" to "app1"),
+                    "kv1/app/api" to mapOf("key" to "v1-api-key", "limits" to mapOf("rps" to 5)),
+                    "kv1/top" to mapOf("t" to "top-level"),
                 ),
             ),
-            "team-a" to ConcurrentHashMap(mapOf("secret/app/db" to mapOf("password" to "team-a-db-pass"))),
+            "team-a" to ConcurrentHashMap(
+                mapOf(
+                    "secret/app/db" to mapOf("password" to "team-a-db-pass"),
+                    "kv1/app/db" to mapOf("password" to "team-a-v1-pass"),
+                ),
+            ),
         ),
     )
+
+    /**
+     * KV mounts and the `options.version` the server reports for each ("2", "1", or "" for a mount without options, as an
+     * old KV v1 mount has). Listed by the UI mounts endpoint and answered by the preflight.
+     */
+    val mounts: MutableMap<String, String> = ConcurrentHashMap(mapOf("secret" to "2", "kv1" to "1"))
+
+    /** Answer the mount preflight (`sys/internal/ui/mounts/<path>`); false answers 403, as for a token that may not read it. */
+    @Volatile
+    var mountPreflight = true
 
     /** Answer the UI mounts endpoint with 404 (an older server, or one that doesn't offer it). */
     @Volatile
@@ -160,11 +180,33 @@ class MockVault : AutoCloseable {
             path == "/v1/sys/internal/ui/mounts" -> {
                 if (!mountsEndpoint) return respond(exchange, 404, """{"errors":[]}""")
                 requireToken() ?: return
+                val kv = mounts.entries.sortedBy { it.key }.joinToString(",") { (mount, version) -> "\"$mount/\":${mountJson(mount, version)}" }
+                respond(exchange, 200, """{"data":{"secret":{$kv,"cubbyhole/":{"type":"cubbyhole","options":null}},"auth":{}}}""")
+            }
+
+            path.startsWith("/v1/sys/internal/ui/mounts/") -> {
+                requireToken() ?: return
+                val target = path.removePrefix("/v1/sys/internal/ui/mounts/").trim('/')
+                val mount = mountOf(target)
+                if (!mountPreflight || mount == null) {
+                    return respond(exchange, 403, """{"errors":["preflight capability check returned 403, please ensure client's policies grant access to path \"$target/\""]}""")
+                }
+                respond(exchange, 200, """{"data":${mountJson(mount, mounts.getValue(mount))}}""")
+            }
+
+            mountOf(path.removePrefix("/v1/"))?.let { mounts[it] != "2" } == true -> {
+                requireToken() ?: return
+                kv1(exchange, ns, mountOf(path.removePrefix("/v1/"))!!, path, query, json)
+            }
+
+            // A KV v2 mount's path without data/ or metadata/: KV v2's warning, with 404
+            mountOf(path.removePrefix("/v1/")) != null && !path.contains("/data/") && !path.contains("/metadata") -> {
+                requireToken() ?: return
                 respond(
                     exchange,
-                    200,
-                    """{"data":{"secret":{"secret/":{"type":"kv","options":{"version":"2"}},"kv1/":{"type":"kv","options":{"version":"1"}},""" +
-                        """"cubbyhole/":{"type":"cubbyhole","options":null}},"auth":{}}}""",
+                    404,
+                    """{"request_id":"r","data":null,"warnings":["Invalid path for a versioned K/V secrets engine. See the API docs for the """ +
+                        """appropriate API endpoints to use. If using the Vault CLI, use 'vault kv get' for this operation."]}""",
                 )
             }
 
@@ -229,6 +271,45 @@ class MockVault : AutoCloseable {
             else -> respond(exchange, 404, """{"errors":["no handler for route"]}""")
         }
     }
+
+    /** KV v1: `GET` (or `LIST` as `GET ?list=true`), `POST` / `PUT` of the whole secret, `DELETE` (for good). */
+    private fun kv1(exchange: HttpExchange, ns: String, mount: String, path: String, query: Map<String, String>, json: JsonObject) {
+        val rest = path.removePrefix("/v1/$mount").trim('/')
+        val id = if (rest.isEmpty()) mount else "$mount/$rest"
+        when (exchange.requestMethod) {
+            "POST", "PUT" -> {
+                if (readOnlyMounts.contains(mount)) return respond(exchange, 403, """{"errors":["permission denied"]}""")
+                val gson = com.google.gson.GsonBuilder().setObjectToNumberStrategy(com.google.gson.ToNumberPolicy.LONG_OR_DOUBLE).create()
+                secrets.getOrPut(ns) { ConcurrentHashMap() }[id] = gson.fromJson<Map<String, Any?>>(json, Map::class.java)
+                writes += "$ns:$id"
+                respond(exchange, 204, null)
+            }
+
+            "DELETE" -> {
+                if (readOnlyMounts.contains(mount)) return respond(exchange, 403, """{"errors":["permission denied"]}""")
+                secrets[ns]?.remove(id)
+                writes += "$ns:$id (deleted)"
+                respond(exchange, 204, null)
+            }
+
+            else -> if (query["list"] == "true") {
+                val prefix = "$id/"
+                val keys = secrets[ns].orEmpty().keys.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }
+                    .map { r -> if ('/' in r) r.substringBefore('/') + "/" else r }.distinct().sorted()
+                if (keys.isEmpty()) respond(exchange, 404, """{"errors":[]}""")
+                else respond(exchange, 200, """{"data":{"keys":[${keys.joinToString(",") { "\"$it\"" }}]}}""")
+            } else {
+                val fields = secrets[ns].orEmpty()[id] ?: return respond(exchange, 404, """{"errors":[]}""")
+                respond(exchange, 200, """{"request_id":"r","lease_duration":2764800,"data":${com.google.gson.Gson().toJson(fields)}}""")
+            }
+        }
+    }
+
+    /** The mount in [mounts] that [path] (without `/v1/`) is in, the longest first; null for none. */
+    private fun mountOf(path: String): String? = mounts.keys.filter { path == it || path.startsWith("$it/") }.maxByOrNull { it.length }
+
+    private fun mountJson(mount: String, version: String): String =
+        """{"type":"kv","path":"$mount/","options":${if (version.isEmpty()) "null" else """{"version":"$version"}"""}}"""
 
     private fun login(exchange: HttpExchange, name: String) {
         val token = issue(name)

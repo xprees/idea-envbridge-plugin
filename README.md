@@ -51,7 +51,7 @@ handed to the process in memory. Nothing is written to disk.</p>
       settings apply)</li>
   <li><b>Sign in through the system browser</b> (like the Infisical CLI), with a read-only <b>OAuth application</b> (PKCE), or with a
       <b>machine identity</b>. Tokens and client secrets are kept only in the IDE's password storage</li>
-  <li><b>HashiCorp Vault and OpenBao</b> (KV v2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
+  <li><b>HashiCorp Vault and OpenBao</b> (KV version 1 and 2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
       <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
       Create, edit, move and delete fields too</li>
@@ -173,7 +173,7 @@ stops and says to write `infisical://prod:KEY`.
 
 ### HashiCorp Vault and OpenBao
 
-One provider covers both (same API). In EnvBridge terms a **KV v2 mount** is a project, a **namespace** is an environment
+One provider covers both (same API). In EnvBridge terms a **KV mount** (version 1 or 2) is a project, a **namespace** is an environment
 (`root` without one), a **secret path** is a folder and the secret's **fields** are its keys. References name the mount and path the
 way `vault kv get secret/app/db` does:
 
@@ -191,15 +191,24 @@ TEAM_DB=vault://secret/app/db#password?namespace=team-a
 | **AppRole** | Role ID, and the secret ID (kept in the password storage) |
 | **Userpass / LDAP** | Username, and the password (kept in the password storage) |
 
-Every method also takes a **namespace** (where to sign in; the default environment), **more namespaces** to show, and the **KV v2
+Every method also takes a **namespace** (where to sign in; the default environment), **more namespaces** to show, and the **KV
 mounts**, needed only when the token may not list secret engines. Renewable tokens are renewed before they expire; AppRole,
 userpass and LDAP sign in again by themselves; OIDC asks you to sign in again.
 
-**Writing**: *New Secret…*, *Edit Secret…*, *Move…* and *Delete…* change one field of a KV v2 secret (the secret path is the
-folder; at least one path segment below the mount). Each write reads the secret and writes a new version with check-and-set, so
-a change someone made meanwhile is refused instead of overwritten, and the other fields keep their values and types. Removing a
-secret's last field deletes its latest version, which Vault can restore. Moves work between secrets, mounts and namespaces;
-the token's policy decides what is allowed. Namespaces themselves are not created from the IDE.
+**KV version 1 and 2** mounts both work, for reading, injecting and writing. EnvBridge finds a mount's version the way the
+Vault CLI does (it asks the server once per mount and remembers it for a few minutes), so nothing needs to be configured.
+
+**Writing**: *New Secret…*, *Edit Secret…*, *Move…* and *Delete…* change one field of a secret (the secret path is the folder; at
+least one path segment below the mount). Each write reads the secret, changes the field and writes the whole secret back, so the
+other fields keep their values and types. Moves work between secrets, mounts (also between KV versions) and namespaces; a field
+is written to its new place before it is removed from the old one, and a name already taken there stops the move before anything
+is written. The token's policy decides what is allowed. Namespaces themselves are not created from the IDE.
+
+- **KV v2**: the write is a new version with check-and-set, so a change someone made meanwhile is refused instead of
+  overwritten. Removing a secret's last field deletes its latest version, which Vault can restore.
+- **KV v1** has no versions and no check-and-set: **a change someone else makes to the same secret between EnvBridge's read and
+  its write (a fraction of a second) is overwritten, and can't be detected.** Removing a secret's last field deletes the secret
+  for good (KV v1 keeps no history).
 
 ### 1Password
 
@@ -231,6 +240,11 @@ WORK_DB=op://Private/Database/password?connection=Work
 
 `op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item. Values are
 cached in memory like any other secrets.
+
+**Open in Dashboard** (CLI methods): an item, or a field of it, opens through its 1Password private link
+(`https://start.1password.com/open/i?…`, as *Copy Private Link* in the 1Password app makes), in the 1Password app or on the web;
+a vault opens your account's web app. EnvBridge learns the account with `op whoami` when you sign in or the vaults are listed.
+Connect servers have no account to open, so there is no link for them.
 
 **Writing** (tool window *New Secret… / Edit Secret… / Move… / Delete…*, `.env` *Extract value to …*; off with *Read-only*):
 

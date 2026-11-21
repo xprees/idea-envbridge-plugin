@@ -40,8 +40,17 @@ class OnePasswordCli(private val connection: SecretConnection, private val servi
         // Listing vaults is what makes the app ask for authorization (whoami alone doesn't)
         run(listOf("vault", "list"), interaction::isCancelled)
         val whoami = runCatching { json(run(listOf("whoami"), interaction::isCancelled)).asJsonObject }.getOrNull()
+        OpAccount.fromWhoami(whoami)?.let { OnePasswordDashboard.rememberAccount(connection, it) }
         return describe(whoami) ?: connection.option(OnePasswordAuthMethods.OPTION_ACCOUNT) ?: connection.name
     }
+
+    /**
+     * The account `op` is signed in to (`op whoami`), remembered for the dashboard link ([OnePasswordDashboard]); null when
+     * `op` doesn't say. Run after another command succeeded (whoami alone doesn't ask the app to authorize the CLI).
+     */
+    fun account(): OpAccount? =
+        OpAccount.fromWhoami(json(run(listOf("whoami"))).takeIf { it.isJsonObject }?.asJsonObject)
+            ?.also { OnePasswordDashboard.rememberAccount(connection, it) }
 
     override fun vaults(): List<OpVault> = OnePasswordJson.vaults(json(run(listOf("vault", "list"))))
 

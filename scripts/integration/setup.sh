@@ -54,10 +54,14 @@ seed_vault() { # addr, token, prefix of the env variables, namespaces supported 
   vapi POST secret/data/envbridge/app/api '{"data":{"key":"api-key-'"$prefix"'","limits":{"rps":10}}}' >/dev/null
   vapi POST secret/data/envbridge/app '{"data":{"name":"the app"}}' >/dev/null
   vapi POST secret/data/forbidden/x '{"data":{"hidden":"no"}}' >/dev/null
-  # A second KV v2 mount, and a KV v1 mount the plugin must not offer
+  # A second KV v2 mount
   vapi POST sys/mounts/team-kv '{"type":"kv","options":{"version":"2"}}' >/dev/null || true
   vapi POST team-kv/data/svc '{"data":{"token":"team-kv-token"}}' >/dev/null
+  # A KV v1 mount (no data/ or metadata/ in its paths, the secret's fields are the body)
   vapi POST sys/mounts/legacy '{"type":"kv","options":{"version":"1"}}' >/dev/null || true
+  vapi POST legacy/envbridge/app/db '{"password":"v1-db-pass-'"$prefix"'","user":"app"}' >/dev/null
+  vapi POST legacy/envbridge/app/api '{"key":"v1-api-key-'"$prefix"'","limits":{"rps":5}}' >/dev/null
+  vapi POST legacy/forbidden/x '{"hidden":"no"}' >/dev/null
 
   local policy='path "secret/data/envbridge/*" { capabilities = ["read"] }
 path "secret/data/envbridge" { capabilities = ["read"] }
@@ -71,7 +75,12 @@ path "team-a/secret/metadata/*" { capabilities = ["list"] }
 path "secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
 path "secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
 path "team-a/secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
-path "team-a/secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }'
+path "team-a/secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
+path "secret/envbridge-probe" { capabilities = ["read"] }
+path "legacy/envbridge/*" { capabilities = ["read", "list"] }
+path "legacy/envbridge" { capabilities = ["read", "list"] }
+path "legacy/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+path "team-a/legacy/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete", "list"] }'
   vapi PUT sys/policies/acl/envbridge "$(python3 -c 'import json,sys; print(json.dumps({"policy": sys.argv[1]}))' "$policy")" >/dev/null
 
   # AppRole with fixed (test-only) credentials
@@ -93,6 +102,7 @@ path "team-a/secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
     vapi POST sys/mounts/secret '{"type":"kv","options":{"version":"2"}}' team-a >/dev/null || true
     sleep 1
     vapi POST secret/data/envbridge/app/db '{"data":{"password":"team-a-db-pass"}}' team-a >/dev/null
+    vapi POST sys/mounts/legacy '{"type":"kv","options":{"version":"1"}}' team-a >/dev/null || true
   fi
 
   {

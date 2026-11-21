@@ -49,6 +49,13 @@ class OnePasswordProvider : SecretProvider {
 
     override fun createClient(connection: SecretConnection): SecretsClient = OnePasswordClient(connection)
 
+    /**
+     * CLI connections: an item's private link, else the account's web app (see [OnePasswordDashboard]); called on the EDT, so
+     * only from what listing vaults and items remembered. Connect: none (a Connect server has no account to open).
+     */
+    override fun dashboardUrl(connection: SecretConnection, scope: SecretScope?, organizationId: String?, key: String?): String? =
+        OnePasswordDashboard.url(connection, scope)
+
     /** A secret created at a vault's root becomes the password item `/<key>`, its value in the field `password`. */
     override fun createdSecretLocation(scope: SecretScope, key: String): Pair<String, String> =
         if (SecretScope.normalizePath(scope.path) == "/") "/$key" to OnePasswordEdits.ROOT_FIELD else scope.path to key
@@ -154,6 +161,7 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
                 CredentialVault.remove(connection.id, CredentialVault.secretOptionSlot(OnePasswordAuthMethods.OPTION_CONNECT_TOKEN))
         }
         CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
+        OnePasswordDashboard.forget(connection)
     }
 
     override fun hasCredentials(): Boolean = when (method) {
@@ -165,14 +173,25 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
 
     override fun listProjects(): List<ProviderProject> {
         val environments = listOf(ProviderEnvironment(slug = OnePasswordProvider.ENVIRONMENT, name = OnePasswordProvider.ENVIRONMENT))
-        return backend.vaults().sortedBy { it.name.lowercase() }
+        val vaults = backend.vaults()
+        // In the background, while `op` is authorized: the account the dashboard link needs (it can't run `op` on the EDT)
+        (backend as? OnePasswordCli)?.takeIf { OnePasswordDashboard.account(connection) == null }?.let { cli ->
+            try {
+                cli.account()
+            } catch (e: SecretProviderException) {
+                if (e.kind == Kind.CANCELLED) throw e
+            }
+        }
+        return vaults.sortedBy { it.name.lowercase() }
             .map { ProviderProject(id = it.id, name = it.name, slug = it.name, environments = environments) }
     }
 
     /** The vault's items (at `/`); an item's fields are its secrets, sections are not shown as folders. */
     override fun listFolders(scope: SecretScope): List<SecretFolder> {
         if (segments(scope.path).isNotEmpty()) return emptyList()
-        return itemSegments(backend.items(scope.projectId)).map { (item, segment) ->
+        val segments = itemSegments(backend.items(scope.projectId))
+        OnePasswordDashboard.rememberItems(connection, scope.projectId, segments.associate { (item, segment) -> segment to item.id })
+        return segments.map { (item, segment) ->
             val name = if (segment == item.id && item.title.isNotBlank()) "${item.title} (${item.id})" else item.title.ifBlank { item.id }
             SecretFolder(name, "/$segment")
         }.sortedBy { it.name.lowercase() }

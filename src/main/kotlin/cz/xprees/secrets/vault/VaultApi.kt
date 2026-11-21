@@ -3,25 +3,26 @@ package cz.xprees.secrets.vault
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import cz.xprees.secrets.core.auth.TokenSet
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 
-/** The Vault / OpenBao HTTP API calls the plugin uses (KV v2, token and auth methods). */
+/** The Vault / OpenBao HTTP API calls the plugin uses (KV version 1 and 2, token and auth methods). */
 class VaultApi(val http: VaultHttp) {
 
-    /** A KV v2 mount: its path without the trailing slash (`secret`, `kv/team`). */
-    data class Mount(val path: String)
+    /** A KV mount: its path without the trailing slash (`secret`, `kv/team`) and its KV version (1 or 2). */
+    data class Mount(val path: String, val version: Int)
 
     /** What a LIST of a path returned: child folders (`app/`) and secrets (`db`), names without slashes. */
     data class Listing(val folders: List<String>, val secrets: List<String>)
 
-    // ---- KV v2 -----------------------------------------------------------------------------------------------------
+    // ---- KV (version 1 and 2) --------------------------------------------------------------------------------------
 
     /**
-     * KV v2 mounts the token can see in [namespace], from the endpoint the Vault UI uses (it lists only mounts the token has
-     * some access to). Null when the server doesn't offer it (it has no compatibility promise).
+     * KV mounts (version 1 and 2) the token can see in [namespace], from the endpoint the Vault UI uses (it lists only mounts
+     * the token has some access to). Null when the server doesn't offer it (it has no compatibility promise).
      */
     fun kvMounts(token: String, namespace: String): List<Mount>? {
         val response = http.send("GET", "sys/internal/ui/mounts", token, namespace)
@@ -35,18 +36,63 @@ class VaultApi(val http: VaultHttp) {
             ?.get("secret")?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
         return secret.entrySet().mapNotNull { (path, value) ->
             val mount = value.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
-            val type = mount.get("type")?.takeIf { it.isJsonPrimitive }?.asString
-            // options is null for engines without any (cubbyhole, identity)
-            val version = mount.get("options")?.takeIf { it.isJsonObject }?.asJsonObject?.get("version")?.takeIf { it.isJsonPrimitive }?.asString
-            // Vault reports the KV v2 engine as type kv with version 2 (older servers: generic)
-            Mount(path.trimEnd('/')).takeIf { (type == "kv" || type == "generic") && version == "2" }
+            kvVersionOf(mount)?.let { Mount(path.trimEnd('/'), it) }
         }.sortedBy { it.path }
     }
 
-    /** Folders and secrets directly below [path] of [mount]; empty when there is nothing there. */
-    fun list(token: String, namespace: String, mount: String, path: String): Listing {
-        val response = http.send("GET", "${VaultHttp.path(mount)}/metadata/${VaultHttp.path(path)}", token, namespace, query = mapOf("list" to "true"))
-        if (response.status == 404) return Listing(emptyList(), emptyList())
+    /**
+     * The KV version of [mount] as the Vault CLI finds it (`vault kv` preflight): `GET sys/internal/ui/mounts/<mount>`, then
+     * `data.options.version` ("2" = 2; missing, empty or "1" = 1). Null when the server doesn't say (the endpoint is missing,
+     * the token may not read it, or the mount doesn't exist: Vault answers 403 then); CONFIGURATION when the mount is another
+     * kind of secrets engine.
+     */
+    fun kvVersion(token: String, namespace: String, mount: String): Int? {
+        val response = http.send("GET", "sys/internal/ui/mounts/${VaultHttp.path(mount)}", token, namespace)
+        if (!response.isSuccess) {
+            val failure = VaultHttp.failure(response, "Checking the secrets engine at $mount")
+            // A refused token is renewed by the caller; anything else only means the server doesn't tell
+            if (failure.kind == Kind.AUTH_REQUIRED) throw failure
+            return null
+        }
+        val data = runCatching { response.json().asJsonObject.obj("data") }.getOrNull() ?: return null
+        val type = data.get("type")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
+        return kvVersionOf(data) ?: throw SecretProviderException(
+            Kind.CONFIGURATION,
+            "$mount is a $type secrets engine; EnvBridge reads KV secrets engines (version 1 or 2)",
+        )
+    }
+
+    /**
+     * Probes the KV version of [mount] when [kvVersion] can't tell, by reading [path] (listing the mount's root for an empty
+     * path or a name a KV v2 engine reserves) the way KV v1 addresses it: an answer means version 1, a 404 with KV v2's
+     * "invalid path for a versioned K/V secrets engine" warning version 2, a plain 404 (no such secret) version 1. Null when
+     * the probe says nothing (refused, or no such mount).
+     */
+    fun probeKvVersion(token: String, namespace: String, mount: String, path: String): Int? {
+        val segments = VaultHttp.path(path)
+        val probeRoot = segments.isEmpty() || segments.substringBefore('/') in KV2_RESERVED
+        val response = if (probeRoot) {
+            http.send("GET", "${VaultHttp.path(mount)}/", token, namespace, query = mapOf("list" to "true"))
+        } else {
+            http.send("GET", "${VaultHttp.path(mount)}/$segments", token, namespace)
+        }
+        return when {
+            response.isSuccess -> 1
+            response.status != 404 -> null
+            isVersionedKvAnswer(response) -> 2
+            // A 404 with an error ("no handler for route") means there is no such mount here
+            errors(response).isEmpty() -> 1
+            else -> null
+        }
+    }
+
+    /** Folders and secrets directly below [path] of [mount] (KV version [kv]); empty when there is nothing there. */
+    fun list(token: String, namespace: String, mount: String, path: String, kv: Int = 2): Listing {
+        val response = http.send("GET", location(mount, path, kv, "metadata"), token, namespace, query = mapOf("list" to "true"))
+        if (response.status == 404) {
+            checkStillV1(response, kv, mount)
+            return Listing(emptyList(), emptyList())
+        }
         if (!response.isSuccess) throw VaultHttp.failure(response, "Listing $mount${displayPath(path)}")
         val keys = response.json().asJsonObject.obj("data")?.get("keys")?.takeIf { it.isJsonArray }?.asJsonArray?.map { it.asString }.orEmpty()
         return Listing(
@@ -56,31 +102,42 @@ class VaultApi(val http: VaultHttp) {
     }
 
     /**
-     * Fields of the secret at [path] of [mount] (latest version). Null when there is no secret there (a folder only, or the
-     * latest version is deleted). Values that aren't strings come back as JSON.
+     * Fields of the secret at [path] of [mount] (KV v2: latest version). Null when there is no secret there (a folder only, or
+     * the latest version is deleted). Values that aren't strings come back as JSON.
      */
-    fun read(token: String, namespace: String, mount: String, path: String): Map<String, String>? {
+    fun read(token: String, namespace: String, mount: String, path: String, kv: Int = 2): Map<String, String>? {
         if (VaultHttp.path(path).isEmpty()) return null
-        val response = http.send("GET", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace)
-        if (response.status == 404) return null
+        val response = http.send("GET", location(mount, path, kv, "data"), token, namespace)
+        if (response.status == 404) {
+            checkStillV1(response, kv, mount)
+            return null
+        }
         if (!response.isSuccess) throw VaultHttp.failure(response, "Reading $mount${displayPath(path)}")
-        val data = response.json().asJsonObject.obj("data")?.get("data")
+        val data = fieldsOf(response, kv)
         if (data == null || !data.isJsonObject) return null
         return data.asJsonObject.entrySet().associate { (key, value) -> key to textOf(value) }
     }
 
-    /** A secret as stored: its fields as JSON (types kept) and its current version (0 when it never existed). */
+    /**
+     * A secret as stored: its fields as JSON (types kept) and its current version (KV v2; 0 when it never existed, and always
+     * 0 on KV v1, which has no versions).
+     */
     data class Versioned(val fields: JsonObject, val version: Int) {
         override fun toString() = "Versioned(fields=${fields.keySet()}, version=$version)"
     }
 
     /**
-     * The latest version of the secret at [path] with its fields as they are stored, for a write that keeps every other field
-     * (and its type) as it is. A deleted latest version reads as no fields, with its version number (writes must name it).
+     * The secret at [path] with its fields as they are stored (KV v2: the latest version), for a write that keeps every other
+     * field (and its type) as it is. A deleted latest version reads as no fields, with its version number (writes must name it).
      */
-    fun readVersioned(token: String, namespace: String, mount: String, path: String): Versioned {
-        val response = http.send("GET", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace)
+    fun readVersioned(token: String, namespace: String, mount: String, path: String, kv: Int = 2): Versioned {
+        val response = http.send("GET", location(mount, path, kv, "data"), token, namespace)
         if (!response.isSuccess && response.status != 404) throw VaultHttp.failure(response, "Reading $mount${displayPath(path)}")
+        if (response.status == 404) checkStillV1(response, kv, mount)
+        if (kv == 1) {
+            val fields = if (response.isSuccess) fieldsOf(response, kv)?.takeIf { it.isJsonObject }?.asJsonObject else null
+            return Versioned((fields ?: JsonObject()).deepCopy(), 0)
+        }
         val data = runCatching { response.json().asJsonObject.obj("data") }.getOrNull()
         val version = data?.obj("metadata")?.get("version")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
         val fields = data?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
@@ -88,27 +145,53 @@ class VaultApi(val http: VaultHttp) {
     }
 
     /**
-     * Writes [fields] as a new version of the secret at [path], only if its current version is still [expectedVersion]
-     * (check-and-set; 0 = only if it doesn't exist): a change made meanwhile by someone else is refused, not overwritten.
+     * Writes [fields] as the secret at [path]. KV v2: a new version, only if the current version is still [expectedVersion]
+     * (check-and-set; 0 = only if it doesn't exist), so a change made meanwhile by someone else is refused, not overwritten.
+     * KV v1: the secret is replaced as a whole ([expectedVersion] is ignored; KV v1 has no versions and no check-and-set).
      */
-    fun write(token: String, namespace: String, mount: String, path: String, fields: JsonObject, expectedVersion: Int) {
-        val body = JsonObject().apply {
+    fun write(token: String, namespace: String, mount: String, path: String, fields: JsonObject, expectedVersion: Int, kv: Int = 2) {
+        val body = if (kv == 1) fields else JsonObject().apply {
             add("options", JsonObject().apply { addProperty("cas", expectedVersion) })
             add("data", fields)
         }
-        val response = http.send("POST", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace, json = body.toString())
+        val response = http.send("POST", location(mount, path, kv, "data"), token, namespace, json = body.toString())
         if (response.isSuccess) return
+        if (response.status == 404) checkStillV1(response, kv, mount)
         val failure = VaultHttp.failure(response, "Writing $mount${displayPath(path)}")
-        if (response.status == 400 && failure.message.orEmpty().contains("check-and-set", ignoreCase = true)) {
+        if (kv == 2 && response.status == 400 && failure.message.orEmpty().contains("check-and-set", ignoreCase = true)) {
             throw SecretProviderException(Kind.CONFIGURATION, "$mount${displayPath(path)} was changed meanwhile; refresh and try again")
         }
         throw failure
     }
 
-    /** Deletes the latest version of the secret at [path] (KV v2 soft delete: older versions stay and can be restored). */
-    fun deleteLatest(token: String, namespace: String, mount: String, path: String) {
-        val response = http.send("DELETE", "${VaultHttp.path(mount)}/data/${VaultHttp.path(path)}", token, namespace)
+    /**
+     * Deletes the secret at [path]. KV v2: its latest version (a soft delete: older versions stay and can be restored). KV v1:
+     * the secret itself, for good (KV v1 keeps nothing to restore).
+     */
+    fun deleteLatest(token: String, namespace: String, mount: String, path: String, kv: Int = 2) {
+        val response = http.send("DELETE", location(mount, path, kv, "data"), token, namespace)
+        if (response.status == 404) checkStillV1(response, kv, mount)
         if (!response.isSuccess && response.status != 404) throw VaultHttp.failure(response, "Deleting $mount${displayPath(path)}")
+    }
+
+    /** `<mount>/<prefix>/<path>` on KV v2 (prefix `data` or `metadata`), `<mount>/<path>` on KV v1. */
+    private fun location(mount: String, path: String, kv: Int, v2Prefix: String): String =
+        if (kv == 1) "${VaultHttp.path(mount)}/${VaultHttp.path(path)}" else "${VaultHttp.path(mount)}/$v2Prefix/${VaultHttp.path(path)}"
+
+    /** KV v2 nests the fields in `data.data`, KV v1 sends them as `data`. */
+    private fun fieldsOf(response: VaultHttp.Response, kv: Int): JsonElement? {
+        val data = response.json().asJsonObject.obj("data") ?: return null
+        return if (kv == 1) data else data.get("data")
+    }
+
+    /**
+     * A KV v1 request answered with KV v2's "invalid path" warning: the mount was upgraded to version 2 since its version was
+     * detected. Refused (the caller forgets the version) instead of reading as "no such secret".
+     */
+    private fun checkStillV1(response: VaultHttp.Response, kv: Int, mount: String) {
+        if (kv == 1 && isVersionedKvAnswer(response)) {
+            throw SecretProviderException(Kind.CONFIGURATION, "$mount is a KV version 2 engine now; refresh and try again")
+        }
     }
 
     // ---- Tokens ----------------------------------------------------------------------------------------------------
@@ -212,6 +295,36 @@ class VaultApi(val http: VaultHttp) {
         private fun now() = System.currentTimeMillis() / 1000
 
         private fun displayPath(path: String) = "/" + path.trim('/')
+
+        /** Names a KV v2 engine gives meaning to below its mount: a KV v1-style probe of them could be answered by KV v2. */
+        private val KV2_RESERVED = setOf("data", "metadata", "config", "delete", "undelete", "destroy", "subkeys", "detailed-metadata")
+
+        /**
+         * The KV version of a mount described by Vault (`type` and `options`), as the Vault CLI reads it: type `kv` (older
+         * servers: `generic`) with `options.version` "2" is version 2, any other (or no) version is 1; null for other engines.
+         */
+        private fun kvVersionOf(mount: JsonObject): Int? {
+            val type = mount.get("type")?.takeIf { it.isJsonPrimitive }?.asString
+            if (type != "kv" && type != "generic") return null
+            // options is null for a mount created without any (an old KV v1 mount)
+            val version = mount.obj("options")?.get("version")?.takeIf { it.isJsonPrimitive }?.asString
+            return if (version == "2") 2 else 1
+        }
+
+        /** Vault's `errors` of a response (empty when there are none or the body isn't JSON). */
+        private fun errors(response: VaultHttp.Response): List<String> = runCatching {
+            JsonParser.parseString(response.body).asJsonObject.getAsJsonArray("errors")?.map { it.asString }
+        }.getOrNull().orEmpty()
+
+        /**
+         * Whether a 404 is KV v2's answer to a path without `data/` or `metadata/` (its warning "Invalid path for a versioned
+         * K/V secrets engine"): the mount is version 2.
+         */
+        private fun isVersionedKvAnswer(response: VaultHttp.Response): Boolean = runCatching {
+            JsonParser.parseString(response.body).asJsonObject.getAsJsonArray("warnings")?.any {
+                it.asString.contains("versioned K/V", ignoreCase = true)
+            }
+        }.getOrNull() == true
 
         /** The member [name] when it is an object (Vault sends `null` for absent parts, e.g. `"auth": null` on reads). */
         private fun JsonObject.obj(name: String): JsonObject? = get(name)?.takeIf { it.isJsonObject }?.asJsonObject

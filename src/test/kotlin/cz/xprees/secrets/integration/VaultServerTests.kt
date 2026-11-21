@@ -27,7 +27,7 @@ class VaultIntegrationTest : VaultServerTests("VAULT")
 class OpenBaoIntegrationTest : VaultServerTests("OPENBAO")
 
 /**
- * The Vault provider against a real server seeded by `scripts/integration/setup.sh`: KV v2 mounts, AppRole, userpass and token
+ * The Vault provider against a real server seeded by `scripts/integration/setup.sh`: KV v2 and KV v1 mounts, AppRole, userpass and token
  * sign-in, permissions, token renewal and revocation, namespaces, and launches resolving `vault://` references.
  */
 abstract class VaultServerTests(private val server: String) : BasePlatformTestCase() {
@@ -83,13 +83,13 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
     private fun session(connection: SecretConnection): TokenSet =
         TokenSet.fromJson(CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)!!)!!
 
-    fun `test AppRole lists KV v2 mounts, paths and fields`() {
+    fun `test AppRole lists KV mounts, paths and fields`() {
         val client = client(appRole())
         assertThat(client.signIn(interaction)).contains("approle")
 
         val mounts = client.listProjects().map { it.id }
-        // KV v1 (legacy) and other engines are not offered
-        assertThat(mounts).contains("secret", "team-kv").doesNotContain("legacy", "cubbyhole", "sys")
+        // KV v2 and KV v1 (legacy) mounts; other engines are not offered
+        assertThat(mounts).contains("secret", "team-kv", "legacy").doesNotContain("cubbyhole", "sys")
 
         assertThat(client.listFolders(SecretScope("secret", "root", "/envbridge")).map { it.path }).containsExactly("/envbridge/app")
         assertThat(client.listFolders(SecretScope("secret", "root", "/envbridge/app")).map { it.path }).containsExactly("/envbridge/app/api", "/envbridge/app/db")
@@ -224,6 +224,134 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
             assertThat(toTeam.moved).containsExactly("token")
             assertThat(client(connection).listSecrets(SecretScope("secret", "team-a", "$base/app")).single().value.reveal()).isEqualTo("again")
         }
+    }
+
+    // ---- KV version 1 ----------------------------------------------------------------------------------------------
+
+    private fun fields(connection: SecretConnection, scope: SecretScope) = client(connection).listSecrets(scope).associate { it.key to it.value.reveal() }
+
+    private fun value(text: String) = cz.xprees.secrets.core.model.SecretValue(text)
+
+    fun `test KV v1 secrets are listed and read`() {
+        // a configured mount: the version comes from the server's preflight, as for the Vault CLI
+        val connection = appRole(options = mapOf(VaultAuthMethods.OPTION_MOUNTS to "legacy"))
+        val client = client(connection)
+        assertThat(client.listProjects().map { it.id }).containsExactly("legacy")
+        assertThat(client.listFolders(SecretScope("legacy", "root", "/envbridge")).map { it.path }).containsExactly("/envbridge/app")
+        assertThat(client.listFolders(SecretScope("legacy", "root", "/envbridge/app")).map { it.path }).containsExactly("/envbridge/app/api", "/envbridge/app/db")
+        assertThat(fields(connection, SecretScope("legacy", "root", "/envbridge/app/api")))
+            .containsOnlyKeys("key", "limits").containsEntry("key", "v1-api-key-$server").containsEntry("limits", """{"rps":5}""")
+        assertThat(client.listSecrets(SecretScope("legacy", "root", "/envbridge/app/missing"))).isEmpty()
+        assertThat(client.listSecrets(SecretScope("legacy", "root", "/envbridge", recursive = true)).map { "${it.path}#${it.key}" })
+            .containsExactlyInAnyOrder("/envbridge/app/api#key", "/envbridge/app/api#limits", "/envbridge/app/db#password", "/envbridge/app/db#user")
+        assertThatThrownBy { client.listSecrets(SecretScope("legacy", "root", "/forbidden/x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+
+        // listed mounts carry their version too
+        val listed = appRole()
+        client(listed).listProjects()
+        assertThat(fields(listed, SecretScope("legacy", "root", "/envbridge/app/db"))).containsEntry("password", "v1-db-pass-$server")
+    }
+
+    fun `test KV v1 version probe agrees with the server's preflight`() {
+        val api = VaultApi(VaultHttp(address))
+        val connection = appRole()
+        client(connection).signIn(interaction)
+        val token = session(connection).accessToken
+        assertThat(api.kvVersion(token, VaultApi.ROOT_NAMESPACE, "legacy")).isEqualTo(1)
+        assertThat(api.kvVersion(token, VaultApi.ROOT_NAMESPACE, "secret")).isEqualTo(2)
+        // the fallback, when the preflight can't be used: the path read the KV v1 way
+        assertThat(api.probeKvVersion(token, VaultApi.ROOT_NAMESPACE, "legacy", "/envbridge/app/db")).isEqualTo(1)
+        assertThat(api.probeKvVersion(token, VaultApi.ROOT_NAMESPACE, "legacy", "/envbridge-rw/none-${System.nanoTime()}")).isEqualTo(1)
+        // a KV v1-style read of a KV v2 mount (the policy allows secret/envbridge-probe) reaches the engine, which warns
+        assertThat(api.probeKvVersion(token, VaultApi.ROOT_NAMESPACE, "secret", "/envbridge-probe")).isEqualTo(2)
+        // refused by the policy: the probe says nothing (the client then uses KV v2, as before KV v1 support)
+        assertThat(api.probeKvVersion(token, VaultApi.ROOT_NAMESPACE, "secret", "/envbridge/app/db")).isNull()
+    }
+
+    fun `test KV v1 fields are created, changed, renamed and deleted`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val app = SecretScope("legacy", "root", "/envbridge-rw/run-${System.nanoTime()}/app")
+
+        service.createSecret(connection, app, "token", value("t1"))
+        service.createSecret(connection, app, "url", value("https://example.test"))
+        service.updateSecret(connection, app, "token", value("t2"))
+        assertThat(fields(connection, app)).containsOnly(
+            org.assertj.core.api.Assertions.entry("token", "t2"), org.assertj.core.api.Assertions.entry("url", "https://example.test"),
+        )
+        assertThatThrownBy { service.createSecret(connection, app, "token", value("x")) }.hasMessageContaining("already has a field token")
+
+        service.updateSecret(connection, app, "token", value("t2"), null, "api_token")
+        assertThat(fields(connection, app)).containsOnlyKeys("api_token", "url").containsEntry("api_token", "t2")
+        assertThatThrownBy { service.updateSecret(connection, app, "api_token", value("x"), null, "url") }.hasMessageContaining("already has a field url")
+        assertThat(fields(connection, app)).containsEntry("api_token", "t2").containsEntry("url", "https://example.test")
+
+        service.deleteSecrets(connection, app, listOf("url")).getValue("url").getOrThrow()
+        assertThat(fields(connection, app).keys).containsExactly("api_token")
+        // the last field: the secret is deleted (and can be created again)
+        service.deleteSecrets(connection, app, listOf("api_token")).getValue("api_token").getOrThrow()
+        assertThat(client(connection).listSecrets(app)).isEmpty()
+        assertThat(client(connection).listFolders(SecretScope("legacy", "root", app.path.substringBeforeLast('/')))).isEmpty()
+        service.createSecret(connection, app, "token", value("again"))
+        assertThat(fields(connection, app)).containsOnly(org.assertj.core.api.Assertions.entry("token", "again"))
+
+        // no write permission outside envbridge-rw/
+        assertThatThrownBy { service.createSecret(connection, SecretScope("legacy", "root", "/envbridge/app/db"), "new", value("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+        assertThat(fields(connection, SecretScope("legacy", "root", "/envbridge/app/db"))).doesNotContainKey("new")
+    }
+
+    fun `test KV v1 fields move between secrets, KV versions and namespaces`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val base = "/envbridge-rw/move-${System.nanoTime()}"
+        val app = SecretScope("legacy", "root", "$base/app")
+        val other = SecretScope("legacy", "root", "$base/other")
+        service.createSecret(connection, app, "token", value("t1"))
+        service.createSecret(connection, app, "url", value("https://example.test"))
+        service.createSecret(connection, other, "url", value("kept"))
+
+        // a conflict refuses the whole move
+        assertThatThrownBy { service.moveSecrets(connection, app, client(connection).listSecrets(app), other, overwrite = false) }
+            .hasMessageContaining("already has \"url\"").hasMessageContaining("nothing was moved")
+        assertThat(fields(connection, app).keys).containsExactlyInAnyOrder("token", "url")
+        assertThat(fields(connection, other)).containsOnly(org.assertj.core.api.Assertions.entry("url", "kept"))
+
+        val moved = service.moveSecrets(connection, app, client(connection).listSecrets(app).filter { it.key == "url" }, other, overwrite = true)
+        assertThat(moved.moved).containsExactly("url")
+        assertThat(fields(connection, app).keys).containsExactly("token")
+        assertThat(fields(connection, other)).containsOnly(org.assertj.core.api.Assertions.entry("url", "https://example.test"))
+
+        // KV v1 -> KV v2 (the KV v1 secret is deleted with its last field), and back
+        val v2 = SecretScope("secret", "root", "$base/app")
+        assertThat(service.moveSecrets(connection, app, client(connection).listSecrets(app), v2, overwrite = false).moved).containsExactly("token")
+        assertThat(client(connection).listSecrets(app)).isEmpty()
+        assertThat(fields(connection, v2)).containsOnly(org.assertj.core.api.Assertions.entry("token", "t1"))
+        assertThat(service.moveSecrets(connection, v2, client(connection).listSecrets(v2), app, overwrite = false).moved).containsExactly("token")
+        assertThat(fields(connection, app)).containsOnly(org.assertj.core.api.Assertions.entry("token", "t1"))
+        assertThat(client(connection).listSecrets(v2)).isEmpty()
+
+        if (IntegrationEnv.get("ENVBRIDGE_IT_${server}_NAMESPACES") == "true") {
+            val team = SecretScope("legacy", "team-a", "$base/app")
+            assertThat(service.moveSecrets(connection, app, client(connection).listSecrets(app), team, overwrite = false).moved).containsExactly("token")
+            assertThat(fields(connection, team)).containsOnly(org.assertj.core.api.Assertions.entry("token", "t1"))
+            assertThat(client(connection).listSecrets(app)).isEmpty()
+        }
+    }
+
+    fun `test KV v1 references resolve in launches`() {
+        val connection = appRole()
+        ProjectSecretsSettings.getInstance(project).update {
+            connectionId = connection.id
+            projectId = "legacy"
+            environment = null
+            path = null
+            useProjectFile = false
+        }
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val result = resolver.resolve(resolver.plan(linkedMapOf("DB" to "vault://legacy/envbridge/app/db#password", "API" to "vault://legacy/envbridge/app/api#*")))
+        assertThat(result.environment).containsEntry("DB", "v1-db-pass-$server").containsEntry("key", "v1-api-key-$server").doesNotContainKey("API")
     }
 
     fun `test launches resolve vault references`() {

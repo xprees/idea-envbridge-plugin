@@ -592,4 +592,65 @@ class OnePasswordPlatformTest : BasePlatformTestCase() {
         assertThat(fieldOf(connect.item(DEV, DATABASE)!!, "port")).isNotNull()
         assertThat(fields(connection, "/Database").map { it.first }).contains("port")
     }
+
+    // ---- Dashboard link ----
+
+    private val provider get() = OnePasswordProvider()
+
+    private fun privateLink(item: String, vault: String = DEV, host: String = "my.1password.com") =
+        "https://start.1password.com/open/i?a=A1&v=$vault&i=$item&h=$host"
+
+    fun `test CLI dashboard links open items through private links, from what signing in and listing remembered`() {
+        if (!canRunFakeOp) return
+        val connection = desktop()
+        // nothing known yet (the link is built on the EDT, where op can't run)
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/Database"))).isNull()
+
+        client(connection).signIn(Interaction)
+        assertThat(provider.dashboardUrl(connection, null)).isEqualTo("https://my.1password.com/")
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default"))).isEqualTo("https://my.1password.com/")
+        // an item named by its ID needs no listing; one named by its title does
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/$DUP2"))).isEqualTo(privateLink(DUP2))
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/Database"))).isEqualTo("https://my.1password.com/")
+        client(connection).listFolders(SecretScope(DEV, "default"))
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/Database"))).isEqualTo(privateLink(DATABASE))
+        // a field in a section opens its item
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/Database/Extra"), key = "api key")).isEqualTo(privateLink(DATABASE))
+        // a vault named by name (a reference) has no ID to link to
+        assertThat(provider.dashboardUrl(connection, SecretScope("Dev", "default", "/Database"))).isEqualTo("https://my.1password.com/")
+
+        client(connection).signOut()
+        assertThat(provider.dashboardUrl(connection, SecretScope(DEV, "default", "/Database"))).isNull()
+    }
+
+    fun `test a service account's account is found once while listing vaults, its token never on argv`() {
+        if (!canRunFakeOp) return
+        fake.requiredToken = "ops_secret_token"
+        fake.whoami("""{"url":"https://acme.1password.com","user_uuid":"S1","account_uuid":"A1","user_type":"SERVICE_ACCOUNT"}""")
+        val connection = serviceAccount("ops_secret_token")
+        client(connection).listProjects()
+        client(connection).listProjects()
+        assertThat(fake.calls().count { it.startsWith("whoami") }).isEqualTo(1)
+        assertThat(provider.dashboardUrl(connection, SecretScope(OnePasswordFixtures.SHARED, "default", "/${OnePasswordFixtures.INFRA}")))
+            .isEqualTo(privateLink(OnePasswordFixtures.INFRA, vault = OnePasswordFixtures.SHARED, host = "acme.1password.com"))
+        assertThat(fake.calls()).noneMatch { it.contains("ops_secret_token") }
+        assertThat(fake.tokens()).containsOnly("ops_secret_token")
+    }
+
+    fun `test no dashboard link without a usable account, and none for Connect`() {
+        if (!canRunFakeOp) return
+        // whoami without the account's UUID, or with an address that isn't https://: no link, and listing still works
+        fake.whoami("""{"url":"https://my.1password.com","email":"alice@example.com","user_type":"HUMAN"}""")
+        val connection = desktop()
+        assertThat(client(connection).listProjects()).isNotEmpty
+        assertThat(provider.dashboardUrl(connection, null)).isNull()
+        fake.whoami("""{"url":"http://evil.example","account_uuid":"A1"}""")
+        assertThat(client(desktop()).listProjects()).isNotEmpty
+        assertThat(provider.dashboardUrl(connections.last(), null)).isNull()
+
+        val server = connectServer()
+        client(server).listProjects()
+        client(server).listFolders(scope("/"))
+        assertThat(provider.dashboardUrl(server, scope("/Database"))).isNull()
+    }
 }

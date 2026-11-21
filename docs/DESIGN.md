@@ -45,7 +45,7 @@ cz.xprees.secrets
     resolve    SecretResolver (launch-time, always fresh), SecretCache (memory-only TTL for UI/editor)
     settings   connections (application level), project binding (project level)
   infisical/   InfisicalProvider, InfisicalClient (REST), auth flows, project config (.infisical.yaml / .infisical.json)
-  vault/       VaultProvider (HashiCorp Vault / OpenBao, KV v2)
+  vault/       VaultProvider (HashiCorp Vault / OpenBao, KV v1 and v2)
   onepassword/ OnePasswordProvider (op CLI, Connect)
   doppler/     DopplerProvider, DopplerClient, DopplerApi / DopplerHttp (REST v3), DopplerAuth (CLI browser flow, tokens),
                DopplerGrammar (doppler://), DopplerProjectFile (doppler.yaml)
@@ -193,14 +193,14 @@ open-source fork under the Linux Foundation, shares its API, so one provider cov
 exists for either. 1Password is the likely provider after it.
 
 **Scope, first version:** reading and injecting (sign-in, tool window, references in run configurations, terminal, `.env`,
-editor hints), then writing fields (see *Writes* below). Engines: **KV v2** and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). KV v1 and
-dynamic secrets are later candidates.
+editor hints), then writing fields (see *Writes* below). Engines: **KV v2**, **KV v1** (since the version after the first, see
+[KV version 1](#kv-version-1)) and **namespaces** (Vault Enterprise / HCP Vault, OpenBao). Dynamic secrets are a later candidate.
 
 ### Model mapping
 
 | EnvBridge | Vault / OpenBao |
 |---|---|
-| Project | A KV v2 mount (`secret`, `kv`, …) |
+| Project | A KV mount, version 1 or 2 (`secret`, `kv`, …) |
 | Environment | A namespace (`root` when the instance has none, or the connection's namespace) |
 | Folder | A path below the mount (`app/`, `app/db`) |
 | Secret (key = value) | A field of a secret (`password` in `secret/app/db`) |
@@ -221,13 +221,14 @@ The mount is always written, so a reference alone says which secret it is; the n
 given. Each provider now brings its own reference grammar (`SecretProvider.referenceGrammar`); `infisical://` keeps its
 `env:folder/KEY` form.
 
-### API (KV v2, namespaces via `X-Vault-Namespace`, token via `X-Vault-Token`)
+### API (KV v1 and v2, namespaces via `X-Vault-Namespace`, token via `X-Vault-Token`)
 
 | Purpose | Call |
 |---|---|
-| Mounts the token can use | `GET /v1/sys/internal/ui/mounts` (KV v2 only); no compatibility promise, so mounts can also be listed in the connection |
-| Folders and secrets of a path | `LIST /v1/<mount>/metadata/<path>` (`GET …?list=true`); keys ending in `/` are folders |
-| Fields of a secret | `GET /v1/<mount>/data/<path>` → `data.data`; non-string values are passed as JSON |
+| Mounts the token can use | `GET /v1/sys/internal/ui/mounts` (type `kv` / `generic`, with their versions); no compatibility promise, so mounts can also be listed in the connection |
+| A mount's KV version | `GET /v1/sys/internal/ui/mounts/<mount>` → `data.options.version` (see [KV version 1](#kv-version-1)) |
+| Folders and secrets of a path | KV v2 `LIST /v1/<mount>/metadata/<path>`, KV v1 `LIST /v1/<mount>/<path>` (`GET …?list=true`); keys ending in `/` are folders |
+| Fields of a secret | KV v2 `GET /v1/<mount>/data/<path>` → `data.data`, KV v1 `GET /v1/<mount>/<path>` → `data`; non-string values are passed as JSON |
 | Check / renew the token | `GET /v1/auth/token/lookup-self`, `POST /v1/auth/token/renew-self` |
 
 ### Sign-in (browser first; tokens and secrets only in the IDE's password storage)
@@ -261,10 +262,71 @@ are renewed before they expire; otherwise the user signs in again (the launch fa
   (`/`) are refused: fields live in secrets. `createEnvironment` is refused (namespaces are an administrator's job).
   Integration tests cover writes on real Vault and OpenBao, including check-and-set and a move between namespaces.
 
+### KV version 1
+
+KV v1 mounts work like KV v2 ones for everything: listing, reading, references and launches, and every write the client
+implements (`createSecret`, `updateSecret` including the rename to `newKey`, `deleteSecret`, `moveSecrets`; the SPI has no
+`copySecrets`, copying in the tool window is a create per secret). Only the API differs:
+
+| | KV v2 | KV v1 |
+|---|---|---|
+| Read | `GET <mount>/data/<path>` → `data.data`, `data.metadata.version` | `GET <mount>/<path>` → `data` |
+| List | `LIST <mount>/metadata/<path>` | `LIST <mount>/<path>` |
+| Write | `POST <mount>/data/<path>` `{"options":{"cas":<version>},"data":{…}}` | `POST <mount>/<path>` with the fields as the body (replaces the whole secret) |
+| Remove the last field | write, then `DELETE <mount>/data/<path>` (soft delete of the latest version, restorable) | `DELETE <mount>/<path>` (gone for good; nothing is written first) |
+
+**Detecting the version** follows the Vault CLI (`vault kv`'s preflight request, `kvPreflightVersionRequest`): `GET
+sys/internal/ui/mounts/<mount>`; type `kv` (older servers: `generic`) with `data.options.version` `"2"` is KV v2, a missing or
+null `options`, a missing or empty version, or `"1"` is KV v1. Another engine type is refused (CONFIGURATION) rather than read
+as KV. Listing the mounts (`sys/internal/ui/mounts`) gives every mount's version too, so mounts found that way need no
+preflight. The result is remembered per connection (id and address), namespace and mount (`VaultKvVersions`, memory only, 10
+minutes, cleared on sign-out); any failed operation on the mount forgets it, so the next one asks again. That covers a mount
+upgraded meanwhile (`vault kv enable-versioning`): a KV v1-style request to a KV v2 engine is answered with 404 and the engine's
+warning "Invalid path for a versioned K/V secrets engine", which EnvBridge reports ("is a KV version 2 engine now; refresh")
+instead of reading it as "no such secret", so a stale version can't make a secret look empty or send a write to a wrong path.
+
+**When the preflight doesn't answer** (an old server without the endpoint, a proxy that blocks `sys/`, or a token Vault refuses
+there; Vault also answers 403 for a mount that doesn't exist), the version is **probed at the operation's own path, the KV v1
+way**: `GET <mount>/<path>` (or `LIST <mount>/` for the mount's root and for a first segment a KV v2 engine reserves: `data`,
+`metadata`, `config`, `delete`, `undelete`, `destroy`, `subkeys`, `detailed-metadata`, whose KV v1-style read KV v2 would answer
+itself). An answer means KV v1; a 404 with KV v2's "invalid path" warning means KV v2; a plain 404 (`{"errors":[]}`, no such
+secret) means KV v1, since a KV v2 engine never answers a non-prefixed path that way; a 404 with an error (`no handler for
+route`: no such mount) and anything else (403) say nothing. When neither tells, the operation uses **KV v2 and nothing is
+remembered** (the behaviour before KV v1 support, so no KV v2 setup changes). Why this order rather than "try the KV v2 path and
+fall back to KV v1 on 404": a KV v2 404 is ambiguous (a KV v1 mount answers `GET <mount>/data/<path>` with a plain 404 too, as
+does a KV v2 secret that doesn't exist yet), and a KV v2 write to a KV v1 mount isn't refused at all: it would create a secret
+literally named `data/<path>` holding `options` and `data`. Probing the KV v1 path is unambiguous in the cases that matter
+(policies written for a KV v1 mount allow `<mount>/<path>`; policies for KV v2 allow `<mount>/data/…`, so the probe is refused
+and KV v2 is used), and a wrong guess of KV v1 on a KV v2 mount only produces the engine's 404 warning, never a write. The
+preflight endpoint authorizes any token that has some capability below the mount, so in practice the probe is only needed for
+servers or proxies that hide the endpoint.
+
+**No concurrency control on KV v1.** KV v1 has no versions, no metadata endpoint and no check-and-set: every write is a
+read-modify-write of the whole secret (read the fields as stored JSON, change one, `POST` all of them). A change someone else
+makes to the same secret between EnvBridge's read and its write (milliseconds) is overwritten, and **can't be detected**;
+likewise a field added by someone else in the instant before the last field's removal is deleted with the secret. The rest of
+the safety rules are unchanged: other fields keep their values and JSON types; a rename is one write of the whole secret with
+the field renamed in place, refused before anything is written when the new name is taken; a move writes the destination
+first, then re-reads the source and removes the fields (a failed removal leaves both copies, reported in `notRemoved`);
+conflicts at the destination refuse the whole move before anything is written unless *Overwrite*. Moves work across KV
+versions (each side uses its mount's API).
+
+**Dashboard link**: `dashboardUrl` runs on the EDT and only uses the remembered version: KV v1 opens the Vault UI's
+`/ui/vault/secrets/<mount>/list` and `/show/<path>` routes, KV v2 (or unknown) `/kv/list` and `/kv/<path>/details` as before.
+
 ### Tests
 
-A mock Vault server (like `MockInfisical`): mounts, LIST, KV v2 reads, namespaces, each auth method including the OIDC
-round trip, expired tokens and permission errors; the grammar round-trips; launches resolving `vault://` references.
+A mock Vault server (like `MockInfisical`): KV v2 and KV v1 mounts (`mounts`: version per mount, also "no options"), the mount
+preflight (can be refused), KV v2's 404 warning for non-prefixed paths, LIST, reads and writes of both versions, namespaces, each
+auth method including the OIDC round trip, expired tokens and permission errors; the grammar round-trips; launches resolving
+`vault://` references. KV v1 tests: listing and reading by preflight, by the mount listing (no preflight) and by the probe (KV v1,
+KV v2, a new secret, a reserved name); creating, changing, renaming and deleting fields (the whole secret as the body, no
+`cas`, the secret deleted with its last field); conflicts refused before writing; moves within KV v1, across namespaces and in
+both directions between KV v1 and KV v2 (destination written first); a source that refuses the removal; a mount upgraded to
+KV v2 meanwhile; the dashboard link per version; launches. Integration tests (`scripts/integration/setup.sh` mounts a KV v1
+engine `legacy` on Vault and OpenBao, also in OpenBao's `team-a` namespace) cover listing, reading, the preflight and the probe
+against the real servers, create / update / rename / delete, moves between KV v1 secrets, KV v1 ↔ KV v2 and across namespaces,
+and launches.
 
 ## Third provider: 1Password
 
@@ -423,6 +485,28 @@ against a live account or a real `op` binary** while writing this; the tests use
 - The CLI has no optimistic concurrency that EnvBridge can use: an item changed between `op item get` and `op item edit` (a
   fraction of a second) is overwritten.
 
+### Dashboard link
+
+*Open in Dashboard* for the CLI methods (desktop app, service account); Connect connections have none (a Connect server
+belongs to no signed-in account, and its address is not 1Password's web app).
+
+- **Account**: `op whoami --format json` (no secret on argv; a service account's token only in `op`'s environment as for every
+  call) → `url` (the sign-in address, `https://my.1password.com`) and `account_uuid`. Run at sign-in (after `vault list`, which is
+  what makes the app authorize the CLI) and, when nothing is remembered yet, after `vault list` in `listProjects` (background;
+  a failure only means no link). `url` must be `https://` with a host; otherwise, or without `account_uuid`, there is no link.
+- **Item IDs**: the tool window's item folders may be titles; `listFolders` remembers each folder segment's item ID per vault.
+  A segment that is itself an ID needs nothing.
+- Both live in memory only (`OnePasswordDashboard`), per connection id, method and account option, and are forgotten on
+  sign-out. An account UUID and item IDs are not secrets (1Password puts them in its own links).
+- **`dashboardUrl` is called on the EDT** (the tool window's *Open in Dashboard* action), so it never runs `op`: it builds the
+  address from what is remembered, or returns null before the account is known (in practice the vault list that shows the
+  connection's vaults has filled it).
+- **Address**: an item, a section or a field (any path below a vault whose project ID is a vault ID) opens through the private
+  link `https://start.1password.com/open/i?a=<account UUID>&v=<vault ID>&i=<item ID>&h=<sign-in host>`, the format the 1Password
+  apps' *Copy Private Link* produces, which opens the item in the 1Password app or the web app for the right account. A vault,
+  the connection, or an item whose ID isn't known opens the account's web app (`https://<sign-in host>/`, which shows the
+  vaults after sign-in): the web app's own routes for a single vault are not documented, so no deeper link is guessed.
+
 ### Security notes
 
 - No secret on a command line: argv carries only vault / item names and IDs, flags and the account. Values written go to
@@ -438,6 +522,9 @@ against a live account or a real `op` binary** while writing this; the tests use
 
 - `OnePasswordGrammarTest`: parsing, formatting and round trips (sections, `*`, `**`, encoded names, a field called `*`),
   building references, malformed references with their messages, other schemes unaffected.
+- Dashboard link: the private link after sign-in and listing (item by title once listed, by ID at once, a field in a section,
+  a vault by name falling back to the account), nothing before sign-in or after sign-out, a service account's `whoami` run once
+  while listing (token never on argv), no link without `account_uuid` or with a non-`https://` address, none for Connect.
 - `FakeOp`: a POSIX shell script written to a temp dir that answers `vault list`, `item list`, `item get`, `whoami` from
   fixture JSON, logs argv and whether `OP_SERVICE_ACCOUNT_TOKEN` was set, can require a token, act signed out, and report an
   ambiguous title like `op` does. `MockOnePasswordConnect`: a JDK HttpServer with the three Connect endpoints, bearer check,
@@ -461,7 +548,7 @@ against a live account or a real `op` binary** while writing this; the tests use
 
 - **JSON shapes are from documentation and memory, not verified against a live account** while writing this: CLI items
   (`id`, `title`, `vault`, `category`, `sections[] {id, label}`, `fields[] {id, type, purpose, label, value, section {id,
-  label}, reference}`), CLI vaults (`id`, `name`), `whoami` (`url`, `email`, `user_type`), Connect vaults (`id`, `name`) and
+  label}, reference}`), CLI vaults (`id`, `name`), `whoami` (`url`, `email`, `user_type`, `account_uuid`), Connect vaults (`id`, `name`) and
   items (`sections[]`, fields with `section {id}` only). The parser is lenient (missing keys are skipped, a non-string `value`
   is passed as JSON, `null` / empty output is an empty list).
 - Whether `op read` resolves `op://vault/item/field` for a field inside a section is assumed, not verified; EnvBridge does.
@@ -472,7 +559,8 @@ against a live account or a real `op` binary** while writing this; the tests use
 - `?attribute=otp`, `?attribute=type`, `?ssh-format=` and field lookup by field ID (except where ID and label are equal, as for
   built-in `username` / `password`) are not supported.
 - A whole-vault import makes one `op` call per item (≈0.5 s each); it is capped at 100 items.
-- No dashboard link (opening items needs the account's UUID; a later version can use `whoami`).
+- The dashboard link's private-link format (below) is from 1Password's apps as remembered, not verified against a live
+  account while writing this.
 - Writes through the CLI rely on `op item edit` accepting piped item JSON (confidence above); there is no argv fallback.
 - Writes don't check that the item is unchanged since the tool window showed it, only since the operation read it (Connect:
   `version`; CLI: none). Items are never deleted; sections aren't created; moving into a vault's root is refused.

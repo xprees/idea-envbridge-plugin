@@ -86,14 +86,14 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(cz.xprees.secrets.core.reference.SecretReference.parse("vault://secret/app/db#password", listOf("vault"))!!.path).isEqualTo("/app/db")
     }
 
-    fun `test AppRole lists KV v2 mounts, paths and fields`() {
+    fun `test AppRole lists KV mounts, paths and fields`() {
         val connection = appRole(mapOf(VaultAuthMethods.OPTION_NAMESPACES to "team-a"))
         val client = client(connection)
         assertThat(client.hasCredentials()).isTrue()
 
-        val project = client.listProjects().single()
-        // kv1/ (KV version 1) and cubbyhole/ are not KV v2
-        assertThat(project.id).isEqualTo("secret")
+        // KV version 1 and 2 mounts; cubbyhole/ is not a KV engine
+        assertThat(client.listProjects().map { it.id }).containsExactly("kv1", "secret")
+        val project = client.listProjects().first { it.id == "secret" }
         assertThat(project.environments.map { it.slug }).containsExactly("root", "team-a")
 
         assertThat(client.listFolders(SecretScope("secret", "root")).map { it.path }).containsExactly("/app", "/other")
@@ -124,7 +124,7 @@ class VaultPlatformTest : BasePlatformTestCase() {
         assertThat(client.listSecrets(SecretScope("secret", "team-a", "/app/db")).single().value.reveal()).isEqualTo("team-a-db-pass")
         assertThat(mock.requests.single { it.path == "/v1/auth/approle/login" }.namespace).isEqualTo("team-a")
         assertThat(mock.requests.last { it.path.startsWith("/v1/secret/data/") }.namespace).isEqualTo("team-a")
-        assertThat(client.listProjects().single().environments.map { it.slug }).containsExactly("team-a")
+        assertThat(client.listProjects().first().environments.map { it.slug }).containsExactly("team-a")
     }
 
     fun `test refused tokens lead to one new login and a retry`() {
@@ -198,7 +198,7 @@ class VaultPlatformTest : BasePlatformTestCase() {
             VaultAuth.cliTokenFile = file
             val cli = connection(VaultAuthMethods.TOKEN)
             assertThat(client(cli).hasCredentials()).isTrue()
-            assertThat(client(cli).listProjects().single().id).isEqualTo("secret")
+            assertThat(client(cli).listProjects().map { it.id }).containsExactly("kv1", "secret")
             assertThat(mock.requests.last { it.path == "/v1/sys/internal/ui/mounts" }.token).isEqualTo("hvs.static")
         } finally {
             Files.deleteIfExists(file)
@@ -439,6 +439,7 @@ class VaultPlatformTest : BasePlatformTestCase() {
             val destination = SecretScope("secret", "root", "/app/copy")
             // make the source read-only only after the copy: a second mount stands in for a read-only source
             mock.secrets.getValue("root")["ro/app/db"] = mapOf("user" to "app")
+            mock.mounts["ro"] = "2"
             mock.readOnlyMounts += "ro"
             service.moveSecrets(connection, SecretScope("ro", "root", "/app/db"), entries, destination, overwrite = false)
         }
@@ -460,6 +461,203 @@ class VaultPlatformTest : BasePlatformTestCase() {
             cz.xprees.secrets.core.settings.SecretsAppSettings.getInstance().state.readOnly = false
         }
         assertThat(SecretsService.getInstance().writesAllowed(connection)).isTrue()
+    }
+
+    // ---- KV version 1 ----------------------------------------------------------------------------------------------
+
+    private fun fields(connection: SecretConnection, scope: SecretScope) = client(connection).listSecrets(scope).associate { it.key to it.value.reveal() }
+
+    fun `test KV v1 mounts are read, listed and recognised by the CLI's preflight`() {
+        val connection = appRole(mapOf(VaultAuthMethods.OPTION_NAMESPACES to "team-a", VaultAuthMethods.OPTION_MOUNTS to "kv1"))
+        val client = client(connection)
+        // the mount is configured, not listed: its version comes from the preflight
+        assertThat(client.listProjects().map { it.id }).containsExactly("kv1")
+        assertThat(client.listFolders(SecretScope("kv1", "root")).map { it.path }).containsExactly("/app", "/top")
+        assertThat(client.listFolders(SecretScope("kv1", "root", "/app")).map { it.path }).containsExactly("/app/api", "/app/db")
+        assertThat(fields(connection, SecretScope("kv1", "root", "/app/api"))).containsOnly(
+            org.assertj.core.api.Assertions.entry("key", "v1-api-key"), org.assertj.core.api.Assertions.entry("limits", """{"rps":5}"""),
+        )
+        assertThat(client.listSecrets(SecretScope("kv1", "root", "/"))).isEmpty()
+        assertThat(client.listSecrets(SecretScope("kv1", "root", "/app/missing"))).isEmpty()
+        assertThat(client.listSecrets(SecretScope("kv1", "root", "/", recursive = true)).map { "${it.path}#${it.key}" })
+            .containsExactlyInAnyOrder("/top#t", "/app/api#key", "/app/api#limits", "/app/db#password", "/app/db#user")
+        assertThat(fields(connection, SecretScope("kv1", "team-a", "/app/db"))).containsOnly(org.assertj.core.api.Assertions.entry("password", "team-a-v1-pass"))
+
+        // KV v1 paths have no data/ or metadata/ prefix; one preflight per mount and namespace, then remembered
+        assertThat(mock.requests.filter { it.path.startsWith("/v1/kv1") }.map { it.path }).allMatch { !it.contains("/data/") && !it.contains("/metadata") }
+        assertThat(mock.requests.last { it.path == "/v1/kv1/app/api" }.method).isEqualTo("GET")
+        assertThat(mock.requests.filter { it.path == "/v1/kv1/" }.map { it.query["list"] }).contains("true")
+        assertThat(mock.requests.filter { it.path == "/v1/sys/internal/ui/mounts/kv1" }.map { it.namespace }).containsExactly(null, "team-a")
+        // the KV v2 mount is unaffected
+        assertThat(fields(connection, SecretScope("secret", "root", "/app/db"))).containsEntry("password", "root-db-pass")
+    }
+
+    fun `test listing the mounts remembers their versions, so reads need no preflight`() {
+        val connection = appRole()
+        client(connection).listProjects()
+        assertThat(fields(connection, SecretScope("kv1", "root", "/app/db"))).containsEntry("password", "v1-db-pass")
+        assertThat(fields(connection, SecretScope("secret", "root", "/app/db"))).containsEntry("password", "root-db-pass")
+        assertThat(mock.requests.none { it.path.startsWith("/v1/sys/internal/ui/mounts/") }).isTrue()
+    }
+
+    fun `test a mount without options is KV v1, as for the Vault CLI`() {
+        mock.mounts["legacy"] = ""
+        mock.secrets.getValue("root")["legacy/app"] = mapOf("old" to "value")
+        val connection = appRole()
+        assertThat(client(connection).listProjects().map { it.id }).contains("legacy")
+        assertThat(fields(connection, SecretScope("legacy", "root", "/app"))).containsOnly(org.assertj.core.api.Assertions.entry("old", "value"))
+    }
+
+    fun `test without the preflight the version is probed at the path`() {
+        mock.mountPreflight = false
+        val connection = appRole()
+        // KV v1: the path read the KV v1 way answers
+        assertThat(fields(connection, SecretScope("kv1", "root", "/app/db"))).containsEntry("password", "v1-db-pass")
+        // KV v2: the KV v1-style probe gets KV v2's "invalid path" warning
+        assertThat(fields(connection, SecretScope("secret", "root", "/app/db"))).containsEntry("password", "root-db-pass")
+        assertThat(mock.requests.filter { it.path == "/v1/secret/app/db" }).hasSize(1)
+        // a new KV v1 secret: no such secret (a plain 404) also means KV v1
+        SecretsService.getInstance().createSecret(connection, SecretScope("kv1", "root", "/fresh"), "k", SecretValue("v"))
+        assertThat(mock.secrets.getValue("root")["kv1/fresh"]).isEqualTo(mapOf("k" to "v"))
+        // a probe of a name KV v2 reserves lists the mount's root instead
+        val other = appRole()
+        assertThat(client(other).listSecrets(SecretScope("secret", "root", "/config"))).isEmpty()
+        assertThat(mock.requests.none { it.path == "/v1/secret/config" }).isTrue()
+        assertThat(mock.requests.last { it.path == "/v1/secret/" }.query).containsEntry("list", "true")
+    }
+
+    fun `test KV v1 fields are created, changed, renamed and deleted by rewriting the whole secret`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        val api = SecretScope("kv1", "root", "/app/api")
+
+        service.createSecret(connection, api, "token", SecretValue("t1"))
+        val created = mock.requests.last { it.method == "POST" && it.path == "/v1/kv1/app/api" }
+        // the whole secret, as fields (no data/options envelope, no check-and-set); the JSON field stays JSON
+        val body = com.google.gson.JsonParser.parseString(created.body).asJsonObject
+        assertThat(body.keySet()).containsExactly("key", "limits", "token")
+        assertThat(body.getAsJsonObject("limits").get("rps").asInt).isEqualTo(5)
+        assertThat(fields(connection, api)).containsEntry("token", "t1").containsEntry("key", "v1-api-key").containsEntry("limits", """{"rps":5}""")
+
+        service.updateSecret(connection, api, "token", SecretValue("t2"))
+        assertThat(fields(connection, api)).containsEntry("token", "t2")
+
+        service.updateSecret(connection, api, "token", SecretValue("t3"), null, "api_token")
+        assertThat(mock.secrets.getValue("root").getValue("kv1/app/api").keys).containsExactly("key", "limits", "api_token")
+        assertThat(fields(connection, api)).containsEntry("api_token", "t3").doesNotContainKey("token")
+
+        // conflicts and missing fields are refused before anything is written
+        val writes = mock.writes.size
+        assertThatThrownBy { service.updateSecret(connection, api, "api_token", SecretValue("x"), null, "key") }
+            .hasMessageContaining("already has a field key")
+        assertThatThrownBy { service.createSecret(connection, api, "key", SecretValue("x")) }.hasMessageContaining("already has a field key")
+        assertThatThrownBy { service.updateSecret(connection, api, "missing", SecretValue("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.NOT_FOUND)
+        assertThatThrownBy { service.createSecret(connection, SecretScope("kv1", "root", "/"), "K", SecretValue("x")) }
+            .hasMessageContaining("Choose a secret path")
+        assertThat(mock.writes).hasSize(writes)
+
+        assertThat(service.deleteSecrets(connection, api, listOf("api_token")).getValue("api_token").isSuccess).isTrue()
+        assertThat(fields(connection, api).keys).containsExactlyInAnyOrder("key", "limits")
+
+        // removing the last field deletes the secret
+        val top = SecretScope("kv1", "root", "/top")
+        service.deleteSecrets(connection, top, listOf("t")).getValue("t").getOrThrow()
+        assertThat(mock.secrets.getValue("root")).doesNotContainKey("kv1/top")
+        assertThat(mock.requests.last { it.path == "/v1/kv1/top" }.method).isEqualTo("DELETE")
+        assertThat(mock.requests.none { it.path.startsWith("/v1/kv1/") && it.body.contains("\"cas\"") }).isTrue()
+
+        mock.readOnlyMounts += "kv1"
+        assertThatThrownBy { service.createSecret(connection, SecretScope("kv1", "root", "/app/db"), "other", SecretValue("x")) }
+            .extracting { (it as SecretProviderException).kind }.isEqualTo(Kind.FORBIDDEN)
+    }
+
+    fun `test KV v1 fields move between secrets, namespaces and KV versions without losing one`() {
+        val connection = appRole(mapOf(VaultAuthMethods.OPTION_NAMESPACES to "team-a"))
+        val service = SecretsService.getInstance()
+        val source = SecretScope("kv1", "root", "/app/db")
+
+        val user = client(connection).listSecrets(source).filter { it.key == "user" }
+        assertThat(service.moveSecrets(connection, source, user, SecretScope("kv1", "team-a", "/app/db"), overwrite = false).moved).containsExactly("user")
+        assertThat(fields(connection, source).keys).containsExactly("password")
+        assertThat(fields(connection, SecretScope("kv1", "team-a", "/app/db"))).containsEntry("user", "app1").containsEntry("password", "team-a-v1-pass")
+        // the destination was written before the source
+        val writeOrder = mock.writes.toList()
+        assertThat(writeOrder.indexOf("team-a:kv1/app/db")).isLessThan(writeOrder.indexOf("root:kv1/app/db"))
+
+        // a conflict refuses the whole move before anything is written
+        val writes = mock.writes.size
+        assertThatThrownBy { service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("kv1", "team-a", "/app/db"), overwrite = false) }
+            .hasMessageContaining("already has \"password\"").hasMessageContaining("nothing was moved")
+        assertThat(mock.writes).hasSize(writes)
+
+        // KV v1 -> KV v2: the last field leaves, the KV v1 secret is deleted
+        val toV2 = service.moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("secret", "root", "/moved"), overwrite = false)
+        assertThat(toV2.moved).containsExactly("password")
+        assertThat(mock.secrets.getValue("root")).doesNotContainKey("kv1/app/db")
+        assertThat(fields(connection, SecretScope("secret", "root", "/moved"))).containsOnly(org.assertj.core.api.Assertions.entry("password", "v1-db-pass"))
+        assertThat(mock.requests.last { it.method == "POST" && it.path == "/v1/secret/data/moved" }.body).contains("\"cas\":0")
+
+        // KV v2 -> KV v1, overwriting
+        mock.secrets.getValue("root")["kv1/app/api"] = mapOf("key" to "old")
+        val api = SecretScope("secret", "root", "/app/api")
+        val toV1 = service.moveSecrets(connection, api, client(connection).listSecrets(api).filter { it.key == "key" }, SecretScope("kv1", "root", "/app/api"), overwrite = true)
+        assertThat(toV1.moved).containsExactly("key")
+        assertThat(fields(connection, SecretScope("kv1", "root", "/app/api"))).containsOnly(org.assertj.core.api.Assertions.entry("key", "root-api-key"))
+    }
+
+    fun `test a KV v1 source that refuses the removal keeps both copies`() {
+        val connection = appRole()
+        mock.mounts["kv1ro"] = "1"
+        mock.secrets.getValue("root")["kv1ro/app"] = mapOf("user" to "app")
+        mock.readOnlyMounts += "kv1ro"
+        val source = SecretScope("kv1ro", "root", "/app")
+        val result = SecretsService.getInstance().moveSecrets(connection, source, client(connection).listSecrets(source), SecretScope("kv1", "root", "/copy"), overwrite = false)
+        assertThat(result.moved).isEmpty()
+        assertThat(result.notRemoved.getValue("user")).contains("copied, but not removed")
+        assertThat(fields(connection, SecretScope("kv1", "root", "/copy"))).containsEntry("user", "app")
+        assertThat(fields(connection, source)).containsEntry("user", "app")
+    }
+
+    fun `test a mount upgraded to KV v2 is detected again`() {
+        val connection = appRole()
+        val scope = SecretScope("kv1", "root", "/app/db")
+        assertThat(fields(connection, scope)).containsEntry("password", "v1-db-pass")
+        // vault kv enable-versioning: the remembered KV v1 is refused by the server, then forgotten
+        mock.mounts["kv1"] = "2"
+        assertThatThrownBy { client(connection).listSecrets(scope) }.hasMessageContaining("KV version 2 engine now")
+        assertThat(fields(connection, scope)).containsEntry("password", "v1-db-pass")
+        assertThat(mock.requests.last { it.path.startsWith("/v1/kv1/") }.path).isEqualTo("/v1/kv1/data/app/db")
+    }
+
+    fun `test the dashboard link follows the mount's KV version`() {
+        val connection = appRole()
+        val provider = VaultProvider()
+        // not known yet: KV v2 routes
+        assertThat(provider.dashboardUrl(connection, SecretScope("kv1", "root", "/app/db"))).isEqualTo("${mock.baseUrl}/ui/vault/secrets/kv1/kv/app%2Fdb/details")
+        client(connection).listProjects()
+        assertThat(provider.dashboardUrl(connection, SecretScope("kv1", "root", "/app/db"))).isEqualTo("${mock.baseUrl}/ui/vault/secrets/kv1/show/app/db")
+        assertThat(provider.dashboardUrl(connection, SecretScope("kv1", "root"))).isEqualTo("${mock.baseUrl}/ui/vault/secrets/kv1/list")
+        assertThat(provider.dashboardUrl(connection, SecretScope("secret", "root", "/app/db"))).isEqualTo("${mock.baseUrl}/ui/vault/secrets/secret/kv/app%2Fdb/details")
+    }
+
+    fun `test KV v1 references resolve in launches`() {
+        val connection = appRole()
+        ProjectSecretsSettings.getInstance(project).update {
+            connectionId = connection.id
+            projectId = "kv1"
+            environment = null
+            path = null
+            useProjectFile = false
+        }
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val result = resolver.resolve(
+            resolver.plan(linkedMapOf("DB" to "vault://kv1/app/db#password", "ALL" to "vault://kv1/app/api#*", "TEAM" to "vault://kv1/app/db#password?namespace=team-a")),
+        )
+        assertThat(result.environment).containsEntry("DB", "v1-db-pass").containsEntry("key", "v1-api-key")
+            .containsEntry("limits", """{"rps":5}""").containsEntry("TEAM", "team-a-v1-pass").doesNotContainKey("ALL")
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "vault://kv1/app/db#missing"))) }
+            .isInstanceOf(SecretProviderException::class.java)
     }
 
     private object TokenSetAccess {
