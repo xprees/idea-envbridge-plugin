@@ -45,7 +45,7 @@ class MovedReferencesTest {
         val root = renamed(SecretScope("p1", "dev", "/"))
         assertThat(root.rewriteText("DB=infisical://DB_PASSWORD", defaults)).isEqualTo("DB=infisical://DATABASE_PASSWORD")
         assertThat(root.rewriteText("DB_PASSWORD= # infisical://dev:DB_PASSWORD?connection=Main", defaults))
-            .isEqualTo("DB_PASSWORD= # infisical://DATABASE_PASSWORD?connection=Main")
+            .isEqualTo("DB_PASSWORD= # infisical://dev:DATABASE_PASSWORD?connection=Main")
         // other keys, other folders, other environments, other connections and scope imports stay
         assertThat(root.rewriteText("A=infisical://API_KEY\nB=infisical://other/DB_PASSWORD\nC=infisical://prod:DB_PASSWORD\nD=infisical://*\nE=infisical://DB_PASSWORD?connection=Other", defaults)).isNull()
         assertThat(root.rewriteText("X=infisical://DB_PASSWORD", defaults.copy(environment = "prod"))).isNull()

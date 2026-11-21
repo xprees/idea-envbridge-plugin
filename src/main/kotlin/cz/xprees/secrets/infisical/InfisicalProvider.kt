@@ -203,8 +203,14 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
     override fun copySecrets(source: SecretScope, secrets: List<SecretEntry>, destination: SecretScope): CopyResult {
         checkWritable("secrets")
         require(secrets.all { it.id.isNotEmpty() }) { "Secrets without an ID can't be copied; refresh and try again" }
-        val existing = auth.withToken { api.listSecrets(it, destination.copy(recursive = false)) }
-            .filter { it.origin != SecretOrigin.IMPORTED && it.path == destination.path }.map { it.key }.toSet()
+        // A folder that doesn't exist yet has nothing in it (duplicating creates it)
+        val existing = try {
+            auth.withToken { api.listSecrets(it, destination.copy(recursive = false)) }
+                .filter { it.origin != SecretOrigin.IMPORTED && it.path == destination.path }.map { it.key }.toSet()
+        } catch (e: SecretProviderException) {
+            if (e.kind != SecretProviderException.Kind.NOT_FOUND) throw e
+            emptySet()
+        }
         val failed = linkedMapOf<String, String>()
         secrets.filter { it.key in existing }.forEach { failed[it.key] = "already in ${destination.environment}:${destination.path}" }
         val copied = mutableListOf<String>()

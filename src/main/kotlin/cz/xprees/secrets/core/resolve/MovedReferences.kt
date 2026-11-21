@@ -47,8 +47,22 @@ class MovedReferences(
         }
         val grammar = SecretReference.grammarFor(reference.scheme)
         var moved = grammar.build(reference.scheme, destination.copy(recursive = false), renames[key] ?: key, defaults).copy(connectionId = reference.connectionId)
-        // Keep naming the project when the reference did (the grammar leaves out what the binding says)
-        if (reference.projectId != null && moved.projectId == null) moved = moved.copy(projectId = reference.projectId)
+        // Keep the reference's own form where the move doesn't change it (the grammar leaves out what the defaults say):
+        // an explicit environment stays explicit, one left out stays out (it follows the selection or the configuration),
+        // and a project named (perhaps by name, not ID) stays named as written
+        val sameEnvironment = destination.environment == source.environment
+        moved = when {
+            reference.environment != null -> moved.copy(environment = destination.environment)
+            sameEnvironment -> moved.copy(environment = null)
+            else -> moved
+        }
+        val projectKept = destination.projectId == source.projectId
+        moved = when {
+            projectKept && reference.projectId != null -> moved.copy(projectId = reference.projectId)
+            projectKept -> moved.copy(projectId = null)
+            reference.projectId != null && moved.projectId == null -> moved.copy(projectId = destination.projectId)
+            else -> moved
+        }
         return moved
     }
 
