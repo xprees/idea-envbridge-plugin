@@ -167,6 +167,19 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                     checkBox(SecretsBundle.message("settings.read.only")).bindSelected(app.state::readOnly)
                         .comment(SecretsBundle.message("settings.read.only.comment"))
                 }
+                row {
+                    checkBox(SecretsBundle.message("settings.envspec.decorators")).bindSelected(app.state::envSpecDecorators)
+                        .comment(SecretsBundle.message("settings.envspec.decorators.comment"))
+                }
+                row {
+                    checkBox(SecretsBundle.message("settings.envspec.layered")).bindSelected(app.state::layeredEnvFiles)
+                        .comment(SecretsBundle.message("settings.envspec.layered.comment"))
+                }
+                row {
+                    // The one switch the varlock compatibility work hooks into; no behaviour yet
+                    checkBox(SecretsBundle.message("settings.varlock")).bindSelected(app.state::varlockCompatibility)
+                        .comment(SecretsBundle.message("settings.varlock.comment"))
+                }
             }
             if (!project.isDefault) {
                 group(SecretsBundle.message("settings.overrides")) {

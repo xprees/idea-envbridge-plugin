@@ -1,0 +1,18 @@
+<html>
+<body>
+Reports problems with env-spec decorator comments in <code>.env</code> files (the format of varlock's <code>.env.schema</code>),
+for example:
+<pre><code># @required @sensitive @type=string(startsWith=sk-)
+SERVICE_X_API_KEY=</code></pre>
+<p>
+Reported: malformed decorator comments, unknown or misspelled decorators (with a fix), root decorators outside the header and
+variable decorators inside it, repeated decorators, <code>@required</code> together with <code>@optional</code> (and
+<code>@sensitive</code> with <code>@public</code>), invalid <code>@type</code> values, and literal values that don't match their
+<code>@type</code>. Only files that use decorators are checked.
+</p>
+<p>
+EnvBridge applies <code>@required</code>, <code>@optional</code>, <code>@sensitive</code>, <code>@public</code>,
+<code>@internal</code> and <code>@type</code> when it launches a run configuration that reads the file.
+</p>
+</body>
+</html>

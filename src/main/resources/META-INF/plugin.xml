@@ -76,6 +76,11 @@
         <localInspection shortName="InfisicalDotEnvPlaintextSecret" bundle="messages.SecretsBundle" key="inspection.dotenv.display.name"
                          groupKey="inspection.group.name" enabledByDefault="true" level="WEAK WARNING"
                          implementationClass="cz.xprees.secrets.editor.DotEnvPlaintextSecretInspection"/>
+        <!-- env-spec decorators (# @required, @sensitive, @type=…) in .env files -->
+        <localInspection shortName="EnvBridgeEnvSpecDecorators" bundle="messages.SecretsBundle" key="inspection.envspec.display.name"
+                         groupKey="inspection.group.name" enabledByDefault="true" level="WARNING"
+                         implementationClass="cz.xprees.secrets.editor.EnvSpecInspection"/>
+        <completion.contributor language="any" implementationClass="cz.xprees.secrets.editor.EnvSpecDecoratorCompletionContributor"/>
         <codeInsight.inlayActionHandler handlerId="cz.xprees.secrets.showSecret"
                                         implementationClass="cz.xprees.secrets.editor.ShowSecretInlayActionHandler"/>
         <intentionAction>

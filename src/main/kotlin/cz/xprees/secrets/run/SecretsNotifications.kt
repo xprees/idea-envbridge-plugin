@@ -39,9 +39,24 @@ object SecretsNotifications {
         notification.notify(project)
     }
 
-    fun launchWarnings(project: Project, configurationName: String, warnings: List<String>) {
+    /** A launch stopped because required keys (env-spec `@required`) have no value. Names only. */
+    fun requiredMissing(project: Project, configurationName: String, keys: List<String>, retry: () -> Unit) {
+        val notification = group().createNotification(
+            SecretsBundle.message("envspec.launch.required.title", configurationName),
+            escape(SecretsBundle.message("envspec.launch.required", keys.size, keys.joinToString(", "))),
+            NotificationType.ERROR,
+        )
+        notification.addAction(NotificationAction.createSimpleExpiring(SecretsBundle.message("action.retry"), retry))
+        notification.addAction(NotificationAction.createSimple(SecretsBundle.message("action.settings")) {
+            SecretsConfigurable.show(project)
+        })
+        notification.notify(project)
+    }
+
+    /** Non-fatal problems of a launch; [titleKey] picks the title (secrets left out by default). */
+    fun launchWarnings(project: Project, configurationName: String, warnings: List<String>, titleKey: String = "run.warnings.title") {
         group().createNotification(
-            SecretsBundle.message("run.warnings.title", configurationName),
+            SecretsBundle.message(titleKey, configurationName),
             warnings.joinToString("<br>") { escape(it) },
             NotificationType.WARNING,
         ).notify(project)
