@@ -43,6 +43,7 @@ cz.xprees.secrets
     auth       CredentialVault (PasswordSafe), TokenSet
     reference  SecretReference (`<scheme>://…` parser), reference resolution
     resolve    SecretResolver (launch-time, always fresh), SecretCache (memory-only TTL for UI/editor)
+    envspec    env-spec parser (.env files with # @decorators), validation, types, merged layers (no platform deps)
     settings   connections (application level), project binding (project level)
   infisical/   InfisicalProvider, InfisicalClient (REST), auth flows, project config (.infisical.yaml / .infisical.json)
   vault/       VaultProvider (HashiCorp Vault / OpenBao, KV v1 and v2)
@@ -364,6 +365,112 @@ Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`,
 - *Run with environment…*: run a configuration once against another environment without editing it.
 - Environment coverage and comparison: which environments define a key, and a keys-only diff of two environments.
 - Personal overrides: Infisical personal overrides are honoured (`includePersonalOverrides`).
+
+## env-spec decorators and layered .env files
+
+Ideas borrowed from [varlock](https://github.com/dmno-dev/varlock) (MIT; its `.env.schema` "env-spec" format, pinned to varlock
+1.25.0), implemented natively: they work in **any** `.env` file EnvBridge reads for a launch, without varlock and without the
+varlock compatibility mode. No varlock code is used; the grammar is reimplemented from its README and RFC.
+
+### Parser (`core/envspec`, pure Kotlin, no platform dependencies)
+
+`EnvSpecParser.parse(text): EnvSpecFile` never throws. It returns:
+
+- `header: EnvSpecHeader?` — the comment text at the top of the file ended by a divider (`# ---` / `# ===`), with the **root
+  decorators**; without a divider the top comment block belongs to the first item;
+- `items: List<EnvSpecItem>` — `key`, `value: EnvSpecValue?` (null for `KEY=`, i.e. undefined; `KEY=""` is an empty quoted
+  literal), `decorators` (those of the comment block directly above, then the trailing ones of `KEY=v # @required`), plain
+  `comments` (the description), `trailingComment` (e.g. an EnvBridge binding `infisical://…`), `line` and ranges;
+- `detachedDecorators` — decorator comments a blank line separates from the next item;
+- `diagnostics: List<EnvSpecDiagnostic>` — `code`, `severity`, `range` (offsets into the text) and `args` (never item values).
+
+Values are a small AST, never evaluated: `EnvSpecValue.Literal(value, quote)` (unquoted text or `'…'`, `"…"` with escapes,
+`` `…` ``, `"""…"""`, triple backticks), `Ref` (`$NAME`, `${NAME}`), `Array` (`[a, b]`) and `Call(name, args)` with
+`EnvSpecArg(key?, value)` (`string(startsWith=sk-)`, `enum(a, b)`, `regex("^x", i)`, `op(op://vault/item/field)`). A decorator
+(`EnvSpecDecorator`) is `@name` (= `@name=true`, `booleanValue`), `@name=value` (`value`) or the function style `@name(args)`
+(`args`, e.g. `@docs(https://…)`, `@import(./.env.other, pick=[K])`). Item values may be calls and references too, so the
+varlock mode can read `KEY=op(op://…)` from the same tree. Double-quoted values may span lines, as in `DotEnv`.
+
+On top of it, still pure:
+
+- `EnvSpecDecorators`: the decorators of varlock 1.25.0 (root, item, deprecated, plugin `@init*` / `@generate*`), `NATIVE` (those
+  EnvBridge acts on) and a misspelling `suggestion`.
+- `EnvSpecValidation.check(file)`: meaning checks for the editor (only in files that use decorators): unknown / misspelled,
+  misplaced (root ↔ item), repeated, `@required` + `@optional`, `@sensitive` + `@public`, invalid `@defaultRequired` /
+  `@defaultSensitive`, unknown `@type`, invalid type options, literal values that don't fit their type.
+- `EnvSpecType`: `string(startsWith=, endsWith=, matches=regex(…)|"…"|/…/, minLength=, maxLength=, isLength=)`, `enum(…)`,
+  `number(min=, max=, isInt=)`, `integer`, `port`, `url`, `boolean`, `email`, `uuid`; other varlock types (`ip`, `domain`,
+  `timeZone`, …) are accepted unchecked. `accepts(value)` and `expected` (for messages; no value).
+- `EnvSpecLayers.of(files, environment, defaults)`: per key `required`, `sensitive`, `internal`, `type`, merged over the files of a
+  launch (lowest precedence first). A later file's explicit decorator wins; without one, the root defaults of the **first file
+  that declares the key** apply (varlock applies defaults per file); a file without them uses `Defaults.NATIVE` (not required, not
+  sensitive; varlock's reading of unmarked files is `Defaults.VARLOCK`). `@defaultRequired=infer`: required when that file gives
+  the item a value. `@defaultSensitive=inferFromPrefix(PUBLIC_)`: keys with the prefix are public, others sensitive.
+  `@required=forEnv(prod)` and the like are evaluated against the launch's environment; other function values are ignored.
+  `check(environment)` → missing required keys, type mismatches (key + expected), sensitive values, internal keys.
+
+### At launch
+
+`EnvFileReferences.prepare(profile, configured, resolver, override)` (in the launch's background task) reads the files, and
+`LaunchChecks.apply` applies the decorators to the resolved environment before `SecretsProgramRunner` hands it on:
+
+| Decorator | Effect |
+|---|---|
+| `@required` (root `@defaultRequired`; `@optional` overrides) | A required key whose final value (files, resolved references and the configuration's own values) is empty or unset **stops the launch**: an error notification names the keys (*Retry*, *Settings*). Values are never shown |
+| `@sensitive` (root `@defaultSensitive`; `@public` overrides) | Its non-empty value joins the secret values masked in the console (`SECRET_VALUES` → `SecretMaskingService`, same 4-character minimum) |
+| `@internal` | Resolved and checked, but removed from the environment given to the process; a value set on the configuration itself is kept. An attached file declaring internal keys is read by EnvBridge and detached from the copy, so the IDE can't load them again |
+| `@type` | A value that doesn't fit is reported in a warning notification (*Some values of … don't match their @type*: `KEY: the value doesn't match @type=port`), never the value. **Not blocking**, deliberately: types are a hint and a wrong warning must not stop work; no setting |
+
+Which launches: those EnvBridge already took (references) and, new, configurations whose env files use a `NATIVE` decorator
+(`EnvFileReferences.usesDecorators`, checked in `canRun`; parsed files are cached by modification time). Projects whose files
+use none of them launch exactly as before. *Apply env-spec decorators of .env files at launch* (`envSpecDecorators`, on) turns
+it all off. The files: attached env files, the program's own `.env` / `.env.local` (Node.js tools) and a `.env.schema` next to
+either (its decorators only, unless layered). For the program's own files, EnvBridge only checks and masks: the program loads
+them itself, so `@internal` can't keep a key from it there.
+
+Not covered: terminals (they don't read `.env` files), varlock's `@import`, `@currentEnv`, function values and the other
+decorators (recognised, no effect).
+
+### Layered env files
+
+*Layered .env files* (`layeredEnvFiles`, **off** by default because it passes variables that weren't passed before): a launch reads
+`.env.schema` < `.env` < `.env.local` < `.env.[env]` < `.env.[env].local` (`EnvFileReferences.layerNames`) from the program's
+directory, and an attached `.env` brings the same siblings along. `[env]` is the launch's environment for the bound provider
+(`layerEnvironment`): *Run with environment…* > `ENVBRIDGE_ENVIRONMENT` on the configuration > the binding's environment (status
+bar, project file, default); a name that isn't a plain file name part (`../x`) is ignored. With layering EnvBridge passes **all**
+variables of these files (references resolved; the configuration's values still win) and detaches an attached file it expanded.
+From `.env.schema` only static values count (defaults): undefined items and function calls are not passed on.
+
+### Editor
+
+`EnvSpecInspection` (*env-spec decorators in .env files*, WARNING, text-based, every `.env*` file) shows the parser's
+diagnostics and `EnvSpecValidation` in files that use decorators, with *Change to @…* for misspellings.
+`EnvSpecDecoratorCompletionContributor` completes decorator names after `# @` and `KEY=v # @` (prefix match).
+
+### Settings
+
+| Setting (application, *General*) | Default | Meaning |
+|---|---|---|
+| `envSpecDecorators` | on | Launches act on decorators (only files using them are affected) |
+| `layeredEnvFiles` | off | Layered env files as above |
+| `varlockCompatibility` | off | **No behaviour yet.** The single switch the varlock compatibility mode hooks into |
+
+### varlock compatibility mode (planned, builds on this)
+
+The opt-in mode will reuse the same pieces rather than add a second parser: the AST already carries item function values
+(`op(…)`, `infisical(…)`, `vaultSecret(…)`) for EnvBridge to resolve through its providers, `EnvSpecLayers.Defaults.VARLOCK` gives
+varlock's reading of unmarked files, `EnvSpecDecorators` knows varlock's root decorators (`@currentEnv`, `@import`, `@init*`), and
+`.env.schema` is already the lowest layer. It switches on with `SecretsAppSettings.state.varlockCompatibility`. Never executed:
+`exec(…)` and varlock plugins (npm code).
+
+### Tests
+
+`EnvSpecParserTest` (grammar, header and divider rules, trailing and multi-line values, CRLF, the research examples, malformed
+input with diagnostics, a fuzz run), `EnvSpecSemanticsTest` (validation codes, types, merging, `infer`, `inferFromPrefix`,
+`forEnv`, the launch check), `EnvSpecPlatformTest` (a missing required key blocks a launch through the runner and names the keys;
+files without decorators aren't taken over; sensitive values masked, internal keys not passed, type warnings without values; the
+program's own `.env`; layering order with the status-bar environment, `ENVBRIDGE_ENVIRONMENT`, *Run with environment…* and an
+attached `.env`; schema `infer`; the inspection and its fix; completion; setting defaults).
 
 ## Second provider: HashiCorp Vault and OpenBao
 

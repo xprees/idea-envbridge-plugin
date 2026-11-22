@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Decorators in `.env` files.** Comments in the env-spec format of varlock's `.env.schema` work in every `.env` file a launch reads: `# @required` stops a launch whose value is empty or unset and names the variables (also the header's `@defaultRequired=true` / `infer`; `@optional` overrides), `# @sensitive` masks the value in the console like a secret, `# @internal` keeps a variable out of the process, and `# @type=port` (also `string(startsWith=…)`, `enum(…)`, `url`, `number`, `boolean`, `email`, `uuid`) reports values that don't fit when the launch starts. Projects whose `.env` files use none of these launch exactly as before; *Apply env-spec decorators of .env files at launch* in the settings turns it off. In the editor, decorator names are completed after `# @` and a new inspection reports malformed, unknown or misspelled decorators (with a fix), `@required` together with `@optional`, invalid types and plain values that don't match their type
+- **Layered `.env` files** (setting, off by default): launches read `.env.schema`, `.env`, `.env.local`, `.env.[environment]` and `.env.[environment].local`, later ones winning, where the environment is the one the launch uses (status bar, `ENVBRIDGE_ENVIRONMENT`, *Run with environment…*)
+- **varlock compatibility mode** setting (off; no effect yet), the place upcoming varlock support will use
 - **Vault/OpenBao: environments in paths.** A connection's new *Environment layout* says where the environment is in your
   paths, with `{project}` and `{env}`: `{project}/{env}` for `secret/myapp/dev/db`, `{env}/{project}`, `{env}` for a mount per
   application. Projects then are `secret/myapp` with the environments found in Vault, so the environment switcher, the

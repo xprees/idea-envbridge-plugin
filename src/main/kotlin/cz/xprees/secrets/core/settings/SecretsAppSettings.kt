@@ -41,6 +41,25 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
 
         /** Never write to secret managers from this IDE: creating and changing secrets and environments is turned off. */
         var readOnly by property(false)
+
+        /**
+         * Whether launches act on env-spec decorators in the `.env` files they read (`@required`, `@optional`, `@sensitive`,
+         * `@public`, `@internal`, `@type`, root `@defaultRequired` / `@defaultSensitive`; see `EnvSpecLayers`). Only files that
+         * use them are affected, so projects without decorators behave as before.
+         */
+        var envSpecDecorators by property(true)
+
+        /**
+         * Whether launches read layered env files: `.env.schema` < `.env` < `.env.local` < `.env.[env]` < `.env.[env].local`, where
+         * `[env]` is the launch's environment. Off: only the files read before (attached files, `.env` and `.env.local`).
+         */
+        var layeredEnvFiles by property(false)
+
+        /**
+         * varlock compatibility mode (off by default). No behaviour yet: the single switch later work hooks into (varlock's
+         * editor support and resolving its secret-manager functions such as `op(…)`, `infisical(…)`, `vaultSecret(…)`).
+         */
+        var varlockCompatibility by property(false)
     }
 
     class ConnectionState : BaseState() {

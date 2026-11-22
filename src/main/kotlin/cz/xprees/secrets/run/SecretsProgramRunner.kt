@@ -34,6 +34,10 @@ import java.util.WeakHashMap
  * otherwise. The configuration itself is never modified, so secret values can't end up in `workspace.xml` or `.run` files.
  * When anything can't be resolved, the launch is stopped (fail closed) and a notification offers to sign in, retry or run
  * without secrets this once.
+ *
+ * It also claims configurations whose env files use env-spec decorators ([EnvFileReferences.usesDecorators]) and applies
+ * them ([LaunchChecks]): a required key without a value stops the launch, sensitive values are masked in the console,
+ * `@internal` keys are left out of the process and values that don't fit their `@type` are reported (the launch goes on).
  */
 class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
@@ -43,7 +47,7 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         if (profile !is RunConfiguration || isResolvedCopy(profile)) return false
         val (_, envs) = EnvPatcher.find(profile) ?: return false
         val resolver = LaunchSecretResolver.getInstance(profile.project)
-        if (!resolver.hasReferences(envs) && !EnvFileReferences.hasReferences(profile, resolver)) return false
+        if (!resolver.hasReferences(envs) && !EnvFileReferences.hasReferences(profile, resolver) && !EnvFileReferences.usesDecorators(profile)) return false
         return delegate(executorId, profile) != null
     }
 
@@ -61,25 +65,38 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         val profile = environment.runProfile as RunConfiguration
         val (patcher, configured) = EnvPatcher.find(profile) ?: throw ExecutionException(SecretsBundle.message("run.unsupported"))
         val resolver = LaunchSecretResolver.getInstance(environment.project)
-        // Env files with references are read here and detached from the copy; values set on the configuration win
-        val (envs, useFiles) = EnvFileReferences.effective(profile, configured, resolver)
-        val plan = resolver.plan(envs)
-        fun copyWith(values: Map<String, String>): RunProfile =
-            patcher.copyWith(profile, values).also { if (useFiles) EnvFileReferences.detach(it) }
+        val override = environment.getUserData(ENVIRONMENT_OVERRIDE)
+        fun copyWith(values: Map<String, String>, detach: Boolean): RunProfile =
+            patcher.copyWith(profile, values).also { if (detach) EnvFileReferences.detach(it) }
 
         object : Task.Backgroundable(environment.project, SecretsBundle.message("run.fetching", profile.name), true) {
+            private var prepared: EnvFileReferences.Prepared? = null
+            private var plan: EnvResolution.Plan? = null
             private var result: EnvResolution.Result? = null
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                result = resolver.resolve(plan, environment = environment.getUserData(ENVIRONMENT_OVERRIDE))
+                // Env files with references (or layered ones) are read here and detached from the copy; values set on the
+                // configuration win
+                val files = EnvFileReferences.prepare(profile, configured, resolver, override).also { prepared = it }
+                val plan = resolver.plan(files.envs).also { plan = it }
+                result = resolver.resolve(plan, environment = override)
             }
 
             override fun onSuccess() {
                 val resolved = result ?: return
+                val files = prepared ?: return
+                val outcome = LaunchChecks.apply(files, resolved, configured)
+                if (outcome.missingRequired.isNotEmpty()) {
+                    SecretsNotifications.requiredMissing(environment.project, profile.name, outcome.missingRequired) { execute(environment) }
+                    return
+                }
                 if (!confirmGuardedEnvironments(environment, profile.name, resolved.environments)) return
                 if (resolved.warnings.isNotEmpty()) SecretsNotifications.launchWarnings(environment.project, profile.name, resolved.warnings)
-                launch(environment, copyWith(resolved.environment), resolved.secretValues, resolved.summary())
+                if (outcome.typeWarnings.isNotEmpty()) {
+                    SecretsNotifications.launchWarnings(environment.project, profile.name, outcome.typeWarnings, "envspec.launch.type.title")
+                }
+                launch(environment, copyWith(outcome.environment, files.detach), outcome.maskedValues, resolved.summary())
             }
 
             override fun onThrowable(error: Throwable) {
@@ -87,12 +104,14 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                     ?: SecretProviderException(SecretProviderException.Kind.SERVER, error.message ?: error.javaClass.simpleName, error)
                 if (failure.kind == SecretProviderException.Kind.CANCELLED) return
                 if (error !is SecretProviderException) LOG.warn("Resolving secrets for '${profile.name}' failed", error)
+                val explicit = plan?.explicit ?: resolver.plan(configured).explicit
+                val detach = plan != null && prepared?.detach == true
                 SecretsNotifications.launchFailed(
                     project = environment.project,
                     configurationName = profile.name,
                     failure = failure,
                     retry = { execute(environment) },
-                    runWithoutSecrets = { launch(environment, copyWith(plan.explicit), emptySet(), null) },
+                    runWithoutSecrets = { launch(environment, copyWith(explicit, detach), emptySet(), null) },
                 )
             }
 
