@@ -180,6 +180,27 @@ stops and says to write `infisical://prod:KEY`.
 | `appsettings*.json` | Settings an Infisical secret overrides at run time get a key icon and tooltip; the inspection *Plaintext secret in appsettings* reports values Infisical provides (quick fix: clear the value) |
 | Bound project only | With a project bound (and *Only use the bound project*, default on), the tool window shows only that project and references to other projects or connections are refused |
 
+## varlock compatibility mode
+
+For projects that use [varlock](https://varlock.dev)'s `.env.schema` (env-spec, varlock 1.25.0). Off by default: *Settings › Tools ›
+EnvBridge › varlock compatibility mode*. EnvBridge is not affiliated with varlock and never runs varlock, its plugins or the
+functions in your files.
+
+### In the editor
+
+Active in `.env.schema` files, in the `.env` files next to one (`.env`, `.env.local`, `.env.[environment]`, …), and in `.env` files
+that use decorators or function values; other `.env` files are left alone. It works on top of whatever handles `.env` files in
+your IDE (plain text, or a DotEnv plugin, whose colours and commenting stay).
+
+| Feature | What it does |
+|---|---|
+| Highlighting | Decorators, function calls, `$KEY` / `${KEY}` / `ref(KEY)` references, `@type` names and options, argument names, `true` / `false` / `infer` and `@import` paths; in files no plugin highlights (`.env.schema` as plain text) also keys and comments. Colours: *Settings › Editor › Color Scheme › varlock (EnvBridge)* |
+| Completion | Root decorators (`@currentEnv`, `@defaultRequired`, `@import(…)`, `@plugin(…)`, `@initOp(…)`, …) in the header and item decorators (`@required`, `@sensitive`, `@type=…`, …) at variables, each with its `(` or `=`; `@type=` names and their options (`string(startsWith=…)`); decorator values (`true`, `false`, `infer`, `forEnv(…)`); functions in values (`ref`, `concat`, `fallback`, `remap`, `forEnv`, `regex`, `exec`, `cache`, …, and the plugins' `op`, `infisical`, `vaultSecret`, …); the allowed values after `KEY=` when the variable's `@type` is an `enum(…)` (also declared in `.env.schema` when you edit `.env`); variable names of all the layered files after `$`, `${` and in `ref(…)` |
+| Checks | The inspection *varlock rules in .env files*: deprecated decorators with their replacement (`@redactLogs` → `@redact` has a fix), unknown functions (with a suggestion), `op()` / `infisical()` / `vaultSecret()` without their plugin in the header (`@plugin(…)` or `@initOp` / `@initInfisical` / `@initHcpVault`), `$KEY` and `ref(KEY)` to variables no layered file defines, `@currentEnv` naming a missing variable, `@import` of a missing file (unless `allowMissing=true`), and values that don't fit a `@type` declared in another file, such as an invalid enum value in `.env`. Root decorators on variables (and the other way round), `@required` with `@optional` and type mismatches in the same file are reported by *env-spec decorators in .env files* |
+| Documentation | Quick documentation (Ctrl+Q / F1) and hover on decorators and functions: what they do, with a link to varlock's documentation |
+| Navigation | Ctrl+click (Go to Declaration) on `$KEY`, `${KEY}` or `ref(KEY)` goes to the variable in `.env.schema` and the other layered files; on `@import(./.env.shared)` to that file |
+| Comments | Enter at the end of a `#` comment line continues the comment, so decorator blocks are written line by line |
+
 ## Signing in
 
 | Method | Use when | Setup |

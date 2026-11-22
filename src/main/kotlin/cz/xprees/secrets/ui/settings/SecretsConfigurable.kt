@@ -176,7 +176,7 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
                         .comment(SecretsBundle.message("settings.envspec.layered.comment"))
                 }
                 row {
-                    // The one switch the varlock compatibility work hooks into; no behaviour yet
+                    // The one switch of the varlock compatibility mode (editor support in editor/varlock)
                     checkBox(SecretsBundle.message("settings.varlock")).bindSelected(app.state::varlockCompatibility)
                         .comment(SecretsBundle.message("settings.varlock.comment"))
                 }

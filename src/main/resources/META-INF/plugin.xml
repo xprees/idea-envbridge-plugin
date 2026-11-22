@@ -81,6 +81,17 @@
                          groupKey="inspection.group.name" enabledByDefault="true" level="WARNING"
                          implementationClass="cz.xprees.secrets.editor.EnvSpecInspection"/>
         <completion.contributor language="any" implementationClass="cz.xprees.secrets.editor.EnvSpecDecoratorCompletionContributor"/>
+        <!-- varlock mode (varlockCompatibility, off by default): editor support for .env.schema and its layered .env files.
+             Text-based on top of whatever language the file has; no file type, so nothing competes with a DotEnv plugin -->
+        <completion.contributor language="any" implementationClass="cz.xprees.secrets.editor.varlock.VarlockCompletionContributor"/>
+        <externalAnnotator language="" implementationClass="cz.xprees.secrets.editor.varlock.VarlockAnnotator"/>
+        <localInspection shortName="EnvBridgeVarlock" bundle="messages.SecretsBundle" key="inspection.varlock.display.name"
+                         groupKey="inspection.group.name" enabledByDefault="true" level="WARNING"
+                         implementationClass="cz.xprees.secrets.editor.varlock.VarlockInspection"/>
+        <platform.backend.documentation.targetProvider implementation="cz.xprees.secrets.editor.varlock.VarlockDocumentationTargetProvider"/>
+        <gotoDeclarationHandler implementation="cz.xprees.secrets.editor.varlock.VarlockGotoDeclarationHandler"/>
+        <enterHandlerDelegate implementation="cz.xprees.secrets.editor.varlock.VarlockEnterHandler"/>
+        <colorSettingsPage implementation="cz.xprees.secrets.editor.varlock.VarlockColorSettingsPage"/>
         <codeInsight.inlayActionHandler handlerId="cz.xprees.secrets.showSecret"
                                         implementationClass="cz.xprees.secrets.editor.ShowSecretInlayActionHandler"/>
         <intentionAction>

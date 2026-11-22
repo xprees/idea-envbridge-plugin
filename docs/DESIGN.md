@@ -445,7 +445,8 @@ From `.env.schema` only static values count (defaults): undefined items and func
 
 `EnvSpecInspection` (*env-spec decorators in .env files*, WARNING, text-based, every `.env*` file) shows the parser's
 diagnostics and `EnvSpecValidation` in files that use decorators, with *Change to @…* for misspellings.
-`EnvSpecDecoratorCompletionContributor` completes decorator names after `# @` and `KEY=v # @` (prefix match).
+`EnvSpecDecoratorCompletionContributor` completes decorator names after `# @` and `KEY=v # @` (prefix match). The varlock mode adds
+more on top (see *Editor support* below).
 
 ### Settings
 
@@ -453,15 +454,49 @@ diagnostics and `EnvSpecValidation` in files that use decorators, with *Change t
 |---|---|---|
 | `envSpecDecorators` | on | Launches act on decorators (only files using them are affected) |
 | `layeredEnvFiles` | off | Layered env files as above |
-| `varlockCompatibility` | off | **No behaviour yet.** The single switch the varlock compatibility mode hooks into |
+| `varlockCompatibility` | off | The single switch of the varlock compatibility mode: editor support (below) |
 
-### varlock compatibility mode (planned, builds on this)
+### varlock compatibility mode (builds on this)
 
-The opt-in mode will reuse the same pieces rather than add a second parser: the AST already carries item function values
+The opt-in mode reuses the same pieces rather than add a second parser: the AST already carries item function values
 (`op(…)`, `infisical(…)`, `vaultSecret(…)`) for EnvBridge to resolve through its providers, `EnvSpecLayers.Defaults.VARLOCK` gives
 varlock's reading of unmarked files, `EnvSpecDecorators` knows varlock's root decorators (`@currentEnv`, `@import`, `@init*`), and
 `.env.schema` is already the lowest layer. It switches on with `SecretsAppSettings.state.varlockCompatibility`. Never executed:
 `exec(…)` and varlock plugins (npm code).
+
+#### Editor support (`editor/varlock`)
+
+Target: parity with varlock's VS Code extension (`varlock.env-spec-language`), for which no JetBrains equivalent exists. Everything
+is text-based on the env-spec parser's tree, so it works on whatever language a file has.
+
+**When it applies** (`VarlockMode.isActive`): the setting is on, the file has a `.env`-style name (`DotEnvLines.isDotEnv`: `.env`,
+`.env.*` including `.env.schema`, `*.env`), and varlock is actually used there: the file is `.env.schema`, a `.env.schema` lies in
+its directory (varlock layers the files of one directory), or the file itself uses decorators or function-call values. Other
+`.env` files get only the general env-spec features above, so turning the mode on doesn't change projects without varlock.
+
+**Coexisting with DotEnv plugins.** `.env` files may belong to the optional `ru.adelf.idea.dotenv` plugin (EnvBridge only adds
+inlay hints for its language, `secrets-lang-dotenv.xml`); `.env.schema` is plain text when nothing claims it. EnvBridge registers
+**no file type and no language**: highlighting is an `ExternalAnnotator` (`VarlockAnnotator`, `language=""`) adding
+`TEXT_ATTRIBUTES` annotations over the file's own highlighting (decorators, function names, `$KEY` / `${KEY}` / `ref(KEY)`,
+`@type` names, argument names, `true` / `false` / `infer`, strings in decorators, `@import` paths). Keys and comments are coloured
+only when the file is plain text, so a DotEnv plugin's colours stay. Colours (`VarlockHighlighting`, falling back to standard
+scheme keys) are configurable on *Editor › Color Scheme › varlock (EnvBridge)* (`VarlockColorSettingsPage`).
+
+**Context** (`VarlockContext`, cached until any PSI changes): the file plus the `.env*` files of its directory (`.env.schema`,
+`.env`, `.env.local`, others, `.local` last) and the files or directories the headers `@import` (one level, relative paths only).
+It gives each key's definitions, a key's `@type` (the file's own, else the highest layer declaring one), and the plugins the
+headers load (`@initOp` / `@initInfisical` / `@initHcpVault`, or `@plugin(…)` whose package names 1Password, Infisical, Vault or
+OpenBao; any other `@plugin` or `@init…` marks "unknown plugins").
+
+| Feature | Implementation |
+|---|---|
+| Completion | `EnvSpecDecoratorCompletionContributor` offers root decorators (with the plugins' `@init…`) in the header, item decorators below a divider or an item and after a value, both at the top of a file without header; deprecated ones are left out; `()` or `=` is inserted by how varlock writes the decorator. `VarlockCompletionContributor`: `@type=` names, type options (`string(startsWith=…)`, `number(min=…)`, …), decorator values (`true` / `false` / `infer` / `inferFromPrefix()`, functions after switches such as `@required=`), `$KEY` after `@currentEnv=`, function names in values and arguments (`VarlockCatalog.FUNCTIONS`: core and plugin, `()` inserted), enum values (and `true` / `false` for `boolean`) after `KEY=` from the key's `@type` in any layer, layered keys after `$`, `${` and in `ref(…)` |
+| Checks | `VarlockInspection` (*varlock rules in .env files*, WARNING): deprecated decorators (`@envFlag` → `@currentEnv`, `@redactLogs` → `@redact` with a rename fix, `@generateTypes` → `@generateTsTypes`, `@docsUrl` → `@docs`) and bare `/regex/` options, unknown functions (with a suggestion; silent when a header loads an unknown plugin, whose functions can't be known), plugin functions whose plugin no header loads, references to keys no layer defines (`VARLOCK_*` excepted), `@currentEnv` naming a missing key, `@import` of a missing file unless `allowMissing=true`, plain values that don't fit a `@type` of another layer (an invalid enum value in `.env`). Misplaced root / item decorators, `@required` + `@optional`, invalid types and same-file type mismatches stay with `EnvSpecInspection`, so nothing is reported twice |
+| Documentation | `VarlockDocumentationTargetProvider` (`DocumentationTargetProvider`, offset-based): decorators and functions, a short text from the bundle (`varlock.doc.*`) and a link to varlock's reference pages (anchors not checked against the live site) |
+| Navigation | `VarlockGotoDeclarationHandler`: `$KEY`, `${KEY}`, `ref(KEY)`, `@currentEnv=$KEY` to every definition in the layers (`.env.schema` first; a `FakePsiElement` navigating to the key's offset), `@import(./x)` to the file or directory |
+| Comments | `VarlockEnterHandler`: Enter at the end of a `#` comment line continues it with `# ` (same indentation); not after a divider or an empty `#`, nor when the language already continued it. Comment toggling is left to the file's language (a DotEnv plugin has it; plain text has none) |
+
+Never evaluated in the editor: functions are only matched by name, `exec(…)` is never run, plugins are never loaded.
 
 ### Tests
 
@@ -470,7 +505,11 @@ input with diagnostics, a fuzz run), `EnvSpecSemanticsTest` (validation codes, t
 `forEnv`, the launch check), `EnvSpecPlatformTest` (a missing required key blocks a launch through the runner and names the keys;
 files without decorators aren't taken over; sensitive values masked, internal keys not passed, type warnings without values; the
 program's own `.env`; layering order with the status-bar environment, `ENVBRIDGE_ENVIRONMENT`, *Run with environment…* and an
-attached `.env`; schema `infer`; the inspection and its fix; completion; setting defaults).
+attached `.env`; schema `infer`; the inspection and its fix; completion; setting defaults), `VarlockEditorPlatformTest` (varlock
+mode: highlighting on a plain-text `.env.schema`, decorator completion by position and its insertions, types, options, values,
+enum values from another layer, functions and layered keys, every varlock check and the rename fix, unknown plugins, documentation
+texts and links, navigation to keys across layers and to imports, Enter, when the mode applies, and nothing varlock-specific with
+the setting off).
 
 ## Second provider: HashiCorp Vault and OpenBao
 
