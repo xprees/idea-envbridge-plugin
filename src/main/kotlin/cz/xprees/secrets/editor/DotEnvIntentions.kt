@@ -21,6 +21,11 @@ import cz.xprees.secrets.core.resolve.KeysIndex
 import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
+import cz.xprees.secrets.core.envspec.EnvSpecParser
+import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.core.varlock.DEFAULT_INSTANCE
+import cz.xprees.secrets.core.varlock.VarlockProvider
+import cz.xprees.secrets.core.varlock.VarlockSecrets
 import cz.xprees.secrets.ui.secrets.NewSecretDialog
 
 /** The `.env` line under the caret, if any. */
@@ -33,12 +38,34 @@ private fun lineAtCaret(editor: Editor?, file: PsiFile?): DotEnvLines.Line? {
 }
 
 private fun isPlaintext(project: Project, line: DotEnvLines.Line): Boolean =
-    line.value.isNotBlank() && !LaunchSecretResolver.getInstance(project).hasReferences(mapOf(line.name to line.value))
+    line.value.isNotBlank() && !LaunchSecretResolver.getInstance(project).hasReferences(mapOf(line.name to line.value)) &&
+        !(SecretsAppSettings.getInstance().state.varlockCompatibility && isVarlockValue(line.value))
 
+/** A varlock function value (`infisical()`, `concat(…)`) or interpolation (`${OTHER}`): not a plaintext secret. */
+private fun isVarlockValue(value: String): Boolean = VARLOCK_CALL.matches(value.trim()) || "\${" in value
+
+private val VARLOCK_CALL = Regex("""[A-Za-z][A-Za-z0-9_]*\(.*\)""", RegexOption.DOT_MATCHES_ALL)
+
+/**
+ * Binds the line [name] to [reference]: with a binding comment (`KEY= # infisical://KEY`), or, in the varlock mode when the value
+ * is cleared, with the varlock function that reads it (`KEY=infisical()`, see [varlockCall]).
+ */
 private fun rebind(project: Project, editor: Editor, name: String, reference: String, keepValue: Boolean) {
+    val call = if (!keepValue && SecretsAppSettings.getInstance().state.varlockCompatibility) varlockCall(editor.document.text, name, reference) else null
     WriteCommandAction.runWriteCommandAction(project, SecretsBundle.message("dotenv.bind.intention.family"), null, {
-        DotEnvLines.bind(editor.document, name, reference, keepValue)
+        if (call != null) DotEnvLines.setValue(editor.document, name, call) else DotEnvLines.bind(editor.document, name, reference, keepValue)
     })
+}
+
+/**
+ * The varlock function for [reference] as the value of [name] in the `.env` file [text], relative to the file's default
+ * `@init…` instance (its project, environment, path prefix), or null when varlock can't name it that way.
+ */
+internal fun varlockCall(text: String, name: String, reference: String): String? {
+    val parsed = runCatching { SecretReference.parse(reference, SecretProvider.all().map { it.referenceScheme }) }.getOrNull() ?: return null
+    val provider = VarlockProvider.entries.firstOrNull { it.scheme.equals(parsed.scheme, ignoreCase = true) } ?: return null
+    val init = VarlockSecrets.staticInits(EnvSpecParser.parse(text))[provider to DEFAULT_INSTANCE].orEmpty()
+    return VarlockSecrets.call(parsed, name, init)
 }
 
 /**

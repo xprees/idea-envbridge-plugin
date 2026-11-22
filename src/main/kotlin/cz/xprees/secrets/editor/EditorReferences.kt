@@ -9,13 +9,29 @@ import com.intellij.psi.util.CachedValuesManager
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.resolve.EnvReferences
 import cz.xprees.secrets.core.resolve.KeysIndex
+import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.core.varlock.VarlockSecrets
 
 /** Shared, cached scan of a file for variable names and secret references (once per file modification). */
 object EditorReferences {
     fun schemes(): List<String> = SecretProvider.all().map { it.referenceScheme }
 
+    /**
+     * The variable names and references of [file]; in a `.env` file in the varlock mode also its varlock secret functions
+     * (`infisical()`, `vaultSecret("secret/app#key")`, …) as the references they read ([VarlockSecrets.find]), so hints, hover
+     * and inspections work on them too.
+     */
     fun of(file: PsiFile): List<EnvReferences.Found> = CachedValuesManager.getCachedValue(file) {
-        CachedValueProvider.Result.create(EnvReferences.find(file.viewProvider.contents, schemes()), file)
+        val text = file.viewProvider.contents
+        val found = EnvReferences.find(text, schemes())
+        val varlock = if (SecretsAppSettings.getInstance().state.varlockCompatibility && DotEnvLines.isDotEnv(file.name) && text.length <= EnvReferences.MAX_TEXT_LENGTH) {
+            VarlockSecrets.find(text.toString()).mapNotNull { call ->
+                call.reference.key?.let { EnvReferences.Found(it, call.start, call.end, EnvReferences.Kind.REFERENCE, call.reference) }
+            }
+        } else {
+            emptyList()
+        }
+        CachedValueProvider.Result.create((found + varlock).sortedBy { it.start }, file)
     }
 
     /** What the editor knows about [found]: the key's info in the bound environment and the environments that define it. */
