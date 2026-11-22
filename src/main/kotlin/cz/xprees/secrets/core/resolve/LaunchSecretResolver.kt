@@ -44,16 +44,22 @@ class LaunchSecretResolver(private val project: Project) {
             ?: throw SecretProviderException(Kind.CONFIGURATION, "Unknown reference scheme ${reference.scheme}://")
         fun bindingOf(reference: SecretReference) = bindings.binding(providerOf(reference), environmentOverride, reference.connectionId)
         checkBoundProject(plan, bindings, ::providerOf)
+        fun defaultsOf(reference: SecretReference): SecretReference.Defaults {
+            val binding = bindingOf(reference)
+            return if (reference.projectId != null) {
+                SecretReference.Defaults(reference.projectId, binding.environment, binding.path)
+            } else {
+                binding.defaults()
+            }
+        }
+        // Providers that read several secrets per request (AWS BatchGetSecretValue) get every scope of the launch up front
+        plan.allReferences
+            .mapNotNull { reference -> runCatching { bindingOf(reference).connection to reference.scope(defaultsOf(reference)) }.getOrNull() }
+            .groupBy({ it.first }, { it.second })
+            .forEach { (connection, scopes) -> service.prefetch(connection, scopes, fresh) }
         val result = EnvResolution.resolve(
             plan,
-            defaults = { reference ->
-                val binding = bindingOf(reference)
-                if (reference.projectId != null) {
-                    SecretReference.Defaults(reference.projectId, binding.environment, binding.path)
-                } else {
-                    binding.defaults()
-                }
-            },
+            defaults = ::defaultsOf,
             fetch = { reference, scope -> service.secrets(bindingOf(reference).connection, scope, fresh) },
             suggest = { reference, scope -> suggestion(reference, scope, bindingOf(reference).connection) },
         )

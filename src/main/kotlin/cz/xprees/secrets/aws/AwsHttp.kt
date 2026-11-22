@@ -138,9 +138,16 @@ class AwsHttp(val endpoint: String, val region: String, private val clock: Clock
         }.getOrNull().orEmpty().trim().let { if (it.length > MAX_DETAIL) it.take(MAX_DETAIL) + "…" else it }
 
         /** Turns an error response into the matching [SecretProviderException]; only AWS's error code and message are shown. */
-        fun failure(response: Response, what: String): SecretProviderException {
-            val code = errorCode(response)
-            val message = errorMessage(response)
+        fun failure(response: Response, what: String): SecretProviderException =
+            failure(errorCode(response), errorMessage(response), response.status, what)
+
+        /**
+         * The [SecretProviderException] for AWS's error [code] and [message] with HTTP [status] (also used for the per-secret
+         * errors of `BatchGetSecretValue`).
+         */
+        fun failure(code: String?, rawMessage: String, status: Int, what: String): SecretProviderException {
+            val message = rawMessage.trim().let { if (it.length > MAX_DETAIL) it.take(MAX_DETAIL) + "…" else it }
+            val response = Response(status, "")
             val detail = listOfNotNull(code, message.ifEmpty { null }).joinToString(": ").let { if (it.isEmpty()) "" else " ($it)" }
             return when {
                 code in AUTH_ERRORS -> {

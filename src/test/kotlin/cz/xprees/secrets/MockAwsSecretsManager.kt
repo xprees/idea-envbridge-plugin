@@ -23,7 +23,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  * `Authorization` header must be well-formed, name a known access key, the region [region] and the service `secretsmanager`,
  * and its signature must equal the one computed from the request with that key's secret (a wrong one is
  * `InvalidSignatureException`). Implements `ListSecrets` (pages, name filter), `GetSecretValue`, `CreateSecret`,
- * `PutSecretValue` and `UpdateSecretVersionStage` with AWS's staging-label rules (the `RemoveFromVersionId` check included).
+ * `PutSecretValue` and `UpdateSecretVersionStage` with AWS's staging-label rules (the `RemoveFromVersionId` check included),
+ * `BatchGetSecretValue` (values and per-secret `Errors`), `DescribeSecret`, `UpdateSecret` (description; a value makes a new
+ * version) and `RotateSecret` (only for secrets with rotation on; it writes a new current version, as a rotation function would).
+ * ListSecrets returns each secret's description, tags, rotation fields, `LastChangedDate` and `SecretVersionsToStages`.
  */
 class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
     data class Request(val action: String, val body: JsonObject, val authorization: String?, val securityToken: String?, val rawQuery: String?, val rawBody: String)
@@ -32,7 +35,20 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
 
     /** Versions of one secret, oldest first. */
     class Secret(val versions: MutableMap<String, Version> = java.util.Collections.synchronizedMap(linkedMapOf())) {
+        @Volatile var description: String? = null
+        @Volatile var tags: Map<String, String> = emptyMap()
+        @Volatile var rotationEnabled = false
+        @Volatile var lastRotated: Long? = null
+        @Volatile var nextRotation: Long? = null
+
+        /** Epoch seconds of the last change of any kind. */
+        @Volatile var lastChanged: Long = System.currentTimeMillis() / 1000
+
         fun current(): Pair<String, Version> = synchronized(versions) { versions.entries.first { "AWSCURRENT" in it.value.stages }.toPair() }
+
+        fun touch() {
+            lastChanged = maxOf(lastChanged + 1, System.currentTimeMillis() / 1000)
+        }
     }
 
     val requests = CopyOnWriteArrayList<Request>()
@@ -47,6 +63,10 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
 
     /** "Action" or "Action:secret name" refused with AccessDeniedException. */
     val denied: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Whether ListSecrets leaves out `SecretVersionsToStages` (change detection then uses `LastChangedDate`). */
+    @Volatile
+    var listWithoutVersions = false
 
     /** Answer the next request with ThrottlingException. */
     @Volatile
@@ -105,7 +125,7 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
                 val max = body.get("MaxResults")?.asInt ?: 100
                 val start = body.get("NextToken")?.asString?.toInt() ?: 0
                 val page = all.drop(start).take(max)
-                val list = JsonArray().apply { page.forEach { add(JsonObject().apply { addProperty("Name", it); addProperty("ARN", arn(it)) }) } }
+                val list = JsonArray().apply { page.forEach { add(listEntry(it, secrets.getValue(it), "SecretVersionsToStages")) } }
                 respond(exchange, JsonObject().apply {
                     add("SecretList", list)
                     if (start + max < all.size) addProperty("NextToken", (start + max).toString())
@@ -125,10 +145,64 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
                 })
             }
 
+            "BatchGetSecretValue" -> {
+                if (body.has("Filters")) return error(exchange, "InvalidParameterException", "The mock only takes SecretIdList")
+                val ids = body.getAsJsonArray("SecretIdList")?.map { it.asString }.orEmpty()
+                if (ids.isEmpty() || ids.size > 20) return error(exchange, "InvalidParameterException", "SecretIdList must have 1 to 20 entries")
+                val values = JsonArray()
+                val errors = JsonArray()
+                for (id in ids) {
+                    val secret = secrets[id]
+                    when {
+                        "GetSecretValue:$id" in denied || "GetSecretValue" in denied -> errors.add(errorEntry(id, "AccessDeniedException", "not authorized to perform: secretsmanager:GetSecretValue on resource: $id"))
+                        secret == null -> errors.add(errorEntry(id, "ResourceNotFoundException", "Secrets Manager can't find the specified secret."))
+                        else -> values.add(valueEntry(id, secret))
+                    }
+                }
+                respond(exchange, JsonObject().apply { add("SecretValues", values); add("Errors", errors) })
+            }
+
+            "DescribeSecret" -> {
+                val secret = secrets[name] ?: return notFound(exchange)
+                respond(exchange, listEntry(name!!, secret, "VersionIdsToStages"))
+            }
+
+            "UpdateSecret" -> {
+                val secret = secrets[name] ?: return notFound(exchange)
+                // As LocalStack: the idempotency token is required (the AWS SDKs always send one); it names a version only with a value
+                if (!body.has("ClientRequestToken")) return error(exchange, "InvalidRequestException", "You must provide a ClientRequestToken value. We recommend a UUID-type value.")
+                body.get("Description")?.let { secret.description = it.asString }
+                body.get("SecretString")?.let { value ->
+                    val token = body.get("ClientRequestToken")?.asString ?: UUID.randomUUID().toString()
+                    synchronized(secret.versions) {
+                        secret.versions[token] = Version(value.asString)
+                        attach(secret, "AWSCURRENT", token)
+                    }
+                }
+                secret.touch()
+                respond(exchange, JsonObject().apply { addProperty("Name", name); addProperty("ARN", arn(name!!)) })
+            }
+
+            "RotateSecret" -> {
+                val secret = secrets[name] ?: return notFound(exchange)
+                if (!secret.rotationEnabled) return error(exchange, "InvalidRequestException", "A rotation function isn't configured for $name.")
+                val token = body.get("ClientRequestToken")?.asString ?: UUID.randomUUID().toString()
+                synchronized(secret.versions) {
+                    secret.versions[token] = Version(rotatedValue ?: secret.current().second.string)
+                    attach(secret, "AWSCURRENT", token)
+                }
+                secret.lastRotated = System.currentTimeMillis() / 1000
+                secret.touch()
+                respond(exchange, JsonObject().apply { addProperty("Name", name); addProperty("ARN", arn(name!!)); addProperty("VersionId", token) })
+            }
+
             "CreateSecret" -> {
                 val token = body.get("ClientRequestToken")?.asString ?: return error(exchange, "InvalidRequestException", "You must provide a ClientRequestToken value.")
                 if (secrets.containsKey(name)) return error(exchange, "ResourceExistsException", "The operation failed because the secret $name already exists.")
-                secrets[name!!] = Secret().apply { versions[token] = Version(body.get("SecretString")?.asString).apply { stages += "AWSCURRENT" } }
+                secrets[name!!] = Secret().apply {
+                    versions[token] = Version(body.get("SecretString")?.asString).apply { stages += "AWSCURRENT" }
+                    description = body.get("Description")?.asString
+                }
                 respond(exchange, JsonObject().apply { addProperty("Name", name); addProperty("VersionId", token); addProperty("ARN", arn(name)) })
             }
 
@@ -141,6 +215,7 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
                     secret.versions[token] = version
                     stages.forEach { attach(secret, it, token) }
                 }
+                secret.touch()
                 respond(exchange, JsonObject().apply {
                     addProperty("Name", name)
                     addProperty("VersionId", token)
@@ -160,6 +235,7 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
                         secret.versions[other] = Version(value)
                         attach(secret, "AWSCURRENT", other)
                     }
+                    secret.touch()
                 }
                 synchronized(secret.versions) {
                     val holder = secret.versions.entries.firstOrNull { stage in it.value.stages }?.key
@@ -176,6 +252,7 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
                         secret.versions.values.forEach { it.stages.remove("AWSPREVIOUS") }
                         secret.versions[removeFrom]?.stages?.add("AWSPREVIOUS")
                     }
+                    secret.touch()
                 }
                 respond(exchange, JsonObject().apply { addProperty("Name", name) })
             }
@@ -227,6 +304,55 @@ class MockAwsSecretsManager(val region: String = "eu-west-1") : AutoCloseable {
             return "InvalidSignatureException" to "The request signature we calculated does not match the signature you provided."
         }
         return null
+    }
+
+    /** The value a rotation writes (null: the current value again, as a new version). */
+    @Volatile
+    var rotatedValue: String? = null
+
+    /** Changes [name]'s value "from elsewhere" (a new current version), as another user or a rotation would. */
+    fun write(name: String, string: String) {
+        val secret = secrets.getValue(name)
+        synchronized(secret.versions) {
+            val id = UUID.randomUUID().toString()
+            secret.versions[id] = Version(string)
+            attach(secret, "AWSCURRENT", id)
+        }
+        secret.touch()
+    }
+
+    private fun listEntry(name: String, secret: Secret, versionsField: String) = JsonObject().apply {
+        addProperty("Name", name)
+        addProperty("ARN", arn(name))
+        secret.description?.let { addProperty("Description", it) }
+        if (secret.tags.isNotEmpty()) add("Tags", JsonArray().apply { secret.tags.forEach { (k, v) -> add(JsonObject().apply { addProperty("Key", k); addProperty("Value", v) }) } })
+        if (secret.rotationEnabled) addProperty("RotationEnabled", true)
+        secret.lastRotated?.let { addProperty("LastRotatedDate", it) }
+        secret.nextRotation?.let { addProperty("NextRotationDate", it) }
+        addProperty("LastChangedDate", secret.lastChanged)
+        if (!listWithoutVersions || versionsField != "SecretVersionsToStages") {
+            add(versionsField, JsonObject().apply {
+                synchronized(secret.versions) {
+                    secret.versions.forEach { (id, v) -> if (v.stages.isNotEmpty()) add(id, JsonArray().apply { v.stages.forEach(::add) }) }
+                }
+            })
+        }
+    }
+
+    private fun valueEntry(name: String, secret: Secret) = JsonObject().apply {
+        val (id, version) = secret.current()
+        addProperty("ARN", arn(name))
+        addProperty("Name", name)
+        addProperty("VersionId", id)
+        version.string?.let { addProperty("SecretString", it) }
+        version.binary?.let { addProperty("SecretBinary", Base64.getEncoder().encodeToString(it)) }
+        add("VersionStages", JsonArray().apply { version.stages.forEach(::add) })
+    }
+
+    private fun errorEntry(id: String, code: String, message: String) = JsonObject().apply {
+        addProperty("SecretId", id)
+        addProperty("ErrorCode", code)
+        addProperty("Message", message)
     }
 
     private fun arn(name: String) = "arn:aws:secretsmanager:$region:123456789012:secret:$name-AbCdEf"

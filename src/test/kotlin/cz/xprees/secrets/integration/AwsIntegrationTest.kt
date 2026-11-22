@@ -24,9 +24,12 @@ import java.util.UUID
 
 /**
  * The AWS Secrets Manager provider against LocalStack (`scripts/integration/start.sh` starts it with Secrets Manager only;
- * `setup.sh` seeds `envbridge-it/dev`, `envbridge-it/prod` and the plain-string `envbridge-it-plain/TOKEN`): listing, reading,
- * launches resolving `aws-sm://` references, and writes, including the check-and-set against LocalStack's implementation of
- * `UpdateSecretVersionStage`. Writes go to secrets under a fresh `envbridge-rw/run-…` prefix.
+ * `setup.sh` seeds `envbridge-it/dev` (with a description and tags), `envbridge-it/prod`, the plain-string
+ * `envbridge-it-plain/TOKEN` and the environment-first `dev/envbridge-it-ef`, `prod/envbridge-it-ef`): listing, reading,
+ * launches resolving `aws-sm://` references, name layouts, `BatchGetSecretValue`, descriptions and tags, and writes, including
+ * the check-and-set against LocalStack's implementation of `UpdateSecretVersionStage`. Writes go to secrets under a fresh
+ * `envbridge-rw/run-…` prefix. LocalStack doesn't enforce IAM, so the fallback for a denied `BatchGetSecretValue` is covered by
+ * the mock only; `RotateSecret` needs a rotation Lambda, so only its refusal is checked here.
  */
 class AwsIntegrationTest : BasePlatformTestCase() {
     private val endpoint get() = IntegrationEnv.require("ENVBRIDGE_IT_AWS_ENDPOINT")
@@ -46,14 +49,14 @@ class AwsIntegrationTest : BasePlatformTestCase() {
 
     private fun keys() = AwsKeys(IntegrationEnv.require("ENVBRIDGE_IT_AWS_ACCESS_KEY_ID"), IntegrationEnv.require("ENVBRIDGE_IT_AWS_SECRET_ACCESS_KEY"))
 
-    private fun connection(): SecretConnection {
+    private fun connection(options: Map<String, String> = emptyMap()): SecretConnection {
         val connection = SecretConnection(
             id = "it-aws-${System.nanoTime()}",
             providerId = AwsSecretsManagerProvider.ID,
             name = "LocalStack ${connections.size}",
             baseUrl = endpoint,
             authMethodId = AwsAuthMethods.ACCESS_KEY,
-            options = mapOf(AwsAuthMethods.OPTION_REGION to region),
+            options = mapOf(AwsAuthMethods.OPTION_REGION to region) + options,
         )
         val keys = keys()
         CredentialVault.set(connection.id, CredentialVault.secretOptionSlot(AwsAuthMethods.OPTION_ACCESS_KEY_ID), keys.accessKeyId)
@@ -179,5 +182,78 @@ class AwsIntegrationTest : BasePlatformTestCase() {
         val scope = SecretScope(name.substringBeforeLast('/'), "dev")
         SecretsService.getInstance().updateSecret(connection, scope, "A", SecretValue("final"))
         assertThat(fields(name).get("A").asString).isEqualTo("final")
+    }
+
+    fun `test an environment-first name layout lists, resolves and creates by the template`() {
+        val connection = connection(mapOf(AwsAuthMethods.OPTION_NAME_LAYOUT to "{env}/{project}"))
+        val client = client(connection)
+        val ef = client.listProjects().first { it.id == "envbridge-it-ef" }
+        assertThat(ef.environments.map { it.slug }).containsExactly("dev", "prod")
+        assertThat(client.listSecrets(SecretScope("envbridge-it-ef", "prod")).single().value.reveal()).isEqualTo("ef-prod-token")
+
+        // the same reference text resolves under both layouts: it names project and environment, not the raw name
+        ProjectSecretsSettings.getInstance(project).update {
+            connectionId = connection.id
+            projectId = "envbridge-it-ef"
+            environment = "dev"
+            path = null
+            useProjectFile = false
+            restrictToBoundProject = false
+        }
+        val resolver = LaunchSecretResolver.getInstance(project)
+        assertThat(resolver.resolve(resolver.plan(mapOf("T" to "aws-sm://envbridge-it-ef/prod#TOKEN", "S" to "aws-sm://#TOKEN"))).environment)
+            .containsEntry("T", "ef-prod-token").containsEntry("S", "ef-dev-token")
+
+        val name = "envbridge-rw-ef-${System.nanoTime()}"
+        SecretsService.getInstance().createEnvironment(connection, name, "qa", "qa")
+        SecretsService.getInstance().createSecret(connection, SecretScope(name, "qa"), "K", SecretValue("v"))
+        assertThat(fields("qa/$name").get("K").asString).isEqualTo("v")
+    }
+
+    fun `test BatchGetSecretValue reads several secrets and reports missing ones per secret`() {
+        val batch = api.batchGetSecretValue(keys(), listOf("envbridge-it/dev", "envbridge-it/prod", "envbridge-it/missing"))
+        assertThat(batch.values.keys).containsExactlyInAnyOrder("envbridge-it/dev", "envbridge-it/prod")
+        assertThat(batch.values.getValue("envbridge-it/prod").string).isEqualTo("""{"DB_PASSWORD":"prod-db-pass"}""")
+        assertThat(batch.values.getValue("envbridge-it/dev").versionId).isNotBlank()
+        assertThat(batch.errors.getValue("envbridge-it/missing").kind).isEqualTo(Kind.NOT_FOUND)
+
+        // a launch with several secrets reads them ahead in one batch and resolves every one
+        val connection = connection()
+        val service = SecretsService.getInstance()
+        val prefetched = service.client(connection)
+        prefetched.prefetch(listOf(SecretScope("envbridge-it", "dev"), SecretScope("envbridge-it", "prod")))
+        assertThat(prefetched.listSecrets(SecretScope("envbridge-it", "prod")).single().value.reveal()).isEqualTo("prod-db-pass")
+
+        // browsing after a listing: values whose version the listing shows unchanged come from memory
+        prefetched.listProjects()
+        val dev = prefetched.listSecrets(SecretScope("envbridge-it", "dev"), fresh = false).associate { it.key to it.value.reveal() }
+        assertThat(dev).containsEntry("DB_PASSWORD", "dev-db-pass")
+    }
+
+    fun `test descriptions, tags and rotation come from ListSecrets, and a comment edit changes the description without a new version`() {
+        val connection = connection()
+        val client = client(connection)
+        val dev = client.listProjects().first { it.id == "envbridge-it" }.environments.first { it.slug == "dev" }
+        assertThat(dev.metadata!!.description).isEqualTo("EnvBridge integration test, development")
+        assertThat(dev.metadata!!.tags).containsEntry("team", "envbridge").containsEntry("tier", "dev")
+        assertThat(dev.metadata!!.rotation).isNull()
+        assertThat(client.listSecrets(SecretScope("envbridge-it", "dev")).map { it.comment }).containsOnly("EnvBridge integration test, development")
+
+        val prefix = "envbridge-rw/desc-${System.nanoTime()}"
+        val service = SecretsService.getInstance()
+        service.createSecret(connection, SecretScope(prefix, "dev"), "A", SecretValue("1"), "First description")
+        assertThat(api.describeSecret(keys(), "$prefix/dev").description).isEqualTo("First description")
+        val before = current("$prefix/dev").versionId
+        service.updateSecret(connection, SecretScope(prefix, "dev"), "A", SecretValue("1"), comment = "Second description")
+        val described = api.describeSecret(keys(), "$prefix/dev")
+        assertThat(described.description).isEqualTo("Second description")
+        assertThat(described.currentVersion).isEqualTo(before)
+        assertThat(current("$prefix/dev").versionId).isEqualTo(before)
+
+        // rotation isn't configured (LocalStack would need a rotation Lambda): refused before calling AWS, and by AWS itself
+        assertThatThrownBy { service.rotateSecret(connection, SecretScope("envbridge-it", "prod")) }.hasMessageContaining("Rotation isn't turned on")
+        val refused = runCatching { api.rotateSecret(keys(), "envbridge-it/prod") }.exceptionOrNull() as SecretProviderException
+        assertThat(refused.kind).isEqualTo(Kind.CONFIGURATION)
+        assertThat(refused.message).contains("InvalidRequestException")
     }
 }

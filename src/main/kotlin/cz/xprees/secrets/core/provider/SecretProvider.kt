@@ -90,6 +90,18 @@ interface SecretProvider {
      */
     fun dashboardUrl(connection: SecretConnection, scope: SecretScope?, organizationId: String? = null, key: String? = null): String? = null
 
+    /**
+     * Forgets what the provider keeps in memory for [connectionId] (every connection when null) beyond the shared cache, such as
+     * values read ahead. Called whenever `SecretsService` forgets its cached values (after writes, sign-in and sign-out, Refresh).
+     */
+    fun forget(connectionId: String?) {}
+
+    /**
+     * A note about the last listing of [connection]'s projects for the tool window (secrets left out because their names don't
+     * fit the connection's settings, say), or null.
+     */
+    fun listingNote(connection: SecretConnection): String? = null
+
     companion object {
         val EP_NAME: ExtensionPointName<SecretProvider> = ExtensionPointName.create("cz.xprees.secrets.provider")
 
@@ -154,7 +166,17 @@ class SetupLink(val text: String, val url: (baseUrl: String) -> String?) {
 fun usesBaseUrl(connection: SecretConnection): Boolean =
     SecretProvider.byId(connection.providerId)?.authMethod(connection.authMethodId)?.usesBaseUrl != false
 
-data class AuthOption(val key: String, val label: String, val required: Boolean = true, val hint: String = "")
+/**
+ * A field of a sign-in method. [validate] returns why a (non-blank) value is unusable, as a sentence for the connection dialog, or
+ * null when it is fine.
+ */
+data class AuthOption(
+    val key: String,
+    val label: String,
+    val required: Boolean = true,
+    val hint: String = "",
+    val validate: ((String) -> String?)? = null,
+)
 
 /**
  * Read access to one connection. All calls block and do network I/O: never call them on the EDT. They throw
@@ -176,6 +198,20 @@ interface SecretsClient {
 
     /** Secrets of [scope] with imports applied (local secrets win over imported ones) and references expanded. */
     fun listSecrets(scope: SecretScope): List<SecretEntry>
+
+    /**
+     * [listSecrets], telling the provider whether the caller needs current values ([fresh], launches) or accepts values as
+     * fresh as the shared cache's (browsing, the keys index). A provider that can tell cheaply that a secret didn't change may
+     * then answer without reading it again. By default the same as [listSecrets].
+     */
+    fun listSecrets(scope: SecretScope, fresh: Boolean): List<SecretEntry> = listSecrets(scope)
+
+    /**
+     * A hint that [scopes] are about to be read (a launch resolving many references), so a provider that can read several
+     * secrets in one request may do so now; the following [listSecrets] calls then use what was read. Never fails: problems
+     * surface in the [listSecrets] calls. By default nothing.
+     */
+    fun prefetch(scopes: Collection<SecretScope>) {}
 
     /**
      * Creates the shared secret [key] in the folder of [scope]. The only write the plugin does, always on an explicit user
@@ -233,6 +269,13 @@ interface SecretsClient {
     /** Deletes the shared secret [key] from the folder of [scope] (or opens a change request where a policy requires one). */
     fun deleteSecret(scope: SecretScope, key: String): WriteOutcome =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't delete secrets")
+
+    /**
+     * Starts the provider's rotation of the secret behind [scope] now (AWS Secrets Manager: `RotateSecret` with the secret's
+     * rotation settings), where its [SecretMetadata.rotation] is enabled. An explicit user action, guarded like the writes.
+     */
+    fun rotateSecret(scope: SecretScope): Unit =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't rotate secrets")
 
     /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
     fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =

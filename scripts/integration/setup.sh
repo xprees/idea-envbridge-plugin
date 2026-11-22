@@ -176,10 +176,13 @@ if [[ -n $LOCALSTACK_URL_IT ]]; then
     if curl -fsS "$LOCALSTACK_URL_IT/_localstack/health" 2>/dev/null | grep -Eq '"secretsmanager": *"(available|running)"'; then break; fi
     sleep 2
   done
-  # A JSON key/value secret per environment, and a plain-string secret
-  smapi CreateSecret '{"Name":"envbridge-it/dev","ClientRequestToken":"00000000-0000-4000-8000-000000000001","SecretString":"{\"DB_PASSWORD\":\"dev-db-pass\",\"API_KEY\":\"dev-api-key\",\"PORT\":5432}"}' >/dev/null
+  # A JSON key/value secret per environment (dev with a description and tags), and a plain-string secret
+  smapi CreateSecret '{"Name":"envbridge-it/dev","ClientRequestToken":"00000000-0000-4000-8000-000000000001","Description":"EnvBridge integration test, development","Tags":[{"Key":"team","Value":"envbridge"},{"Key":"tier","Value":"dev"}],"SecretString":"{\"DB_PASSWORD\":\"dev-db-pass\",\"API_KEY\":\"dev-api-key\",\"PORT\":5432}"}' >/dev/null
   smapi CreateSecret '{"Name":"envbridge-it/prod","ClientRequestToken":"00000000-0000-4000-8000-000000000002","SecretString":"{\"DB_PASSWORD\":\"prod-db-pass\"}"}' >/dev/null
   smapi CreateSecret '{"Name":"envbridge-it-plain/TOKEN","ClientRequestToken":"00000000-0000-4000-8000-000000000003","SecretString":"plain-token"}' >/dev/null
+  # Environment-first names (<env>/<project>), read with the name layout {env}/{project}
+  smapi CreateSecret '{"Name":"dev/envbridge-it-ef","ClientRequestToken":"00000000-0000-4000-8000-000000000004","SecretString":"{\"TOKEN\":\"ef-dev-token\"}"}' >/dev/null
+  smapi CreateSecret '{"Name":"prod/envbridge-it-ef","ClientRequestToken":"00000000-0000-4000-8000-000000000005","SecretString":"{\"TOKEN\":\"ef-prod-token\"}"}' >/dev/null
   {
     echo "ENVBRIDGE_IT_AWS_ENDPOINT=$LOCALSTACK_URL_IT"
     echo "ENVBRIDGE_IT_AWS_REGION=us-east-1"
