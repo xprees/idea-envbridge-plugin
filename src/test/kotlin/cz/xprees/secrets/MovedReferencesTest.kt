@@ -86,4 +86,28 @@ class MovedReferencesTest {
         )
         assertThat(m.rewriteText("X=infisical://DB_PASSWORD?project=private", defaults)).isEqualTo("X=infisical://backend/DB_PASSWORD?project=private")
     }
+
+    @Test
+    fun `references written in another form follow through the equivalent folders`() {
+        SecretReference.grammarOverrides["vault"] = cz.xprees.secrets.vault.VaultGrammar
+        try {
+            val layoutDefaults = SecretReference.Defaults("secret/myapp/{env}", "dev")
+            val source = SecretScope("secret/myapp/{env}", "dev", "/db")
+            fun m(destination: SecretScope, physical: SecretScope) = MovedReferences(
+                "vault", setOf("password"), source, destination, { it == null },
+                // a full path reads in the namespace "root"
+                alsoNamed = listOf(SecretScope("secret", "root", "/myapp/dev/db") to physical),
+            )
+            val toCache = m(SecretScope("secret/myapp/{env}", "dev", "/cache"), SecretScope("secret", "root", "/myapp/dev/cache"))
+            assertThat(toCache.rewriteText("A=vault://./db#password", layoutDefaults)).isEqualTo("A=vault://./cache#password")
+            // a full path reads with the namespace as its environment, and stays a full path
+            assertThat(toCache.rewriteText("B=vault://secret/myapp/dev/db#password", SecretReference.Defaults("secret", "root")))
+                .isEqualTo("B=vault://secret/myapp/dev/cache#password")
+            // into another layout project the grammar writes the full path, kept as built
+            val elsewhere = m(SecretScope("secret/web/{env}", "prod", "/"), SecretScope("secret", "root", "/web/prod"))
+            assertThat(elsewhere.rewriteText("A=vault://./db#password?env=dev", layoutDefaults)).isEqualTo("A=vault://secret/web/prod#password")
+        } finally {
+            SecretReference.grammarOverrides.remove("vault")
+        }
+    }
 }

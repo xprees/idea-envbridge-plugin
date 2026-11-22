@@ -19,6 +19,7 @@ import cz.xprees.secrets.vault.VaultAuthMethods
 import cz.xprees.secrets.vault.VaultProvider
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.entry
 import java.net.ServerSocket
 import java.net.URI
 import java.net.URLDecoder
@@ -42,7 +43,7 @@ class VaultPlatformTest : BasePlatformTestCase() {
             val secretKeys = listOf(VaultAuthMethods.OPTION_TOKEN, VaultAuthMethods.OPTION_SECRET_ID, VaultAuthMethods.OPTION_PASSWORD)
             connections.forEach { CredentialVault.removeAll(it.id, secretKeys) }
             SecretsAppSettings.getInstance().setConnections(emptyList())
-            ProjectSecretsSettings.getInstance(project).update { connectionId = null; projectId = null; environment = null; path = null }
+            ProjectSecretsSettings.getInstance(project).update { connectionId = null; projectId = null; environment = null; path = null; restrictToBoundProject = true }
             SecretsService.getInstance().invalidate()
             VaultAuth.cliTokenFile = null
             mock.close()
@@ -658,6 +659,256 @@ class VaultPlatformTest : BasePlatformTestCase() {
             .containsEntry("limits", """{"rps":5}""").containsEntry("TEAM", "team-a-v1-pass").doesNotContainKey("ALL")
         assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "vault://kv1/app/db#missing"))) }
             .isInstanceOf(SecretProviderException::class.java)
+    }
+
+    // ---- Environment layout ------------------------------------------------------------------------------------------
+
+    /** Paths laid out as mount/project/env/… in a KV v2 mount `apps` and a KV v1 mount `apps1`, and env/project/… in `byenv`. */
+    private fun seedLayout() {
+        mock.mounts["apps"] = "2"
+        mock.mounts["apps1"] = "1"
+        mock.mounts["byenv"] = "2"
+        mock.secrets.getValue("root").putAll(
+            mapOf(
+                "apps/myapp/dev" to mapOf("MODE" to "development"),
+                "apps/myapp/dev/db" to mapOf("password" to "dev-db-pass", "user" to "app"),
+                "apps/myapp/prod" to mapOf("MODE" to "production"),
+                "apps/myapp/prod/db" to mapOf("password" to "prod-db-pass", "user" to "app"),
+                "apps/web/staging/api" to mapOf("key" to "web-key"),
+                "apps1/myapp/dev/db" to mapOf("password" to "v1-dev-pass"),
+                "apps1/myapp/staging/db" to mapOf("password" to "v1-staging-pass"),
+                "byenv/dev/myapp/db" to mapOf("password" to "by-env-dev"),
+                "byenv/prod/myapp/db" to mapOf("password" to "by-env-prod"),
+                "byenv/prod/other" to mapOf("x" to "y"),
+            ),
+        )
+        // the same paths in a namespace: a layout reads in the connection's namespace only
+        mock.secrets.getValue("team-a")["apps/myapp/dev/db"] = mapOf("password" to "team-a-dev-pass")
+    }
+
+    private fun layoutConnection(layout: String = "{project}/{env}", mounts: String = "apps, apps1", options: Map<String, String> = emptyMap()) =
+        appRole(mapOf(VaultAuthMethods.OPTION_ENVIRONMENT_LAYOUT to layout, VaultAuthMethods.OPTION_MOUNTS to mounts) + options)
+
+    private fun bind(connection: SecretConnection, projectId: String, environment: String?) {
+        ProjectSecretsSettings.getInstance(project).update {
+            connectionId = connection.id
+            this.projectId = projectId
+            this.environment = environment
+            path = null
+            useProjectFile = false
+        }
+    }
+
+    fun `test an environment layout lists projects and environments from paths, KV v1 and v2`() {
+        seedLayout()
+        val connection = layoutConnection(options = mapOf(VaultAuthMethods.OPTION_NAMESPACES to "team-a"))
+        val client = client(connection)
+        val before = mock.requests.size
+        val projects = client.listProjects()
+        assertThat(projects.map { it.id }).containsExactly("apps/myapp/{env}", "apps/web/{env}", "apps1/myapp/{env}")
+        assertThat(projects.map { it.name }).containsExactly("apps/myapp", "apps/web", "apps1/myapp")
+        // environments are secrets or folders at the {env} level; More namespaces aren't environments any more
+        assertThat(projects[0].environments.map { it.slug }).containsExactly("dev", "prod")
+        assertThat(projects[1].environments.map { it.slug }).containsExactly("staging")
+        assertThat(projects[2].environments.map { it.slug }).containsExactly("dev", "staging")
+        // one LIST per mount and one per project (the mounts are configured; KV v1's version from the preflight)
+        val lists = mock.requests.drop(before).filter { it.query["list"] == "true" }.map { it.path }
+        assertThat(lists).containsExactlyInAnyOrder(
+            "/v1/apps/metadata/", "/v1/apps/metadata/myapp", "/v1/apps/metadata/web", "/v1/apps1/", "/v1/apps1/myapp",
+        )
+
+        val dev = SecretScope("apps/myapp/{env}", "dev", "/")
+        // the environment's own path holds keys; folders are the paths below it
+        assertThat(client.listSecrets(dev).associate { it.key to it.value.reveal() }).containsExactly(entry("MODE", "development"))
+        assertThat(client.listFolders(dev).map { it.path }).containsExactly("/db")
+        assertThat(client.listSecrets(dev.copy(path = "/db")).map { "${it.path}#${it.key}=${it.value.reveal()}" })
+            .containsExactlyInAnyOrder("/db#password=dev-db-pass", "/db#user=app")
+        assertThat(client.listSecrets(dev.copy(environment = "prod", recursive = true)).map { "${it.path}#${it.key}" })
+            .containsExactlyInAnyOrder("/#MODE", "/db#password", "/db#user")
+        assertThat(client.listSecrets(SecretScope("apps1/myapp/{env}", "staging", "/db")).single().value.reveal()).isEqualTo("v1-staging-pass")
+        // read in the connection's namespace (root: no header), never in a namespace named like the environment
+        assertThat(mock.requests.last { it.path == "/v1/apps/data/myapp/dev/db" }.namespace).isNull()
+        assertThat(mock.requests.none { it.namespace == "dev" || it.namespace == "prod" }).isTrue()
+
+        // {env}/{project}, and {env} alone (the project is the mount)
+        val byEnv = client(layoutConnection("{env}/{project}", "byenv")).listProjects()
+        assertThat(byEnv.associate { it.id to it.environments.map { e -> e.slug } })
+            .containsExactly(entry("byenv/{env}/myapp", listOf("dev", "prod")), entry("byenv/{env}/other", listOf("prod")))
+        val envOnly = client(layoutConnection("{env}", "apps1"))
+        assertThat(envOnly.listProjects().single().let { it.id to it.environments.map { e -> e.slug } }).isEqualTo("apps1/{env}" to listOf("myapp"))
+
+        // the namespace of the connection is where a layout reads
+        val team = client(layoutConnection(options = mapOf(VaultAuthMethods.OPTION_NAMESPACE to "team-a")))
+        assertThat(team.listSecrets(SecretScope("apps/myapp/{env}", "dev", "/db")).single().value.reveal()).isEqualTo("team-a-dev-pass")
+        assertThat(mock.requests.last { it.path == "/v1/apps/data/myapp/dev/db" }.namespace).isEqualTo("team-a")
+    }
+
+    fun `test the environment layout option is validated and switches environments per connection`() {
+        val provider = VaultProvider()
+        val option = cz.xprees.secrets.vault.VaultAuthMethods.ALL.first().options.single { it.key == VaultAuthMethods.OPTION_ENVIRONMENT_LAYOUT }
+        assertThat(option.validate!!("{project}/{env}")).isNull()
+        assertThat(option.validate!!("apps/{project}/{env}")).isNull()
+        assertThat(option.validate!!("{project}")).contains("{env} exactly once")
+        assertThat(option.validate!!("{project}-{env}")).contains("whole segment")
+        assertThat(option.validate!!("{env}/../{project}")).contains(". or ..")
+        assertThat(option.validate!!("{project}/{env}/{project}")).contains("at most once")
+
+        val plain = appRole()
+        val layered = layoutConnection()
+        assertThat(provider.switchesEnvironments(plain)).isFalse()
+        assertThat(provider.switchesEnvironments(layered)).isTrue()
+        assertThat(provider.defaultEnvironment(plain)).isEqualTo("root")
+        assertThat(provider.defaultEnvironment(layered)).isEqualTo("dev")
+        fun ref(text: String) = cz.xprees.secrets.core.reference.SecretReference.parse(text, listOf("vault"))!!
+        assertThat(provider.followsSelection(layered, ref("vault://./db#password"))).isTrue()
+        assertThat(provider.followsSelection(layered, ref("vault://./db#password?env=prod"))).isFalse()
+        assertThat(provider.followsSelection(layered, ref("vault://apps/myapp/dev/db#password"))).isFalse()
+        assertThat(provider.followsSelection(plain, ref("vault://./db#password"))).isFalse()
+        // a full path reads in the connection's namespace, not in the selected environment
+        val defaults = cz.xprees.secrets.core.reference.SecretReference.Defaults("apps", "dev")
+        assertThat(provider.referenceDefaults(layered, ref("vault://apps/myapp/dev/db#password"), defaults).environment).isEqualTo("root")
+        assertThat(provider.referenceDefaults(layered, ref("vault://./db#password"), defaults)).isEqualTo(defaults)
+        assertThat(provider.referenceDefaults(plain, ref("vault://apps/myapp/dev/db#password"), defaults)).isEqualTo(defaults)
+        assertThat(provider.equivalentScope(layered, SecretScope("apps/myapp/{env}", "prod", "/db")))
+            .isEqualTo(SecretScope("apps", "root", "/myapp/prod/db"))
+        assertThat(provider.equivalentScope(plain, SecretScope("secret", "root", "/app"))).isNull()
+
+        // the keys index: like Infisical with a layout (every environment's root and the bound folder), else the bound folder
+        val environments = listOf("dev", "prod").map { cz.xprees.secrets.core.model.ProviderEnvironment(it, it) }
+        val layoutPlan = provider.keysIndexScope(SecretScope("apps/myapp/{env}", "dev", "/db"), environments)
+        assertThat(layoutPlan.environments).containsExactly("dev", "prod")
+        assertThat(layoutPlan.folders).isEqualTo(SecretScope("apps/myapp/{env}", "dev", "/db", recursive = true))
+        val mountPlan = provider.keysIndexScope(SecretScope("secret", "root", "/app"), environments)
+        assertThat(mountPlan.environments).isEmpty()
+
+        // the dashboard opens the full path
+        assertThat(provider.dashboardUrl(layered, SecretScope("apps/myapp/{env}", "prod", "/db")))
+            .isEqualTo("${mock.baseUrl}/ui/vault/secrets/apps/kv/myapp%2Fprod%2Fdb/details")
+    }
+
+    fun `test launches resolve short references in the selected environment and full ones as written`() {
+        seedLayout()
+        val connection = layoutConnection()
+        bind(connection, "apps/myapp/{env}", "dev")
+        val bindings = SecretBindingService.getInstance(project)
+        assertThat(bindings.binding(VaultProvider()).environment).isEqualTo("dev")
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val envs = linkedMapOf(
+            "DB" to "vault://./db#password",
+            "MODE" to "vault://#MODE",
+            "PROD_DB" to "vault://./db#password?env=prod",
+            "FULL" to "vault://apps/myapp/prod/db#user",
+            "ALL" to "vault://./db#*",
+        )
+        // "Only use the bound project" (on by default) accepts a full path into the bound layout project
+        val dev = resolver.resolve(resolver.plan(envs)).environment
+        assertThat(dev).containsEntry("DB", "dev-db-pass").containsEntry("MODE", "development").containsEntry("PROD_DB", "prod-db-pass")
+            .containsEntry("FULL", "app").containsEntry("password", "dev-db-pass").doesNotContainKey("ALL")
+        val other = mapOf("OTHER" to "vault://./api#key?project=apps/web/{env}&env=staging")
+        assertThatThrownBy { resolver.resolve(resolver.plan(other)) }.hasMessageContaining("names another project")
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "vault://apps/web/staging/api#key"))) }.hasMessageContaining("names another project")
+        ProjectSecretsSettings.getInstance(project).update { restrictToBoundProject = false }
+        assertThat(resolver.resolve(resolver.plan(other)).environment).containsEntry("OTHER", "web-key")
+        // the full reference was read without a namespace header (the environment "dev" is no namespace)
+        assertThat(mock.requests.filter { it.path.startsWith("/v1/apps/data/") }.map { it.namespace }.distinct()).containsExactly(null)
+
+        // switching the environment in the IDE, ENVBRIDGE_ENVIRONMENT and Run with environment… move the short references only
+        bind(connection, "apps/myapp/{env}", "prod")
+        val prod = resolver.resolve(resolver.plan(envs)).environment
+        assertThat(prod).containsEntry("DB", "prod-db-pass").containsEntry("MODE", "production").containsEntry("FULL", "app")
+        bind(connection, "apps/myapp/{env}", "dev")
+        val overridden = resolver.resolve(resolver.plan(envs + ("ENVBRIDGE_ENVIRONMENT" to "prod"))).environment
+        assertThat(overridden).containsEntry("DB", "prod-db-pass").containsEntry("PROD_DB", "prod-db-pass")
+        assertThat(resolver.resolve(resolver.plan(mapOf("DB" to "vault://./db#password")), environment = "prod").environment).containsEntry("DB", "prod-db-pass")
+        // an environment without the secret fails closed
+        assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("DB" to "vault://./db#password")), environment = "staging") }
+            .isInstanceOf(SecretProviderException::class.java)
+
+        // KV v1 the same way
+        bind(connection, "apps1/myapp/{env}", "staging")
+        assertThat(resolver.resolve(resolver.plan(mapOf("DB" to "vault://./db#password"))).environment).containsEntry("DB", "v1-staging-pass")
+    }
+
+    fun `test writes with a layout go to the environment's path, and new environments appear once written`() {
+        seedLayout()
+        val connection = layoutConnection()
+        val service = SecretsService.getInstance()
+        val dev = SecretScope("apps/myapp/{env}", "dev", "/")
+
+        // the environment's own path is a secret path (unlike a mount's root)
+        service.createSecret(connection, dev, "LOG_LEVEL", SecretValue("debug"))
+        assertThat(mock.requests.last { it.method == "POST" }.path).isEqualTo("/v1/apps/data/myapp/dev")
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/dev")).containsEntry("LOG_LEVEL", "debug").containsEntry("MODE", "development")
+        service.updateSecret(connection, dev.copy(path = "/db"), "password", SecretValue("new-dev-pass"))
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/dev/db")).containsEntry("password", "new-dev-pass").containsEntry("user", "app")
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/prod/db")).containsEntry("password", "prod-db-pass")
+        // KV v1: the whole secret as the body
+        service.createSecret(connection, SecretScope("apps1/myapp/{env}", "dev", "/db"), "user", SecretValue("v1-user"))
+        assertThat(mock.requests.last { it.method == "POST" }.path).isEqualTo("/v1/apps1/myapp/dev/db")
+        assertThat(mock.secrets.getValue("root").getValue("apps1/myapp/dev/db")).containsEntry("user", "v1-user").containsEntry("password", "v1-dev-pass")
+
+        // a move between environments is a move between their paths
+        val entries = client(connection).listSecrets(dev).filter { it.key == "LOG_LEVEL" }
+        assertThat(service.moveSecrets(connection, dev, entries, dev.copy(environment = "prod"), overwrite = false).moved).containsExactly("LOG_LEVEL")
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/prod")).containsEntry("LOG_LEVEL", "debug")
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/dev")).doesNotContainKey("LOG_LEVEL")
+
+        // a new environment writes nothing, is shown until it holds a secret, and its first secret creates its path
+        val writes = mock.writes.size
+        assertThat(service.createEnvironment(connection, "apps/myapp/{env}", "Staging", "staging").slug).isEqualTo("staging")
+        assertThat(mock.writes.size).isEqualTo(writes)
+        assertThat(service.projects(connection).first { it.id == "apps/myapp/{env}" }.environments.map { it.slug }).containsExactly("dev", "prod", "staging")
+        assertThatThrownBy { service.createEnvironment(connection, "apps/myapp/{env}", "Prod", "prod") }.hasMessageContaining("already has an environment prod")
+        assertThatThrownBy { service.createEnvironment(connection, "apps/myapp/{env}", "x", "a/b") }.hasMessageContaining("one path segment")
+        service.createSecret(connection, SecretScope("apps/myapp/{env}", "staging", "/db"), "password", SecretValue("staging-pass"))
+        assertThat(mock.secrets.getValue("root").getValue("apps/myapp/staging/db")).containsEntry("password", "staging-pass")
+        assertThat(service.projects(connection, fresh = true).first { it.id == "apps/myapp/{env}" }.environments.map { it.slug }).containsExactly("dev", "prod", "staging")
+        // without a layout, environments are namespaces, which an administrator creates
+        assertThatThrownBy { service.createEnvironment(appRole(), "secret", "x", "x") }.hasMessageContaining("environment layout")
+    }
+
+    fun `test renames and moves update short references through the layout and full ones through the path`() {
+        seedLayout()
+        val connection = layoutConnection()
+        bind(connection, "apps/myapp/{env}", "dev")
+        val env = myFixture.addFileToProject(
+            ".env",
+            "A=vault://./db#password\nB=vault://./db#password?env=dev\nC=vault://apps/myapp/dev/db#password\nD=vault://apps/myapp/prod/db#password\n" +
+                "E=vault://./db#user\n",
+        ).virtualFile
+        val runManager = com.intellij.execution.RunManager.getInstance(project)
+        val app = runManager.createConfiguration("App", com.intellij.execution.application.ApplicationConfigurationType.getInstance().configurationFactories[0])
+        // reads prod: its short reference isn't to the renamed field
+        (app.configuration as com.intellij.execution.application.ApplicationConfiguration).envs =
+            linkedMapOf("DB" to "vault://./db#password", "ENVBRIDGE_ENVIRONMENT" to "prod")
+        runManager.addConfiguration(app)
+        try {
+            val updater = cz.xprees.secrets.ui.secrets.ReferenceUpdater(project)
+            val dev = SecretScope("apps/myapp/{env}", "dev", "/db")
+            val cautious = updater.planRename(connection, dev, "password", "pass")
+            // B (environment fixed) and C (full path) are rewritten; A follows the selection and is left unless asked
+            assertThat(cautious.references).isEqualTo(2)
+            assertThat(cautious.following).isEqualTo(1)
+            updater.apply(cautious)
+            val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(env)!!
+            assertThat(document.text).isEqualTo(
+                "A=vault://./db#password\nB=vault://./db#pass?env=dev\nC=vault://apps/myapp/dev/db#pass\nD=vault://apps/myapp/prod/db#password\n" +
+                    "E=vault://./db#user\n",
+            )
+            assertThat(updater.planRename(connection, dev, "password", "pass", includeFollowing = true).references).isEqualTo(1)
+
+            // a move to another environment: the full reference keeps naming its full path, the short one names the environment
+            val moved = updater.plan(connection, listOf("user"), dev, dev.copy(environment = "prod", path = "/db2"), includeFollowing = true)
+            updater.apply(moved)
+            assertThat(document.text).contains("E=vault://./db2#user?env=prod")
+            // to another project: the full path
+            val elsewhere = updater.plan(connection, listOf("pass"), dev, SecretScope("apps/web/{env}", "staging", "/api"))
+            updater.apply(elsewhere)
+            assertThat(document.text).contains("B=vault://apps/web/staging/api#pass\n").contains("C=vault://apps/web/staging/api#pass\n")
+            assertThat((app.configuration as com.intellij.execution.application.ApplicationConfiguration).envs).containsEntry("DB", "vault://./db#password")
+        } finally {
+            runManager.removeConfiguration(app)
+        }
     }
 
     private object TokenSetAccess {

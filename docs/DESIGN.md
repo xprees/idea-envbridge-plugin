@@ -103,7 +103,16 @@ generic on purpose):
 - `SecretProvider.forget(connectionId)`: called whenever `SecretsService.invalidate` runs, so provider-side memory (AWS's values
   read ahead) is dropped with the shared cache. `SecretProvider.listingNote(connection)`: a line the tool window shows under a
   connection's projects (AWS: how many names didn't fit the name layout).
-- `AuthOption.validate`: a check the connection dialog runs on a non-blank option value (AWS: the name layout, SSO settings).
+- `AuthOption.validate`: a check the connection dialog runs on a non-blank option value (AWS: the name layout, SSO settings;
+  Vault: the environment layout).
+- Per-connection reference semantics (added for Vault's [environment layout](#environment-layout)):
+  `SecretProvider.switchesEnvironments(connection)` (defaults to the `switchesEnvironments` property),
+  `followsSelection(connection, reference)` (whether moves leave a reference because it follows the selected environment; by
+  default: the connection switches environments and the reference names none), `referenceDefaults(connection, reference,
+  defaults)` (the defaults a reference reads with, used by launches and reference rewriting), `equivalentScope(connection,
+  scope)` (the same folder as references written in another form name it, handed to `MovedReferences` as `alsoNamed`) and
+  `referencedProject(connection, reference)` (the project a reference reads, for *Only use the bound project*). All default
+  to the previous behaviour.
 
 A provider also contributes how it is configured per project (Infisical: `.infisical.yaml`) and, optionally, what the
 background keys index reads (`keysIndexScope`, see [Caching](#caching)). Everything else (run configurations, references, tool
@@ -217,7 +226,7 @@ reference to a folder outside it is *unknown* to the editor (no hint, no "missin
 |---|---|---|---|
 | Infisical, AWS (default) | Every environment of the project | Bound environment from `/`, recursive | 1 per environment + 1 recursive listing |
 | Doppler | Root configs and the bound config; branch and personal configs (`ProviderEnvironment.branchOf`) are left out | None (a config is flat; the root read has every key) | 1 per root config (+1 when bound to a branch config) |
-| Vault / OpenBao | None (a mount's root holds no fields) | The bound secret path, recursive (`KeysIndexScope.boundFolder`) | A secret path: 1 LIST + 1 GET (+ the mounts listing); bound to `/`: the whole mount as before, up to `MAX_RECURSIVE_PATHS` |
+| Vault / OpenBao | None (a mount's root holds no fields); with an [environment layout](#environment-layout) every environment's own path | The bound secret path, recursive (`KeysIndexScope.boundFolder`) | A secret path: 1 LIST + 1 GET (+ the mounts listing); bound to `/`: the whole mount as before, up to `MAX_RECURSIVE_PATHS`; with a layout + 1 GET per environment |
 | 1Password | None (a vault's root holds no fields) | The bound item (`KeysIndexScope.boundFolder`) | One `op item get` / request (Connect: +1 list when the item is named by title); bound to the vault: 1 list + 1 per item **changed** since the last read |
 
 **Trade-off (Vault, 1Password):** completion and hover know only the keys of the bound secret path / item (and, for Vault, the
@@ -371,7 +380,7 @@ editor hints), then writing fields (see *Writes* below). Engines: **KV v2**, **K
 | EnvBridge | Vault / OpenBao |
 |---|---|
 | Project | A KV mount, version 1 or 2 (`secret`, `kv`, …) |
-| Environment | A namespace (`root` when the instance has none, or the connection's namespace) |
+| Environment | A namespace (`root` when the instance has none, or the connection's namespace); with an [environment layout](#environment-layout), a path segment (`secret/myapp/dev`) |
 | Folder | A path below the mount (`app/`, `app/db`) |
 | Secret (key = value) | A field of a secret (`password` in `secret/app/db`) |
 
@@ -388,7 +397,8 @@ vault://secret/app/db#password?namespace=team-a&connection=<name>
 ```
 
 The mount is always written, so a reference alone says which secret it is; the namespace comes from the binding unless
-given. Each provider now brings its own reference grammar (`SecretProvider.referenceGrammar`); `infisical://` keeps its
+given. The short form `vault://./db#password` (relative to the bound project, following the selected environment under an
+environment layout) is described in [Environment layout](#environment-layout). Each provider now brings its own reference grammar (`SecretProvider.referenceGrammar`); `infisical://` keeps its
 `env:folder/KEY` form.
 
 ### API (KV v1 and v2, namespaces via `X-Vault-Namespace`, token via `X-Vault-Token`)
@@ -429,7 +439,7 @@ are renewed before they expire; otherwise the user signs in again (the launch fa
   Vault can undo); a deleted latest version still reports its version, which the next write names. Moves copy all fields into
   the destination in one version, then re-read the source and remove them in another; a failed removal is reported per key
   (`notRemoved`) with both copies kept. KV v2 has no per-field comments, so comments are ignored. Writes at the mount's root
-  (`/`) are refused: fields live in secrets. `createEnvironment` is refused (namespaces are an administrator's job).
+  (`/`) are refused: fields live in secrets. `createEnvironment` is refused (namespaces are an administrator's job), except under an environment layout.
   Integration tests cover writes on real Vault and OpenBao, including check-and-set and a move between namespaces.
 
 ### KV version 1
@@ -484,6 +494,113 @@ versions (each side uses its mount's API).
 **Dashboard link**: `dashboardUrl` runs on the EDT and only uses the remembered version: KV v1 opens the Vault UI's
 `/ui/vault/secrets/<mount>/list` and `/show/<path>` routes, KV v2 (or unknown) `/kv/list` and `/kv/<path>/details` as before.
 
+### Environment layout
+
+Open-source Vault and OpenBao have no namespaces, so with the mapping above every project has one environment (`root`) and the
+environment switcher, the prod guard, *Compare environments* and *Run with environment…* have nothing to work with. Most teams
+put the environment into the path instead: `secret/myapp/dev/db` and `secret/myapp/prod/db`. A connection's *Environment
+layout* option (`environmentLayout`, `VaultEnvironmentLayout`) says where, like AWS's [name layout](#name-layout):
+
+- **Empty (the default): nothing changes.** The environment is the namespace and projects are mounts; existing connections,
+  bindings and references behave exactly as before.
+- **A template over the path inside a mount**: `/`-separated segments, each `{env}`, `{project}` or literal text. `{env}`
+  exactly once, `{project}` at most once, placeholders are whole segments (a Vault LIST lists one path level, so
+  `{project}-{env}` couldn't be listed). Literal segments may not contain `{`, `}`, `#`, `?` or whitespace, nor be `.` / `..`.
+  Examples: `{project}/{env}` (`secret/myapp/dev/db`), `{env}/{project}` (`secret/dev/myapp/db`), `{env}` (a mount per
+  application: `kv-myapp/dev/db`), `apps/{project}/{env}`. The connection dialog validates it (`AuthOption.validate`).
+
+| EnvBridge | With an environment layout (`{project}/{env}`, secret `secret/myapp/dev/db#password`) |
+|---|---|
+| Project | A mount plus the value of `{project}`, shown as `secret/myapp`. Its ID is the path with the project filled in and `{env}` kept: `secret/myapp/{env}` (a mount with `/` in its name written `%2F`, as in references). Without `{project}` it is the mount: ID `kv-myapp/{env}`, shown `kv-myapp` |
+| Environment | The value of `{env}` (`dev`) |
+| Folder | The path below the environment's path: `/` is `secret/myapp/dev` itself, `/db` is `secret/myapp/dev/db` |
+| Secret (key = value) | A field, as before. The environment's own path may be a secret too (unlike a mount's root), so `/` can hold keys |
+| Namespace | The connection's *Namespace* (the sign-in namespace) for everything. *More namespaces* aren't listed with a layout; a full reference can still name one (`?namespace=`) |
+
+**Why the ID keeps `{env}`.** A layout project's ID must not be mistaken for a mount: a full reference
+(`vault://secret/app/db#f`) still reaches the client as the scope *mount `secret`, path `/app/db`*, and under `{env}` alone
+the project of mount `kv-myapp` would otherwise have the ID `kv-myapp` too. EnvBridge treats a project ID with exactly one
+`{env}` segment after the first as a layout project (`VaultLayoutProject`); no reference's mount looks like that. The ID also
+says by itself where an environment's secrets are: the client reads a layout scope without the template (the physical path is
+the ID with `{env}` replaced, plus the folder), so a scope keeps meaning the same path while the template is being edited.
+Changing the template changes the IDs, so the project is bound again, as with AWS's name layout. `{project}` is one segment: a
+project spanning segments (`team/myapp`) would make `{project}/{env}` ambiguous (`team/myapp/dev/db`: project `team`,
+environment `myapp`?) and listing it would need a walk of the whole mount.
+
+**Listing** walks the template in every KV mount (configured, or listed as before): a literal segment is appended, a
+placeholder is a LIST of the path so far. At a placeholder that is the template's last segment both folders and secrets count
+(`secret/myapp/dev` may be a secret, a folder, or both); elsewhere only folders. `{project}/{env}` costs 1 LIST per mount plus 1
+per project, `{env}/{project}` 1 plus 1 per environment, at most 500 LISTs (`MAX_RECURSIVE_PATHS`, then CONFIGURATION). A
+project's environments are those found for it. Paths shallower than the template, or whose literal segments differ, aren't
+shown (full references still read them); Vault can't tell other paths of the same shape from the convention, so a mount that
+mixes layouts shows them as projects too (list only the layout's mounts in the connection's *KV mounts*). A mount whose first
+LIST is refused (403) is left out, unless every mount is; a deeper LIST that is refused leaves out that project or environment
+only (a token often may list the mount but not every path in it). The listing is cached like any project listing.
+
+**New environment** writes nothing: a Vault path exists once a secret is stored there, and an empty placeholder secret would be
+litter in the Vault UI and in `vault kv list`. The environment is remembered in memory for the connection and project
+(`VaultNewEnvironments`, until it is listed for real, sign-out or the IDE restarts), so it shows in the tree and the switcher,
+and the first secret written to it creates its path. The slug must be one path segment (no `/`, not `.` / `..`) and must not
+exist yet; the name is ignored (a path has none).
+
+**References.** The grammar can't depend on the connection (references are parsed before a connection is chosen, and the same
+text must not change meaning when someone sets a layout), so the forms are told apart by their text:
+
+```
+vault://secret/myapp/dev/db#password        full form, unchanged: mount secret, path myapp/dev/db; never follows the selection
+vault://#password                           short form: the bound project in the selected environment, its own path (secret/myapp/<env>)
+vault://./db#password                       short form: folder /db of the bound project in the selected environment
+vault://./db#password?env=prod              short form with the environment fixed
+vault://./db#*                              every field of that secret (scope import; #** for every secret below it too)
+vault://./db#password?project=secret/other/{env}&env=prod   short form naming another layout project (written by moves)
+```
+
+- **Short form**: no path at all (`vault://#field`), or a path whose first segment is `.` (`vault://./a/b#field`). The full
+  form always starts with the mount and has always refused `.` segments, and Vault normalises `.` away, so `./` can't be a mount
+  and no existing reference changes meaning; it reads like a relative path: relative to the bound project and the selected
+  environment. Parameters: `?env=`, `?project=` (a layout project ID, so it must contain a `{env}` segment) and
+  `?connection=`; `?namespace=` is refused (the connection's namespace applies). `?env=` and `?project=` are refused on the full
+  form (its path says both). Rejected alternatives: "a reference without `?namespace=` follows the layout when one is
+  configured" (the grammar has no connection, and existing references would silently change meaning); a project marker such as
+  `vault://@myapp/db` (it still needs the mount, and `@` is legal in mount names); `vault:///db` (an empty first segment is
+  accepted today as a full reference with a leading slash).
+- Without a layout the short form is valid too and reads relative to the binding: the bound mount and the bound namespace
+  (`?env=` names a namespace there). It never follows a selection there, since namespaces aren't switched.
+- **Full references keep their meaning under a layout**: they read the mount and path as written, in the namespace of
+  `?namespace=` or else the connection's namespace, not the selected environment (which is no namespace any more):
+  `SecretProvider.referenceDefaults` replaces the binding's environment in their defaults. They never follow the selection.
+- `build()` (*Copy Reference*, completion, moves): a layout scope of the bound project gives the short form, leaving out the
+  environment when it is the bound one; a layout scope of another project, or without a binding, gives the full path (explicit,
+  readable without knowing the layout). Mount scopes (no layout) are built as before.
+- **Following the selection**: a short reference without `?env=` on a connection with a layout follows the selected
+  environment (`SecretProvider.switchesEnvironments(connection)` is true for that connection, and
+  `followsSelection(connection, reference)` says which references follow), so moves and renames leave it unless asked, exactly
+  like `infisical://KEY`, `doppler://KEY` and `aws-sm://#KEY`.
+- **Moves and renames** rewrite short references through the layout scopes and full references through the same folders'
+  physical scopes (`SecretProvider.equivalentScope`: mount, the connection's namespace, full path), which `MovedReferences` gets
+  as a further (source, destination) pair; a full reference stays a full reference. When a grammar writes the destination in
+  another form than the scope (the full path of another project), `MovedReferences` keeps the reference as the grammar built
+  it instead of applying its "keep the written form" rules, which assume the scope's terms.
+- Prod guard, *Compare environments*, *Run with environment…*, `ENVBRIDGE_ENVIRONMENT` and the status bar work on environment
+  names, so they need nothing Vault-specific. `defaultEnvironment` is `dev` with a layout.
+
+**Keys index** (`keysIndexScope`, decided from the bound project's ID, so it needs no connection): with a layout, like
+Infisical, every environment's root (its own path: one GET each) for "defined in", plus the bound folder with its subfolders;
+without a layout only the bound folder, as before.
+
+**KV v1 and v2** need nothing extra: a layout only changes which mount and path the client sends, the KV version is detected per
+mount as before, and writes at an environment's own path are allowed (it is a path below the mount, not the mount's root). The
+dashboard link opens the physical path.
+
+**Only use the bound project** (on by default) compares projects as listings name them
+(`SecretProvider.referencedProject`): a full reference whose path follows the layout, in the connection's namespace, is in that
+layout project (`vault://secret/myapp/prod/db#f` is in `secret/myapp/{env}`), so it is accepted while that project is bound;
+a full path elsewhere, or a short reference with another `?project=`, is refused as before.
+
+**Known limits.** Editor hints (completion, hover, the missing-secret inspection) know short
+references; full references under a layout are "unknown" there (no hint, no warning) and still resolve at launch. *More
+namespaces* aren't listed with a layout (use one connection per namespace).
+
 ### Tests
 
 A mock Vault server (like `MockInfisical`): KV v2 and KV v1 mounts (`mounts`: version per mount, also "no options"), the mount
@@ -499,6 +616,14 @@ missing-secret inspection still knowing the bound secret's fields while another 
 engine `legacy` on Vault and OpenBao, also in OpenBao's `team-a` namespace) cover listing, reading, the preflight and the probe
 against the real servers, create / update / rename / delete, moves between KV v1 secrets, KV v1 ↔ KV v2 and across namespaces,
 and launches.
+
+Environment layout: `VaultGrammarTest` covers the short form (root, folders, `?env=`, `?project=`, scope imports), round trips
+of both forms, malformed references and `build()` per scope; `VaultPlatformTest` covers listing with `{project}/{env}`,
+`{env}/{project}` and `{env}` on KV v1 and v2 (requests counted), reads in the connection's namespace, launches resolving short
+references per selected environment, `ENVBRIDGE_ENVIRONMENT` and *Run with environment…* while full references stay put,
+*Only use the bound project*, writes and moves into environment paths, new environments, and renames and moves updating short
+and full references; `MovedReferencesTest` the `alsoNamed` pairs. Integration tests (`setup.sh` seeds
+`secret/envbridge-layout/{dev,prod}/…` and the same in KV v1 `legacy`) list, read, write and launch against Vault and OpenBao.
 
 ### Known limits (keys index)
 
