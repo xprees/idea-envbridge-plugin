@@ -43,7 +43,7 @@ class LaunchSecretResolver(private val project: Project) {
         fun providerOf(reference: SecretReference) = SecretProvider.byScheme(reference.scheme)
             ?: throw SecretProviderException(Kind.CONFIGURATION, "Unknown reference scheme ${reference.scheme}://")
         fun bindingOf(reference: SecretReference) = bindings.binding(providerOf(reference), environmentOverride, reference.connectionId)
-        checkBoundProject(plan, bindings, ::providerOf)
+        checkBoundProject(plan.allReferences, bindings, ::providerOf)
         fun defaultsOf(reference: SecretReference): SecretReference.Defaults {
             val binding = bindingOf(reference)
             val defaults = if (reference.projectId != null) {
@@ -66,6 +66,60 @@ class LaunchSecretResolver(private val project: Project) {
             suggest = { reference, scope -> suggestion(reference, scope, bindingOf(reference).connection) },
         )
         return if (plan.hasSecrets) result.withOverrides(LocalOverrides.getInstance(project).all()) else result
+    }
+
+    /**
+     * Reads single references one at a time for one launch (varlock compatibility mode), with the same bindings, the same
+     * "only use the bound project" check and the same fresh fetching as [resolve]; each scope is fetched once.
+     *
+     * @param environment the launch's environment override ("Run with environment…", else `ENVBRIDGE_ENVIRONMENT`), or null
+     */
+    fun fetcher(environment: String?, fresh: Boolean = true): Fetcher = Fetcher(environment, fresh)
+
+    /** See [fetcher]. Blocking network I/O: never on the EDT. Values are returned as [SecretEntry]s (masked `toString`). */
+    inner class Fetcher internal constructor(private val environment: String?, private val fresh: Boolean) {
+        private val bindings = SecretBindingService.getInstance(project)
+        private val fetched = HashMap<Pair<String, SecretScope>, List<cz.xprees.secrets.core.model.SecretEntry>>()
+
+        private fun providerOf(reference: SecretReference) = SecretProvider.byScheme(reference.scheme)
+            ?: throw SecretProviderException(Kind.CONFIGURATION, "Unknown reference scheme ${reference.scheme}://")
+
+        private fun bindingOf(reference: SecretReference) = bindings.binding(providerOf(reference), environment, reference.connectionId)
+
+        /** The scope [reference] reads (the binding fills in what it leaves open). */
+        fun scope(reference: SecretReference): SecretScope {
+            val binding = bindingOf(reference)
+            val defaults = if (reference.projectId != null) {
+                SecretReference.Defaults(reference.projectId, binding.environment, binding.path)
+            } else {
+                binding.defaults()
+            }
+            return reference.scope(providerOf(reference).referenceDefaults(binding.connection, reference, defaults))
+        }
+
+        /** The secrets of the scope of [reference] (empty when the folder doesn't exist), after the bound-project check. */
+        fun entries(reference: SecretReference): List<cz.xprees.secrets.core.model.SecretEntry> {
+            checkBoundProject(listOf(reference), bindings, ::providerOf)
+            val connection = bindingOf(reference).connection
+            val scope = scope(reference)
+            return fetched.getOrPut(connection.id to scope) {
+                try {
+                    SecretsService.getInstance().secrets(connection, scope, fresh)
+                } catch (e: SecretProviderException) {
+                    if (e.kind != Kind.NOT_FOUND) throw e
+                    emptyList()
+                }
+            }
+        }
+
+        /** The secret [reference] names, or null when it doesn't exist. Throws when its value may not be read. */
+        fun secret(reference: SecretReference): cz.xprees.secrets.core.model.SecretEntry? {
+            val secret = entries(reference).firstOrNull { it.key == reference.key } ?: return null
+            if (secret.valueHidden) {
+                throw SecretProviderException(Kind.FORBIDDEN, "no permission to read the value of ${reference.key} in ${EnvResolution.describe(scope(reference))}")
+            }
+            return secret
+        }
     }
 
     /**
@@ -97,10 +151,10 @@ class LaunchSecretResolver(private val project: Project) {
      * With "only use the bound project" on and a project bound, references may not leave it: naming another project or another
      * connection is refused, so secrets of an unrelated project can't reach this one by accident.
      */
-    private fun checkBoundProject(plan: EnvResolution.Plan, bindings: SecretBindingService, providerOf: (SecretReference) -> SecretProvider) {
+    private fun checkBoundProject(references: List<SecretReference>, bindings: SecretBindingService, providerOf: (SecretReference) -> SecretProvider) {
         if (!ProjectSecretsSettings.getInstance(project).state.restrictToBoundProject) return
         val problems = mutableListOf<String>()
-        for (reference in plan.allReferences) {
+        for (reference in references) {
             val bound = bindings.bindingOrNull(providerOf(reference)) ?: continue
             val boundProject = bound.projectId ?: continue
             // The project as listings name it (a Vault full path may lie in the bound layout project)

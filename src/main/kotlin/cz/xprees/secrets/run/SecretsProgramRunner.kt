@@ -22,6 +22,7 @@ import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.resolve.EnvResolution
 import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.ProdGuard
+import cz.xprees.secrets.core.resolve.SecretBindingService
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -38,6 +39,10 @@ import java.util.WeakHashMap
  * It also claims configurations whose env files use env-spec decorators ([EnvFileReferences.usesDecorators]) and applies
  * them ([LaunchChecks]): a required key without a value stops the launch, sensitive values are masked in the console,
  * `@internal` keys are left out of the process and values that don't fit their `@type` are reported (the launch goes on).
+ *
+ * In the varlock compatibility mode it also claims configurations whose env files hold varlock values
+ * ([EnvFileReferences.usesVarlock]) and resolves them ([VarlockLaunch]) after the references; a refused or unsupported function
+ * stops the launch before anything is fetched or started.
  */
 class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
 
@@ -47,7 +52,11 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
         if (profile !is RunConfiguration || isResolvedCopy(profile)) return false
         val (_, envs) = EnvPatcher.find(profile) ?: return false
         val resolver = LaunchSecretResolver.getInstance(profile.project)
-        if (!resolver.hasReferences(envs) && !EnvFileReferences.hasReferences(profile, resolver) && !EnvFileReferences.usesDecorators(profile)) return false
+        if (!resolver.hasReferences(envs) && !EnvFileReferences.hasReferences(profile, resolver) && !EnvFileReferences.usesDecorators(profile) &&
+            !EnvFileReferences.usesVarlock(profile)
+        ) {
+            return false
+        }
         return delegate(executorId, profile) != null
     }
 
@@ -79,8 +88,11 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                 // Env files with references (or layered ones) are read here and detached from the copy; values set on the
                 // configuration win
                 val files = EnvFileReferences.prepare(profile, configured, resolver, override).also { prepared = it }
+                // Refused varlock functions (exec(), keychain(), …) stop the launch before anything is fetched
+                VarlockLaunch.checkProblems(files.varlock)
                 val plan = resolver.plan(files.envs).also { plan = it }
-                result = resolver.resolve(plan, environment = override)
+                val resolved = resolver.resolve(plan, environment = override)
+                result = VarlockLaunch.resolve(environment.project, files, resolved, resolver, override ?: SecretBindingService.environmentOverride(configured))
             }
 
             override fun onSuccess() {
@@ -103,6 +115,10 @@ class SecretsProgramRunner : ProgramRunner<RunnerSettings> {
                 val failure = error as? SecretProviderException
                     ?: SecretProviderException(SecretProviderException.Kind.SERVER, error.message ?: error.javaClass.simpleName, error)
                 if (failure.kind == SecretProviderException.Kind.CANCELLED) return
+                if (failure is VarlockLaunchException) {
+                    SecretsNotifications.varlockFailed(environment.project, profile.name, failure) { execute(environment) }
+                    return
+                }
                 if (error !is SecretProviderException) LOG.warn("Resolving secrets for '${profile.name}' failed", error)
                 val explicit = plan?.explicit ?: resolver.plan(configured).explicit
                 val detach = plan != null && prepared?.detach == true

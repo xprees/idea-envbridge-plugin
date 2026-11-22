@@ -3,6 +3,8 @@ package cz.xprees.secrets.run
 import com.intellij.execution.EnvFilesOptions
 import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.configurations.RunProfile
+import cz.xprees.secrets.SecretsBundle
+import cz.xprees.secrets.core.envspec.EnvSpecDecorator
 import cz.xprees.secrets.core.envspec.EnvSpecFile
 import cz.xprees.secrets.core.envspec.EnvSpecLayers
 import cz.xprees.secrets.core.envspec.EnvSpecParser
@@ -13,6 +15,16 @@ import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.core.varlock.DEFAULT_INSTANCE
+import cz.xprees.secrets.core.varlock.VarlockCompiler
+import cz.xprees.secrets.core.varlock.VarlockEvaluator
+import cz.xprees.secrets.core.varlock.VarlockException
+import cz.xprees.secrets.core.varlock.VarlockExpr
+import cz.xprees.secrets.core.varlock.VarlockProblem
+import cz.xprees.secrets.core.varlock.VarlockProblem.Code
+import cz.xprees.secrets.core.varlock.VarlockProvider
+import cz.xprees.secrets.core.varlock.VarlockSecrets
+import cz.xprees.secrets.core.varlock.VarlockValue
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -33,6 +45,10 @@ import java.util.concurrent.ConcurrentHashMap
  *   undefined items (`KEY=`) and function calls are not passed on.
  * - **env-spec decorators** (setting on by default, see [EnvSpecLayers]): the decorators of all these files (and of a
  *   `.env.schema` next to them, layered or not) are merged into [Prepared.spec] for the launch checks.
+ * - **varlock compatibility mode** (setting `varlockCompatibility`, off by default): the files are always layered, the
+ *   environment may come from `@currentEnv`, `@import(…)` adds files of the project, and item values are read as varlock
+ *   values: function values and `${…}` interpolation go to [Prepared.varlock] and are resolved by [VarlockLaunch]; plain values
+ *   are passed as they are. See [prepareVarlock].
  *
  * Values set on the configuration win over values from files.
  */
@@ -53,7 +69,7 @@ object EnvFileReferences {
         return listOfNotNull(SCHEMA_NAME, ".env", ".env.local", env?.let { ".env.$it" }, env?.let { ".env.$it.local" })
     }
 
-    private data class Cached(val modified: Long, val size: Long, val variables: Map<String, String>, val spec: EnvSpecFile)
+    private data class Cached(val modified: Long, val size: Long, val variables: Map<String, String>, val spec: EnvSpecFile, val text: String)
 
     private val cache = ConcurrentHashMap<Path, Cached>()
 
@@ -142,6 +158,7 @@ object EnvFileReferences {
      * @property spec the merged decorators ([EnvSpecLayers.NONE] when off or unused)
      * @property fileValues every variable of every file read (references unresolved), for the checks
      * @property environment the environment used for the layered files and `forEnv(…)`, if any
+     * @property varlock the varlock values to resolve after the references (varlock compatibility mode), or null
      */
     class Prepared(
         val envs: Map<String, String>,
@@ -149,6 +166,7 @@ object EnvFileReferences {
         val spec: EnvSpecLayers,
         val fileValues: Map<String, String>,
         val environment: String?,
+        val varlock: VarlockPlan? = null,
     ) {
         /**
          * Checks the launch's final environment: the files' values overlaid with [resolved] (resolved references and values set
@@ -156,7 +174,10 @@ object EnvFileReferences {
          */
         fun check(resolved: Map<String, String>): EnvSpecLayers.Check {
             if (!spec.active) return EnvSpecLayers.NONE.check(emptyMap())
-            return spec.check(LinkedHashMap(fileValues).apply { putAll(resolved) })
+            val check = spec.check(LinkedHashMap(fileValues).apply { putAll(resolved) })
+            // varlock's @init… credentials (clientSecret=$INFISICAL_CLIENT_SECRET) aren't needed: EnvBridge signs in by itself
+            val credentials = varlock?.credentialKeys.orEmpty()
+            return if (credentials.isEmpty()) check else check.copy(missingRequired = check.missingRequired.filter { it !in credentials })
         }
 
         override fun toString(): String = "Prepared(keys=${envs.keys}, detach=$detach, environment=$environment)"
@@ -164,6 +185,7 @@ object EnvFileReferences {
 
     /** Reads the env files of a launch of [profile]; [override] is the environment of "Run with environment…". Reads the disk. */
     fun prepare(profile: RunProfile, configured: Map<String, String>, resolver: LaunchSecretResolver, override: String? = null): Prepared {
+        if (settings.varlockCompatibility) return prepareVarlock(profile, configured, override)
         val layeredOn = settings.layeredEnvFiles
         val selected = if (layeredOn) layerEnvironment(profile, configured, override) else null
         val layered = if (layeredOn) selected.orEmpty() else null
@@ -199,9 +221,232 @@ object EnvFileReferences {
         EnvPatcher.find(copy)?.first?.let { runCatching { it.detachEnvFiles(copy) } }
     }
 
-    /** The environment for layered files ("" without one), or null when layering is off. */
+    /** The environment for layered files ("" without one), or null when layering is off (the varlock mode always layers). */
     private fun layeredFor(profile: RunProfile, configured: Map<String, String>, override: String?): String? =
-        if (settings.layeredEnvFiles) layerEnvironment(profile, configured, override).orEmpty() else null
+        if (settings.layeredEnvFiles || settings.varlockCompatibility) layerEnvironment(profile, configured, override).orEmpty() else null
+
+    /**
+     * Whether the env files of [profile] use varlock values (varlock mode on): a function value, `${…}` interpolation, or
+     * `@import` / `@currentEnv` / `@init…` in a header. Such launches go through EnvBridge. Cheap enough for `canRun`.
+     */
+    fun usesVarlock(profile: RunProfile): Boolean {
+        if (!settings.varlockCompatibility) return false
+        val layered = layeredFor(profile, EnvPatcher.find(profile)?.second.orEmpty(), null)
+        return specFiles(profile, layered).any { file -> read(file)?.spec?.let(::hasVarlockValues) == true }
+    }
+
+    private fun hasVarlockValues(spec: EnvSpecFile): Boolean =
+        spec.rootDecorators.any { it.name == "import" || it.name == "currentEnv" || VarlockProvider.ofInit(it.name) != null } ||
+            spec.items.any { item ->
+                when (val value = item.value) {
+                    is EnvSpecValue.Call, is EnvSpecValue.Ref -> true
+                    is EnvSpecValue.Literal -> value.quote != "'" && '$' in value.value
+                    else -> false
+                }
+            }
+
+    /** One env file of a varlock launch: its parsed form, with `pick=` / `omit=` of the `@import` that brought it applied. */
+    private class Layer(val path: Path, val spec: EnvSpecFile)
+
+    /**
+     * The varlock mode's reading of a launch's env files:
+     *
+     * 1. the environment: *Run with environment…*, else the value of the item `@currentEnv` names (`@currentEnv=$APP_ENV`: the
+     *    run configuration's `APP_ENV`, else its value in `.env.schema` / `.env` / `.env.local`), else EnvBridge's
+     *    ([layerEnvironment]: `ENVBRIDGE_ENVIRONMENT`, the binding's environment);
+     * 2. the layered files of that environment (`.env.schema` < `.env` < `.env.local` < `.env.[env]` < `.env.[env].local`, attached
+     *    files above them), each preceded by the files its `@import(./path, pick=, omit=, allowMissing=, enabled=)` brings in
+     *    (only files inside the project; others are refused);
+     * 3. per key the definition of the file with the highest precedence (`KEY=` defines nothing, as in varlock): plain values
+     *    go to [Prepared.envs] (EnvBridge references among them resolve as usual), varlock expressions to [Prepared.varlock].
+     *
+     * Decorators are merged with varlock's defaults for unmarked files ([EnvSpecLayers.Defaults.VARLOCK]).
+     */
+    private fun prepareVarlock(profile: RunProfile, configured: Map<String, String>, override: String?): Prepared {
+        val problems = mutableListOf<VarlockLocatedProblem>()
+        val projectDir = (profile as? RunConfiguration)?.project?.basePath?.let { runCatching { Path.of(it).toRealPath() }.getOrNull() }
+        val baseLayers = layers(specFiles(profile, ""), null, projectDir, mutableListOf())
+        val fromFile = currentEnvironment(baseLayers, configured, problems)
+        val environment = (override?.takeIf { it.isNotBlank() } ?: fromFile ?: layerEnvironment(profile, configured, null))
+            ?.takeIf { SAFE_ENVIRONMENT.matches(it) }
+        val layers = layers(specFiles(profile, environment.orEmpty()), environment, projectDir, problems)
+
+        val inits = layers.flatMap { layer -> layer.spec.rootDecorators.mapNotNull { d -> VarlockProvider.ofInit(d.name)?.let { Triple(it, d, layer) } } }
+        val compiler = VarlockCompiler(
+            inits.groupBy({ it.first }, { VarlockSecrets.staticArg(it.second, "id") ?: DEFAULT_INSTANCE }).mapValues { it.value.toSet() - DEFAULT_INSTANCE },
+        )
+        val instances = LinkedHashMap<Pair<VarlockProvider, String>, Map<String, VarlockExpr>>()
+        val credentialKeys = LinkedHashSet<String>()
+        val warnings = mutableListOf<String>()
+        for ((provider, decorator, layer) in inits) {
+            val id = VarlockSecrets.staticArg(decorator, "id") ?: DEFAULT_INSTANCE
+            val args = LinkedHashMap<String, VarlockExpr>()
+            for (arg in decorator.args.orEmpty()) {
+                val name = arg.key ?: continue
+                when (name) {
+                    in provider.connectionArgs -> {
+                        val compiled = compiler.compile(arg.value, null)
+                        compiled.expr?.let { args[name] = it }
+                        compiled.problems.forEach { problems += VarlockLocatedProblem(it, location(layer, decorator)) }
+                    }
+                    // Never read: EnvBridge signs in with its own stored credentials
+                    in provider.credentialArgs -> {
+                        credentialKeys += references(arg.value)
+                        val inline = arg.value as? EnvSpecValue.Literal
+                        if (name in VarlockProvider.SECRET_CREDENTIALS && inline != null && inline.value.isNotEmpty() && '$' !in inline.value) {
+                            warnings += SecretsBundle.message("varlock.warning.inline.credential", decorator.name, name, layer.path.fileName.toString())
+                        }
+                    }
+                }
+            }
+            instances[provider to id] = args
+        }
+        for (layer in layers) {
+            layer.spec.rootDecorator("setValuesBulk")?.let { bulk ->
+                val function = ((bulk.args?.firstOrNull()?.value ?: bulk.value) as? EnvSpecValue.Call)?.name ?: "setValuesBulk"
+                problems += VarlockLocatedProblem(VarlockProblem(Code.BULK, null, listOf("$function()")), location(layer, bulk))
+            }
+        }
+
+        val schemes = SecretProvider.all().map { it.referenceScheme }
+        val envs = LinkedHashMap<String, String>()
+        val fileValues = LinkedHashMap<String, String>()
+        val definitions = LinkedHashMap<String, VarlockExpr>()
+        val locations = LinkedHashMap<String, VarlockLocation>()
+        for ((key, definition) in definitions(layers, compiler, schemes)) {
+            if (key in configured) continue
+            locations[key] = definition.location
+            definition.problems.forEach { problems += VarlockLocatedProblem(it, definition.location) }
+            when (val expr = definition.expr) {
+                null, VarlockExpr.Undefined -> Unit
+                is VarlockExpr.Text -> {
+                    envs[key] = expr.value
+                    fileValues[key] = expr.value
+                }
+                else -> definitions[key] = expr
+            }
+        }
+        envs.putAll(configured)
+        // A credential item another value uses is needed after all
+        credentialKeys.removeAll(definitions.values.flatMap(::referencedNames).toSet())
+        val plan = VarlockPlan(definitions, instances, problems.distinct(), locations, credentialKeys, warnings, environment)
+        val specs = if (settings.envSpecDecorators) layers.map { it.spec } else emptyList()
+        val spec = EnvSpecLayers.of(specs, environment, EnvSpecLayers.Defaults.VARLOCK, always = settings.envSpecDecorators)
+        return Prepared(envs, files(profile, environment.orEmpty()).isNotEmpty(), spec, fileValues, environment, plan)
+    }
+
+    private class Definition(val expr: VarlockExpr?, val problems: List<VarlockProblem>, val location: VarlockLocation)
+
+    /** Per key, the definition of the layer with the highest precedence (`KEY=` defines nothing). */
+    private fun definitions(layers: List<Layer>, compiler: VarlockCompiler, schemes: List<String>): Map<String, Definition> {
+        val result = LinkedHashMap<String, Definition>()
+        for (layer in layers) {
+            for (item in layer.spec.items) {
+                // An EnvBridge binding comment (`KEY= # infisical://KEY`) stands for its reference, as without the varlock mode
+                val binding = item.trailingComment?.let { DotEnv.bindingOf(it, schemes) }
+                if (binding == null && item.value == null) continue
+                val compiled = if (binding != null) VarlockCompiler.Result(VarlockExpr.Text(binding), emptyList()) else compiler.compile(item.value, item.key)
+                result[item.key] = Definition(compiled.expr, compiled.problems, VarlockLocation(layer.path, item.line))
+            }
+        }
+        return result
+    }
+
+    /** The value of the item `@currentEnv` names, from the configuration or the base files; null when it has none. */
+    private fun currentEnvironment(layers: List<Layer>, configured: Map<String, String>, problems: MutableList<VarlockLocatedProblem>): String? {
+        val (layer, decorator) = layers.flatMap { layer -> listOfNotNull(layer.spec.rootDecorator("currentEnv")?.let { layer to it }) }.lastOrNull() ?: return null
+        val compiler = VarlockCompiler()
+        val expr = compiler.compile(decorator.value, null).expr ?: return null
+        // The configuration's value wins over the files' (it is the process environment varlock reads first)
+        val definitions = definitions(layers, compiler, emptyList()).filterKeys { it !in configured }.mapNotNull { (key, d) -> d.expr?.let { key to it } }.toMap()
+        val evaluator = VarlockEvaluator(definitions, { name -> (configured[name] ?: System.getenv(name))?.let { VarlockValue(it) } }, null) { _, _, _ ->
+            throw VarlockException(VarlockProblem(Code.SECRET_IN_DECORATOR, null, listOf("@currentEnv")))
+        }
+        return try {
+            evaluator.evaluate(expr, null).text?.takeIf { it.isNotBlank() }
+        } catch (e: VarlockException) {
+            problems += VarlockLocatedProblem(e.problem, location(layer, decorator))
+            null
+        }
+    }
+
+    /** [files] in order, each preceded by what its `@import(…)`s bring in (recursively, each file once). */
+    private fun layers(files: List<Path>, environment: String?, projectDir: Path?, problems: MutableList<VarlockLocatedProblem>): List<Layer> {
+        val result = mutableListOf<Layer>()
+        val seen = HashSet<Path>()
+        fun add(file: Path, filter: (String) -> Boolean, depth: Int) {
+            val real = runCatching { file.toRealPath() }.getOrDefault(file.normalize())
+            if (!seen.add(real) || depth > MAX_IMPORT_DEPTH) return
+            val spec = read(file)?.spec ?: return
+            for (decorator in spec.rootDecorators.filter { it.name == "import" }) {
+                val args = decorator.args ?: continue
+                fun named(name: String) = args.lastOrNull { it.key == name }?.value
+                val enabled = when (val value = named("enabled")) {
+                    null -> true
+                    is EnvSpecValue.Literal -> value.value != "false"
+                    is EnvSpecValue.Call -> value.name == "forEnv" && environment != null &&
+                        value.positional.any { (it as? EnvSpecValue.Literal)?.value == environment }
+                    else -> true
+                }
+                if (!enabled) continue
+                val pathText = (args.firstOrNull { it.key == null }?.value as? EnvSpecValue.Literal)?.value ?: continue
+                // Inside the project only, symbolic links followed (an absolute path or ../ out of it is refused)
+                val target = real.resolveSibling(pathText).normalize()
+                val targetReal = runCatching { target.toRealPath() }.getOrNull()
+                if (projectDir == null || !(targetReal ?: target).startsWith(projectDir)) {
+                    problems += VarlockLocatedProblem(VarlockProblem(Code.IMPORT_OUTSIDE, null, listOf(pathText)), VarlockLocation(file, lineOf(file, decorator)))
+                    continue
+                }
+                if (targetReal == null || !Files.isRegularFile(targetReal)) {
+                    val allowMissing = (named("allowMissing") as? EnvSpecValue.Literal)?.value == "true"
+                    if (targetReal != null || !allowMissing) {
+                        problems += VarlockLocatedProblem(VarlockProblem(Code.IMPORT_MISSING, null, listOf(pathText)), VarlockLocation(file, lineOf(file, decorator)))
+                    }
+                    continue
+                }
+                val pick = names(named("pick"))
+                val omit = names(named("omit")).orEmpty()
+                add(targetReal, { key -> filter(key) && (pick == null || key in pick) && key !in omit }, depth + 1)
+            }
+            result += Layer(file, spec.copy(items = spec.items.filter { filter(it.key) }))
+        }
+        files.forEach { add(it, { true }, 0) }
+        return result
+    }
+
+    private const val MAX_IMPORT_DEPTH = 10
+
+    /** `pick=[A, B]` or `pick=A` -> the names; null when not given. */
+    private fun names(value: EnvSpecValue?): Set<String>? = when (value) {
+        null -> null
+        is EnvSpecValue.Array -> value.items.mapNotNull { (it as? EnvSpecValue.Literal)?.value }.toSet()
+        is EnvSpecValue.Literal -> setOf(value.value)
+        else -> emptySet()
+    }
+
+    /** The names a value refers to (`$A`, `ref(A)`, `concat($A, …)`). */
+    private fun references(value: EnvSpecValue): Set<String> = when (value) {
+        is EnvSpecValue.Ref -> setOf(value.name)
+        is EnvSpecValue.Call -> if (value.name == "ref") value.positional.mapNotNull { (it as? EnvSpecValue.Literal)?.value }.toSet() else value.args.flatMap { references(it.value) }.toSet()
+        is EnvSpecValue.Literal -> if (value.quote == "'") emptySet() else Regex("""\$\{?([A-Za-z_][A-Za-z0-9_]*)""").findAll(value.value).map { it.groupValues[1] }.toSet()
+        is EnvSpecValue.Array -> value.items.flatMap(::references).toSet()
+    }
+
+    /** The items a compiled value refers to. */
+    private fun referencedNames(expr: VarlockExpr): List<String> = when (expr) {
+        is VarlockExpr.Ref -> listOf(expr.name)
+        is VarlockExpr.Pure -> expr.args.flatMap(::referencedNames)
+        is VarlockExpr.Secret -> (expr.call.positional + expr.call.named.values).flatMap(::referencedNames)
+        is VarlockExpr.Text, VarlockExpr.Undefined -> emptyList()
+    }
+
+    private fun location(layer: Layer, decorator: EnvSpecDecorator) = VarlockLocation(layer.path, lineOf(layer.path, decorator))
+
+    /** The zero-based line of [decorator] in [file]. */
+    private fun lineOf(file: Path, decorator: EnvSpecDecorator): Int {
+        val text = read(file)?.text ?: return 0
+        return text.subSequence(0, decorator.range.first.coerceIn(0, text.length)).count { it == '\n' }
+    }
 
     /** The files whose decorators count, lowest precedence first: schemas next to them, the program's files, attached files. */
     private fun specFiles(profile: RunProfile, layered: String?): List<Path> {
@@ -232,7 +477,7 @@ object EnvFileReferences {
         } else {
             runCatching { DotEnv.parse(text, SecretProvider.all().map { it.referenceScheme }) }.getOrDefault(LinkedHashMap())
         }
-        return Cached(modified, size, variables, spec).also { cache[file] = it }
+        return Cached(modified, size, variables, spec, text).also { cache[file] = it }
     }
 
     /** The static values of a schema: undefined items (`KEY=`), references and function calls are left out. */

@@ -2,6 +2,8 @@ package cz.xprees.secrets.core.resolve
 
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.reference.SecretReference
+import cz.xprees.secrets.core.varlock.DEFAULT_INSTANCE
+import cz.xprees.secrets.core.varlock.VarlockSecrets
 
 /**
  * Rewrites references to secrets that were moved (to another folder or environment) or renamed, so that run configurations,
@@ -93,6 +95,20 @@ class MovedReferences(
             val defaults = defaultsFor(reference) ?: return@mapNotNull null
             val moved = rewrite(reference, defaults) ?: return@mapNotNull null
             Edit(found.start, found.end, text.subSequence(found.start, found.end).toString(), moved.format())
+        }.filter { it.old != it.replacement }
+
+    /**
+     * The edits that update varlock secret functions of a `.env` file (varlock mode) reading a moved secret: `infisical("OLD")`
+     * becomes `infisical("NEW")` (or `infisical()` when the new name is the item's), `vaultSecret("secret/a#k")` its new path.
+     * Calls of a named instance, and moves to somewhere the file's `@init…` can't name (another environment or project), are
+     * left as they are. `op(op://…)` is covered by [edits].
+     */
+    fun varlockEdits(text: CharSequence, defaultsFor: (SecretReference) -> SecretReference.Defaults?): List<Edit> =
+        VarlockSecrets.find(text.toString()).filter { it.instance == DEFAULT_INSTANCE && it.reference.scheme.equals(scheme, ignoreCase = true) }.mapNotNull { found ->
+            val defaults = defaultsFor(found.reference) ?: return@mapNotNull null
+            val moved = rewrite(found.reference, defaults) ?: return@mapNotNull null
+            val call = VarlockSecrets.call(moved, found.itemKey, found.init) ?: return@mapNotNull null
+            Edit(found.start, found.end, text.subSequence(found.start, found.end).toString(), call)
         }.filter { it.old != it.replacement }
 
     /** [text] with [edits] applied (they must not overlap). */

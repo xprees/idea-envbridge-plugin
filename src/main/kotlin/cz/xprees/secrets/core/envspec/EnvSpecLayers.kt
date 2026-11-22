@@ -69,9 +69,10 @@ class EnvSpecLayers private constructor(
          * Merges [files] (lowest precedence first).
          *
          * @param environment the launch's environment, for `forEnv(…)`
+         * @param always merge even when no file uses a decorator (the varlock mode: every key gets [defaults])
          */
-        fun of(files: List<EnvSpecFile>, environment: String? = null, defaults: Defaults = Defaults.NATIVE): EnvSpecLayers {
-            if (files.none(::usesNative)) return NONE
+        fun of(files: List<EnvSpecFile>, environment: String? = null, defaults: Defaults = Defaults.NATIVE, always: Boolean = false): EnvSpecLayers {
+            if (!always && files.none(::usesNative)) return NONE
             class Merged(val required: Boolean, val sensitive: Boolean) {
                 var explicitRequired: Boolean? = null
                 var explicitSensitive: Boolean? = null
