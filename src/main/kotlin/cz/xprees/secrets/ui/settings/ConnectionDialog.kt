@@ -1,6 +1,10 @@
 package cz.xprees.secrets.ui.settings
 
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogWrapper
@@ -19,7 +23,12 @@ import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.OptionChoice
+import cz.xprees.secrets.core.provider.OptionChooser
+import cz.xprees.secrets.core.provider.PendingSession
+import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProvider
+import cz.xprees.secrets.ui.auth.IdeSignInInteraction
 import java.util.UUID
 import javax.swing.JComponent
 
@@ -63,6 +72,19 @@ class ConnectionDialog(
         }
     }
 
+    /** The connection's ID (new connections get theirs now: a "Choose…" sign-in stores its session under it). */
+    private val connectionId = existing?.id ?: UUID.randomUUID().toString()
+
+    /** The connection as the last successful [OptionChooser] saw it (with the values it filled in); null when none ran. */
+    private var chooserDraft: SecretConnection? = null
+
+    /** The session the last [OptionChooser] signed in for, stored only by [doOKAction] (Cancel drops it). */
+    private var pendingSession: PendingSession? = null
+
+    /** Whether [doOKAction] stored a session a "Choose…" signed in for: the connection is signed in already. */
+    var signedIn: Boolean = false
+        private set
+
     /** The connection as saved by [doOKAction]. */
     var result: SecretConnection? = null
         private set
@@ -94,7 +116,10 @@ class ConnectionDialog(
                 }.visibleIf(visible)
             }
             for (option in method.options) {
-                row(option.label) { cell(optionFields.getValue(method.id).getValue(option.key)).align(AlignX.FILL) }.visibleIf(visible)
+                row(option.label) {
+                    cell(optionFields.getValue(method.id).getValue(option.key)).align(AlignX.FILL)
+                    method.chooser?.takeIf { it.keys.firstOrNull() == option.key }?.let { chooser -> button(chooser.label) { runChooser(method, chooser) } }
+                }.visibleIf(visible)
             }
             for (option in method.secretOptions) {
                 row(option.label) { cell(secretFields.getValue(method.id).getValue(option.key)).align(AlignX.FILL) }.visibleIf(visible)
@@ -156,23 +181,62 @@ class ConnectionDialog(
         return null
     }
 
+    /** The connection made of the dialog's fields for [method]. */
+    private fun draft(method: AuthMethod, baseUrl: String) = SecretConnection(
+        id = connectionId,
+        providerId = provider.id,
+        name = nameField.text.trim(),
+        baseUrl = baseUrl,
+        authMethodId = method.id,
+        options = optionFields.getValue(method.id).mapValues { it.value.text.trim() }.filterValues { it.isNotEmpty() },
+    )
+
+    /**
+     * Runs [chooser] under a modal progress for the connection as the fields describe it (it may sign in in the browser) and
+     * puts the values chosen in the fields. Cancelling changes no field.
+     */
+    private fun runChooser(method: AuthMethod, chooser: OptionChooser) {
+        val title = chooser.label.trimEnd('…')
+        val baseUrl = baseUrlToSave() ?: return Messages.showErrorDialog(contentPanel, SecretsBundle.message("connection.validation.url"), title)
+        val draft = draft(method, baseUrl)
+        val choice = try {
+            ProgressManager.getInstance().run(object : Task.WithResult<OptionChoice?, Exception>(project, contentPanel, method.displayName, true) {
+                override fun compute(indicator: ProgressIndicator): OptionChoice? {
+                    indicator.isIndeterminate = true
+                    return chooser.choose(draft, IdeSignInInteraction(project, indicator))
+                }
+            })
+        } catch (e: ProcessCanceledException) {
+            return
+        } catch (e: Exception) {
+            if ((e as? SecretProviderException)?.kind != SecretProviderException.Kind.CANCELLED) {
+                Messages.showErrorDialog(contentPanel, e.message ?: e.toString(), title)
+            }
+            return
+        }
+        choice ?: return
+        val chosen = choice.values.filterKeys { it in chooser.keys }
+        val fields = optionFields.getValue(method.id)
+        chosen.forEach { (key, value) -> fields[key]?.text = value }
+        chooserDraft = draft.copy(options = draft.options + chosen)
+        pendingSession = choice.pendingSession
+    }
+
     override fun doOKAction() {
         val method = selectedMethod
-        val connection = SecretConnection(
-            id = existing?.id ?: UUID.randomUUID().toString(),
-            providerId = provider.id,
-            name = nameField.text.trim(),
-            baseUrl = baseUrlToSave()!!,
-            authMethodId = method.id,
-            options = optionFields.getValue(method.id).mapValues { it.value.text.trim() }.filterValues { it.isNotEmpty() },
-        )
+        val connection = draft(method, baseUrlToSave()!!)
         val secrets = secretFields.getValue(method.id).mapValues { (_, field) -> field.password.also { field.text = "" } }
-        val sessionStale = sessionStale(existing, connection, secretsEntered = secrets.values.any { it.isNotEmpty() })
+        val secretsEntered = secrets.values.any { it.isNotEmpty() }
+        val keepsSession = method.options.filter(AuthOption::keepsSession).map(AuthOption::key).toSet()
+        // A session that a "Choose…" just used or made for these very settings stays (or is stored now)
+        val chosenFor = chooserDraft?.let { !sessionStale(it, connection, secretsEntered, keepsSession) } == true
+        val sessionStale = if (chosenFor) false else sessionStale(existing, connection, secretsEntered, keepsSession)
+        val pending = pendingSession?.takeIf { chosenFor }
         val allSecretKeys = provider.authMethods.flatMap { m -> m.secretOptions.map { it.key } }.toSet()
         // Synchronously (under a short modal progress, off the EDT): a sign-in started right after OK must find the secrets
         ProgressManager.getInstance().runProcessWithProgressSynchronously({
             // A session belongs to the instance and method it was created for
-            if (sessionStale) CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
+            signedIn = applySession(pending, sessionStale) { CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION) }
             if (existing != null && existing.authMethodId != method.id) {
                 (allSecretKeys - method.secretOptions.map { it.key }.toSet()).forEach {
                     CredentialVault.remove(connection.id, CredentialVault.secretOptionSlot(it))
@@ -199,10 +263,18 @@ class ConnectionDialog(
 
     companion object {
         /**
-         * Whether [existing]'s stored session must be dropped when it is saved as [updated]: a session was created from the
-         * method, instance, options and secrets, so any change makes it stale (a newly pasted token or password must be used
-         * right away, not after the old session expires).
+         * Updates the stored session when the dialog is confirmed: stores [pending] (a session a "Choose…" signed in for these
+         * settings) or else [removes][remove] a [stale] one. Returns whether a session was stored (no sign-in needed).
          */
+        fun applySession(pending: PendingSession?, stale: Boolean, remove: () -> Unit): Boolean {
+            if (pending != null) {
+                pending.store()
+                return true
+            }
+            if (stale) remove()
+            return false
+        }
+
         /** Whether [url] is a page to open in the browser: https, or http on this machine. */
         fun isWebPage(url: String): Boolean {
             val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
@@ -210,10 +282,15 @@ class ConnectionDialog(
             return uri.scheme.equals("https", true) || (uri.scheme.equals("http", true) && (host == "localhost" || host == "127.0.0.1"))
         }
 
-        fun sessionStale(existing: SecretConnection?, updated: SecretConnection, secretsEntered: Boolean): Boolean =
+        /**
+         * Whether [existing]'s stored session must be dropped when it is saved as [updated]: a session was created from the
+         * method, instance, options and secrets, so any change makes it stale (a newly pasted token or password must be used
+         * right away, not after the old session expires). Options in [keepsSession] (see [AuthOption.keepsSession]) don't count.
+         */
+        fun sessionStale(existing: SecretConnection?, updated: SecretConnection, secretsEntered: Boolean, keepsSession: Set<String> = emptySet()): Boolean =
             existing != null && (
                 existing.authMethodId != updated.authMethodId || existing.baseUrl != updated.baseUrl ||
-                    existing.options != updated.options || secretsEntered
+                    existing.options.filterKeys { it !in keepsSession } != updated.options.filterKeys { it !in keepsSession } || secretsEntered
                 )
     }
 }

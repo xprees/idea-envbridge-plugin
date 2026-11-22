@@ -6,6 +6,7 @@ import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.OptionChooser
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
@@ -192,16 +193,22 @@ object AwsAuthMethods {
                     OPTION_SSO_ACCOUNT_ID, SecretsBundle.message("auth.aws.option.ssoAccountId.label"), required = false,
                     hint = SecretsBundle.message("auth.aws.option.ssoAccountId.hint"),
                     validate = { value -> SecretsBundle.message("auth.aws.option.ssoAccountId.invalid").takeIf { !value.trim().matches(Regex("\\d{12}")) } },
+                    // The SSO token isn't tied to an account or role: switching them keeps the session
+                    keepsSession = true,
                 ),
                 AuthOption(
                     OPTION_SSO_ROLE_NAME, SecretsBundle.message("auth.aws.option.ssoRoleName.label"), required = false,
                     hint = SecretsBundle.message("auth.aws.option.ssoRoleName.hint"),
+                    keepsSession = true,
                 ),
             ) + COMMON,
             setupLinks = listOf(
                 SetupLink.fixed(SecretsBundle.message("auth.link.aws.identityCenterConsole"), "https://console.aws.amazon.com/singlesignon/home"),
                 SetupLink.fixed(SecretsBundle.message("auth.link.aws.identityCenter"), "https://docs.aws.amazon.com/singlesignon/latest/userguide/what-is.html"),
             ),
+            chooser = OptionChooser(SecretsBundle.message("auth.aws.sso.choose"), listOf(OPTION_SSO_ACCOUNT_ID, OPTION_SSO_ROLE_NAME)) { connection, interaction ->
+                AwsSso(connection) {}.chooseForSettings(interaction)
+            },
         ),
         AuthMethod(
             id = ENVIRONMENT,

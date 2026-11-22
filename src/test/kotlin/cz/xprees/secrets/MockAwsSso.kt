@@ -50,6 +50,10 @@ class MockAwsSso : AutoCloseable {
     @Volatile
     var refreshAccepted = true
 
+    /** Accounts and roles per page of `ListAccounts` / `ListAccountRoles` (the rest follows with `nextToken`). */
+    @Volatile
+    var pageSize = 100
+
     val accounts = linkedMapOf("123456789012" to "Dev account")
     val roles = linkedMapOf("123456789012" to listOf("Developer"))
 
@@ -139,18 +143,22 @@ class MockAwsSso : AutoCloseable {
 
             "/assignment/accounts" -> {
                 if (bearer !in validTokens) return unauthorized(exchange)
+                val (page, next) = page(accounts.entries.toList(), query["next_token"])
                 respond(exchange, JsonObject().apply {
                     add("accountList", JsonArray().apply {
-                        accounts.forEach { (id, name) -> add(JsonObject().apply { addProperty("accountId", id); addProperty("accountName", name); addProperty("emailAddress", "a@example.test") }) }
+                        page.forEach { (id, name) -> add(JsonObject().apply { addProperty("accountId", id); addProperty("accountName", name); addProperty("emailAddress", "a@example.test") }) }
                     })
+                    next?.let { addProperty("nextToken", it) }
                 })
             }
 
             "/assignment/roles" -> {
                 if (bearer !in validTokens) return unauthorized(exchange)
                 val account = query["account_id"]
+                val (page, next) = page(roles[account].orEmpty(), query["next_token"])
                 respond(exchange, JsonObject().apply {
-                    add("roleList", JsonArray().apply { roles[account].orEmpty().forEach { add(JsonObject().apply { addProperty("roleName", it); addProperty("accountId", account) }) } })
+                    add("roleList", JsonArray().apply { page.forEach { add(JsonObject().apply { addProperty("roleName", it); addProperty("accountId", account) }) } })
+                    next?.let { addProperty("nextToken", it) }
                 })
             }
 
@@ -162,6 +170,13 @@ class MockAwsSso : AutoCloseable {
 
             else -> portalError(exchange, 404, "NotFoundException", "Unknown path $path")
         }
+    }
+
+    /** One page of [items] from the `next_token` [token] (an opaque `page-<offset>`) and the next page's token. */
+    private fun <T> page(items: List<T>, token: String?): Pair<List<T>, String?> {
+        val from = token?.removePrefix("page-")?.toIntOrNull() ?: 0
+        val to = minOf(items.size, from + pageSize)
+        return items.subList(from, to) to (if (to < items.size) "page-$to" else null)
     }
 
     /** Makes every issued access token invalid (as if it expired or was revoked). */

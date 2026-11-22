@@ -3,14 +3,19 @@ package cz.xprees.secrets.aws
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.logger
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.auth.TokenSet
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.NetworkErrors
+import cz.xprees.secrets.core.provider.OptionChoice
+import cz.xprees.secrets.core.provider.PendingSession
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SignInInteraction
+import cz.xprees.secrets.core.settings.SecretsAppSettings
 import java.io.IOException
 import java.net.ProxySelector
 import java.net.URI
@@ -32,8 +37,9 @@ import java.util.concurrent.ConcurrentHashMap
  *    user code, to be compared with the one the browser shows;
  * 3. `CreateToken` with the `device_code` grant, polled every `interval` seconds (five more after `slow_down`) until the user
  *    allows access, the code expires (`expired_token`) or access is denied;
- * 4. `sso` `GetRoleCredentials` (account ID and role name; `ListAccounts` / `ListAccountRoles` pick them when there is only one)
- *    for temporary role credentials, kept **in memory** until five minutes before they expire and then fetched again with the
+ * 4. `sso` `GetRoleCredentials` (account ID and role name from the connection's options; when they aren't set,
+ *    `ListAccounts` / `ListAccountRoles` take the only one or let the user pick, see [AwsSsoAssignments], and the pick is
+ *    saved in the options) for temporary role credentials, kept **in memory** until five minutes before they expire and then fetched again with the
  *    stored access token, renewed with the refresh token (`refresh_token` grant) when it is about to expire.
  *
  * The access token, refresh token and the client registration (client ID and secret) are kept in the IDE's password storage
@@ -46,6 +52,13 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
     private val startUrl: String get() = connection.option(AwsAuthMethods.OPTION_SSO_START_URL)?.trim().orEmpty()
     private val ssoRegion: String get() = connection.option(AwsAuthMethods.OPTION_SSO_REGION)?.trim()?.lowercase().orEmpty()
     private val api by lazy { Api(ssoRegion) }
+    private val optionAccount: String? get() = connection.option(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID)?.trim()?.takeIf { it.isNotEmpty() }
+    private val optionRole: String? get() = connection.option(AwsAuthMethods.OPTION_SSO_ROLE_NAME)?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** The role credentials in memory, if they are still valid and for the account and role the connection names now. */
+    private fun cachedKeys(): AwsKeys? = cache[connection.id]?.takeIf { cached ->
+        cached.valid() && (optionAccount == null || optionAccount == cached.account) && (optionRole == null || optionRole == cached.role)
+    }?.keys
 
     /** Whether a session (tokens) is stored. */
     fun hasSession(): Boolean = loadSession() != null
@@ -53,16 +66,74 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
     /** The role credentials: from memory, else fetched with the stored token (renewed when needed); AUTH_REQUIRED when signed out. */
     fun keys(): AwsKeys {
         val session = loadSession() ?: throw SecretProviderException(Kind.AUTH_REQUIRED, "Not signed in to '${connection.name}' (IAM Identity Center)")
-        cache[connection.id]?.takeIf { it.valid() }?.let { return it.keys }
+        cachedKeys()?.let { return it }
         return roleCredentials(session)
     }
 
     /** Forgets [keys] from memory when they are the cached ones (AWS no longer accepted them). Returns whether they were. */
     fun drop(keys: AwsKeys): Boolean = cache[connection.id]?.takeIf { it.keys === keys }?.let { cache.remove(connection.id, it) } == true
 
-    /** The device authorization flow (see the class comment); returns a description of the account and role. */
+    /**
+     * The device authorization flow (see the class comment); returns a description of the account and role. When the
+     * connection names no account or role and there are several, the user picks them ([SignInInteraction.choose]) and the
+     * choice is saved in the connection's (non-secret) options, so later sign-ins don't ask.
+     */
     fun signIn(interaction: SignInInteraction): String {
         checkSettings()
+        val (registration, token) = deviceFlow(interaction)
+
+        interaction.status("Getting the role credentials…")
+        val choice = assignments(token.accessToken).choose(interaction, optionAccount, optionRole)
+        val session = newSession(registration, token, choice.account, choice.role)
+        val keys = api.getRoleCredentials(session.accessToken, choice.account, choice.role)
+        check(keys)
+        CredentialVault.set(connection.id, CredentialVault.SLOT_SESSION, session.toJson())
+        cache[connection.id] = Cached(keys, choice.account, choice.role)
+        if (choice.asked) rememberChoice(choice.account, choice.role)
+        return "${keys.shortId} (IAM Identity Center, ${choice.role} @ ${choice.account}, ${AwsSecretsManagerProvider.region(connection)})"
+    }
+
+    /**
+     * For the connection dialog's "Choose…" button: lists the accounts and then the chosen account's roles and lets the user
+     * pick (the only one is taken without asking). Uses the stored token when it is still good (renewed with the refresh token
+     * if needed), else signs in in the browser. Returns the account ID and role name options, or null when the user cancelled.
+     * Saves nothing in the settings (the dialog fills its fields), and a browser sign-in's session isn't stored yet: it comes
+     * back as [OptionChoice.pendingSession], which the dialog stores only when it is confirmed, so Cancel leaves the stored
+     * session as it was. (Renewing the stored token stores the renewed one right away: the old refresh token may be spent.)
+     */
+    fun chooseForSettings(interaction: SignInInteraction): OptionChoice? {
+        checkSettings()
+        fun choose(token: String) = assignments(token).choose(interaction, null, null, currentAccount = optionAccount, currentRole = optionRole)
+        var pending: PendingSession? = null
+        val choice = try {
+            val stored = storedToken()
+            try {
+                stored?.let(::choose)
+            } catch (e: SecretProviderException) {
+                // Revoked or expired early: sign in again below
+                if (e.kind != Kind.AUTH_REQUIRED) throw e
+                null
+            } ?: run {
+                val (registration, token) = deviceFlow(interaction)
+                interaction.status("Listing your AWS accounts and roles…")
+                choose(token.accessToken).also {
+                    val session = newSession(registration, token, it.account, it.role).toJson()
+                    val id = connection.id
+                    pending = PendingSession {
+                        CredentialVault.set(id, CredentialVault.SLOT_SESSION, session)
+                        cache.remove(id)
+                    }
+                }
+            }
+        } catch (e: SecretProviderException) {
+            if (e.kind == Kind.CANCELLED) return null
+            throw e
+        }
+        return OptionChoice(mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to choice.account, AwsAuthMethods.OPTION_SSO_ROLE_NAME to choice.role), pending)
+    }
+
+    /** Registers a client and runs the device authorization grant until the user allows access in the browser. */
+    private fun deviceFlow(interaction: SignInInteraction): Pair<Registration, Token> {
         interaction.status("Starting the IAM Identity Center sign-in…")
         val registration = api.registerClient()
         val device = api.startDeviceAuthorization(registration, startUrl)
@@ -76,8 +147,7 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
         var interval = pollIntervalOverrideMs ?: (device.intervalSeconds.coerceIn(1, 60) * 1000L)
         val deadline = System.currentTimeMillis() + device.expiresInSeconds.coerceIn(60, 3600) * 1000L
         var failures = 0
-        var token: Token? = null
-        while (token == null) {
+        while (true) {
             if (interaction.isCancelled()) throw cancelled()
             val result = try {
                 api.createToken(registration, deviceCode = device.deviceCode).also { failures = 0 }
@@ -87,7 +157,7 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
                 null
             }
             when (result) {
-                is TokenResult.Issued -> token = result.token
+                is TokenResult.Issued -> return registration to result.token
                 is TokenResult.Failed -> when (result.code) {
                     "authorization_pending" -> Unit
                     "slow_down" -> interval += pollIntervalOverrideMs ?: SLOW_DOWN_MS
@@ -97,34 +167,52 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
                 }
                 null -> Unit
             }
-            if (token != null) break
             if (System.currentTimeMillis() >= deadline) throw SecretProviderException(Kind.AUTH_REQUIRED, "Access wasn't allowed in time; sign in again")
             sleep(interval, interaction)
         }
+    }
 
-        interaction.status("Getting the role credentials…")
-        val account = connection.option(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID)?.trim() ?: pickAccount(token!!.accessToken)
-        val role = connection.option(AwsAuthMethods.OPTION_SSO_ROLE_NAME)?.trim() ?: pickRole(token!!.accessToken, account)
-        val session = TokenSet(
-            accessToken = token!!.accessToken,
-            refreshToken = token.refreshToken,
-            expiresAt = token.expiresAt,
-            account = "$role @ $account",
-            extra = mapOf(
-                EXTRA_CLIENT_ID to registration.clientId,
-                EXTRA_CLIENT_SECRET to registration.clientSecret,
-                EXTRA_CLIENT_EXPIRES to registration.expiresAt.toString(),
-                EXTRA_START_URL to startUrl,
-                EXTRA_SSO_REGION to ssoRegion,
-                EXTRA_ACCOUNT to account,
-                EXTRA_ROLE to role,
-            ),
-        )
-        val keys = api.getRoleCredentials(session.accessToken, account, role)
-        check(keys)
-        CredentialVault.set(connection.id, CredentialVault.SLOT_SESSION, session.toJson())
-        cache[connection.id] = Cached(keys)
-        return "${keys.shortId} (IAM Identity Center, $role @ $account, ${AwsSecretsManagerProvider.region(connection)})"
+    private fun newSession(registration: Registration, token: Token, account: String, role: String) = TokenSet(
+        accessToken = token.accessToken,
+        refreshToken = token.refreshToken,
+        expiresAt = token.expiresAt,
+        account = "$role @ $account",
+        extra = mapOf(
+            EXTRA_CLIENT_ID to registration.clientId,
+            EXTRA_CLIENT_SECRET to registration.clientSecret,
+            EXTRA_CLIENT_EXPIRES to registration.expiresAt.toString(),
+            EXTRA_START_URL to startUrl,
+            EXTRA_SSO_REGION to ssoRegion,
+            EXTRA_ACCOUNT to account,
+            EXTRA_ROLE to role,
+        ),
+    )
+
+    /** The stored access token when it belongs to these settings and is still good (renewed when needed); else null. */
+    private fun storedToken(): String? {
+        var session = loadSession() ?: return null
+        if (session.extra[EXTRA_START_URL] != startUrl || session.extra[EXTRA_SSO_REGION] != ssoRegion) return null
+        if (session.isExpired(skewSeconds = 60)) {
+            session = try {
+                refresh(session)
+            } catch (e: SecretProviderException) {
+                null
+            } ?: return null
+        }
+        return session.accessToken
+    }
+
+    private fun assignments(token: String) = AwsSsoAssignments { path, query -> api.page(path, query, token) }
+
+    /** Saves the picked account and role in the connection's options (settings: they aren't secret). */
+    private fun rememberChoice(account: String, role: String) {
+        val save = Runnable {
+            val settings = SecretsAppSettings.getInstance()
+            val current = settings.connection(connection.id) ?: return@Runnable
+            settings.addOrUpdate(current.copy(options = current.options + mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to account, AwsAuthMethods.OPTION_SSO_ROLE_NAME to role)))
+        }
+        val app = ApplicationManager.getApplication() ?: return
+        if (app.isDispatchThread) save.run() else app.invokeAndWait(save, ModalityState.any())
     }
 
     /** Logs out of the AWS access portal (best effort) and forgets the tokens, the registration and the role credentials. */
@@ -144,7 +232,7 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
     // ---- Tokens and role credentials ------------------------------------------------------------------------------------
 
     private fun roleCredentials(stored: TokenSet): AwsKeys = synchronized(lock(connection.id)) {
-        cache[connection.id]?.takeIf { it.valid() }?.let { return it.keys }
+        cachedKeys()?.let { return it }
         if (stored.extra[EXTRA_START_URL] != startUrl || stored.extra[EXTRA_SSO_REGION] != ssoRegion) {
             throw SecretProviderException(Kind.AUTH_REQUIRED, "The IAM Identity Center settings of '${connection.name}' changed; sign in again")
         }
@@ -152,8 +240,12 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
         if (session.isExpired(skewSeconds = REFRESH_WINDOW_S)) {
             session = refresh(session) ?: if (session.isExpired()) throw expired() else session
         }
-        val account = session.extra[EXTRA_ACCOUNT].orEmpty()
-        val role = session.extra[EXTRA_ROLE].orEmpty()
+        // The connection's options win (they may have been changed since the sign-in); the session's are the fallback
+        val account = optionAccount ?: session.extra[EXTRA_ACCOUNT].orEmpty()
+        val role = optionRole ?: session.extra[EXTRA_ROLE].orEmpty()
+        if (account.isEmpty() || role.isEmpty()) {
+            throw SecretProviderException(Kind.AUTH_REQUIRED, "Choose the AWS account and role of '${connection.name}': sign in again, or use Choose… in its settings")
+        }
         val keys = try {
             api.getRoleCredentials(session.accessToken, account, role)
         } catch (e: SecretProviderException) {
@@ -162,7 +254,7 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
             val renewed = refresh(session) ?: throw expired()
             api.getRoleCredentials(renewed.accessToken, account, role)
         }
-        cache[connection.id] = Cached(keys)
+        cache[connection.id] = Cached(keys, account, role)
         keys
     }
 
@@ -183,28 +275,6 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
         val renewed = session.copy(accessToken = token.accessToken, refreshToken = token.refreshToken ?: refreshToken, expiresAt = token.expiresAt)
         CredentialVault.set(connection.id, CredentialVault.SLOT_SESSION, renewed.toJson())
         return renewed
-    }
-
-    private fun pickAccount(token: String): String {
-        val accounts = api.listAccounts(token)
-        return when (accounts.size) {
-            0 -> throw SecretProviderException(Kind.FORBIDDEN, "IAM Identity Center assigns no AWS account to you")
-            1 -> accounts.keys.single()
-            else -> throw SecretProviderException(
-                Kind.CONFIGURATION,
-                "You can use several AWS accounts; set the account ID in the connection's settings: " +
-                    accounts.entries.joinToString { (id, name) -> if (name.isEmpty()) id else "$id ($name)" },
-            )
-        }
-    }
-
-    private fun pickRole(token: String, account: String): String {
-        val roles = api.listAccountRoles(token, account)
-        return when (roles.size) {
-            0 -> throw SecretProviderException(Kind.FORBIDDEN, "IAM Identity Center assigns you no role in account $account")
-            1 -> roles.single()
-            else -> throw SecretProviderException(Kind.CONFIGURATION, "You can use several roles in account $account; set the role name in the connection's settings: ${roles.joinToString()}")
-        }
     }
 
     private fun checkSettings() {
@@ -334,39 +404,16 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
             return AwsKeys(id, secret, c.str("sessionToken"), expiration)
         }
 
-        /** Account ID -> account name. */
-        fun listAccounts(token: String): Map<String, String> {
-            val accounts = linkedMapOf<String, String>()
-            paged("$portal/assignment/accounts?max_result=100", token, "Listing your AWS accounts") { o ->
-                o.getAsJsonArray("accountList")?.forEach { a ->
-                    val account = a.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
-                    account.str("accountId")?.let { accounts[it] = account.str("accountName").orEmpty() }
-                }
-            }
-            return accounts
-        }
-
-        fun listAccountRoles(token: String, account: String): List<String> {
-            val roles = mutableListOf<String>()
-            paged("$portal/assignment/roles?account_id=${enc(account)}&max_result=100", token, "Listing your roles in account $account") { o ->
-                o.getAsJsonArray("roleList")?.forEach { r -> r.takeIf { it.isJsonObject }?.asJsonObject?.str("roleName")?.let(roles::add) }
-            }
-            return roles.distinct()
+        /** GETs a portal path (`ListAccounts`, `ListAccountRoles`) with the token in the bearer header; see [AwsSsoAssignments]. */
+        fun page(path: String, query: List<Pair<String, String>>, token: String): JsonObject {
+            val what = if (path == AwsSsoAssignments.ROLES_PATH) "Listing your roles in account ${query.firstOrNull { it.first == "account_id" }?.second}" else "Listing your AWS accounts"
+            val url = "$portal$path" + query.joinToString("&", prefix = if (query.isEmpty()) "" else "?") { (k, v) -> "${enc(k)}=${enc(v)}" }
+            return json(get(url, token), what)
         }
 
         fun logout(token: String) {
             val response = post("$portal/logout", null, token)
             if (response.statusCode() !in 200..299) throw failure(response, "Logging out of IAM Identity Center")
-        }
-
-        private fun paged(url: String, token: String, what: String, page: (JsonObject) -> Unit) {
-            var next: String? = null
-            var pages = 0
-            do {
-                val o = json(get(if (next == null) url else "$url&next_token=${enc(next)}", token), what)
-                page(o)
-                next = o.str("nextToken")?.takeIf { it.isNotEmpty() }
-            } while (next != null && ++pages < 50)
         }
 
         private fun post(url: String, body: JsonObject?, token: String?): HttpResponse<String> =
@@ -414,7 +461,7 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
     }
 
     /** Role credentials in memory, until five minutes before they expire. */
-    private class Cached(val keys: AwsKeys) {
+    private class Cached(val keys: AwsKeys, val account: String, val role: String) {
         private val until: Instant = keys.expiresAt?.minus(EXPIRY_MARGIN) ?: Instant.now().plus(Duration.ofMinutes(15))
 
         fun valid() = Instant.now().isBefore(until)
