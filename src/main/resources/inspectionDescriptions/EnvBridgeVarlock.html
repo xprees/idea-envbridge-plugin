@@ -1,0 +1,26 @@
+<html>
+<body>
+Reports varlock-specific problems in <code>.env.schema</code> and the <code>.env</code> files layered with it. Active only with
+<i>Settings | Tools | EnvBridge | varlock compatibility mode</i> on, and only in directories with a <code>.env.schema</code> or in
+files that use decorators or function values, for example:
+<pre><code># @plugin(@varlock/1password-plugin)
+# @initOp(token=$OP_TOKEN)
+# @currentEnv=$APP_ENV
+# ---
+# @type=enum(dev, prod)
+APP_ENV=dev
+API_KEY=op(op://vault/api/key)</code></pre>
+<p>
+Reported: deprecated decorators (with what replaces them) and bare <code>/regex/</code> type options, unknown functions,
+functions of a plugin (<code>op()</code>, <code>infisical()</code>, <code>vaultSecret()</code>) that no header loads with
+<code>@plugin(&hellip;)</code> or its <code>@init&hellip;</code> decorator, <code>$KEY</code> / <code>ref(KEY)</code> references
+to keys no layered file defines, an <code>@currentEnv</code> naming a missing key, <code>@import</code> of a file that doesn't
+exist (unless <code>allowMissing=true</code>), and plain values that don't match a <code>@type</code> declared in another layer,
+such as an invalid enum value in <code>.env</code> for an enum of <code>.env.schema</code>.
+</p>
+<p>
+General decorator problems are reported by <i>env-spec decorators in .env files</i>. Nothing is evaluated: functions such as
+<code>exec()</code> and plugin functions are only checked by name.
+</p>
+</body>
+</html>

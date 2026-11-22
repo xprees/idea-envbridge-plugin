@@ -23,6 +23,8 @@ import cz.xprees.secrets.core.envspec.EnvSpecDiagnostic.Code
 import cz.xprees.secrets.core.envspec.EnvSpecParser
 import cz.xprees.secrets.core.envspec.EnvSpecValidation
 import cz.xprees.secrets.core.resolve.EnvReferences
+import cz.xprees.secrets.editor.varlock.VarlockCompletion
+import cz.xprees.secrets.editor.varlock.VarlockMode
 
 /**
  * env-spec decorators in `.env` files (`.env`, `.env.schema`, `.env.local`, …): syntax problems of decorator comments, unknown
@@ -104,20 +106,32 @@ class EnvSpecInspection : LocalInspectionTool() {
     }
 }
 
-/** Completes decorator names after `# @` (and `# @required @…`, and `KEY=value # @…`) in `.env` files. */
+/**
+ * Completes decorator names after `# @` (and `# @required @…`, and `KEY=value # @…`) in `.env` files. In varlock mode only the
+ * decorators that fit the position are offered: root decorators (and plugins' `@init…`) in the header, item decorators elsewhere.
+ */
 class EnvSpecDecoratorCompletionContributor : CompletionContributor(), DumbAware {
     override fun fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet) {
         if (!DotEnvLines.isDotEnv(parameters.originalFile.name)) return
-        val prefix = decoratorPrefix(SecretKeyCompletionContributor.linePrefix(parameters.editor, parameters.offset)) ?: return
+        val linePrefix = SecretKeyCompletionContributor.linePrefix(parameters.editor, parameters.offset)
+        val prefix = decoratorPrefix(linePrefix) ?: return
         // Names start with what was typed (`@sens` shouldn't offer `@defaultSensitive`)
         val matching = result.withPrefixMatcher(PlainPrefixMatcher(prefix, true))
-        for (name in EnvSpecDecorators.ALL) {
-            if (name in EnvSpecDecorators.DEPRECATED) continue
-            val root = name in EnvSpecDecorators.ROOT
-            matching.addElement(
-                LookupElementBuilder.create(name).withPresentableText("@$name").withBoldness(name in EnvSpecDecorators.NATIVE)
-                    .withTypeText(SecretsBundle.message(if (root) "envspec.completion.root" else "envspec.completion.item"), true),
-            )
+        // varlock mode: root decorators in the header, item decorators elsewhere, plugin decorators too, `()` / `=` inserted
+        val varlock = VarlockMode.isActive(parameters.originalFile)
+        val names = if (varlock) {
+            val trailing = DECORATOR_COMMENT.find(linePrefix) == null
+            val file = parameters.originalFile
+            VarlockCompletion.decoratorNames(VarlockCompletion.position(VarlockMode.parsed(file), file.viewProvider.contents, parameters.offset, trailing))
+        } else {
+            EnvSpecDecorators.ALL.filter { it !in EnvSpecDecorators.DEPRECATED }
+        }
+        for (name in names) {
+            val root = EnvSpecDecorators.isRoot(name)
+            var element = LookupElementBuilder.create(name).withPresentableText("@$name").withBoldness(name in EnvSpecDecorators.NATIVE)
+                .withTypeText(SecretsBundle.message(if (root) "envspec.completion.root" else "envspec.completion.item"), true)
+            if (varlock) element = element.withInsertHandler(VarlockCompletion.DECORATOR_INSERT)
+            matching.addElement(element)
         }
         result.stopHere()
     }
