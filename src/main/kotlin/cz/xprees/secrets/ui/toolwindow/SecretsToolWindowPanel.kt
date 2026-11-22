@@ -531,6 +531,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 details.error = e.javaClass.simpleName
                 details.state = OnDemandDetails.State.FAILED
             }
+            // A tooltip still saying "Loading details…" shows what was read without the user moving the mouse
+            ApplicationManager.getApplication().invokeLater({ TreeTooltipRefresh.refreshIfHovered(tree, node) }, ModalityState.any(), project.disposed)
         }
     }
 
