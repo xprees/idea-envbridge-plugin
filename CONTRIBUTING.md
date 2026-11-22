@@ -77,7 +77,7 @@ Every change in behaviour needs a test that fails without it.
 
 - Pure logic (`core/model`, `core/reference`, `core/resolve/EnvResolution`, API parsing, project files) is tested with plain JUnit.
 - Code that needs the platform extends `BasePlatformTestCase`. Network code is unit-tested against fakes (`MockInfisical`,
-  `MockVault`, `MockDoppler`, `MockAwsSecretsManager`), never against a real instance.
+  `MockVault`, `MockDoppler`, `MockAwsSecretsManager`, `MockAwsSso`), never against a real instance.
 - **Integration tests** (`src/test/kotlin/.../integration/`, classes ending in `IntegrationTest`) run the providers and the launch
   path against real servers in Docker: HashiCorp Vault, OpenBao, a self-hosted Infisical and LocalStack (AWS Secrets Manager),
   seeded with throwaway test data.

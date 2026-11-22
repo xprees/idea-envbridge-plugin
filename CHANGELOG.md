@@ -4,6 +4,22 @@
 
 ### Added
 
+- **AWS Secrets Manager: name layouts.** A connection's *Name layout* describes how its secrets are named, with `{project}` and
+  `{env}`: `{env}/{project}` for `prod/myapp`, `acme/{env}/{project}`, `{project}-{env}`; the default `{project}/{env}` is the
+  naming used so far, so existing connections and references are unchanged. Names that don't follow the layout aren't shown (the
+  tool window says how many), fixed text at the start filters on the server, and new environments are named by the layout.
+  References keep naming project and environment (`aws-sm://myapp/prod#KEY`), so they work under any layout
+- **AWS Secrets Manager: fewer billed requests.** Secrets needed together (a launch's references, the environments read for
+  completion) are read up to 20 per `BatchGetSecretValue` request, and values are kept in memory with their version, so browsing
+  and completion only re-read secrets whose version changed since the last listing (launches still always read current values).
+  Where `BatchGetSecretValue` isn't allowed, secrets are read one by one as before
+- **AWS Secrets Manager: descriptions, tags and rotation.** A secret's description is the comment of its keys, and editing a
+  key's comment changes the description (without making a new version). The tool window shows each environment's description,
+  tags and rotation schedule, and *Rotate Now…* starts a rotation of secrets that have rotation turned on (with confirmation and
+  the production guard; not while *Read-only* is on)
+- **AWS Secrets Manager: IAM Identity Center sign-in in the IDE**, without the AWS CLI: enter the SSO start URL and region (and
+  the account and role, unless there is only one), confirm the code in the browser, done. The session tokens are kept in the IDE's
+  password storage and renewed automatically, the role credentials only in memory; sign-out logs out of the AWS access portal
 - **Vault/OpenBao: KV version 1 mounts.** Reading, listing, injecting and writing (create, edit, rename, move, delete) now work on
   KV v1 secrets engines too, next to KV v2. Each mount's version is found the way the Vault CLI finds it, so nothing needs to be
   configured; moves also work between KV v1 and KV v2 mounts. KV v1 has no versions or check-and-set, so a change someone else

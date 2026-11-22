@@ -67,10 +67,12 @@ handed to the process in memory. Nothing is written to disk.</p>
       Create, edit, move and delete secrets, and create branch configs</li>
   <li><b>AWS Secrets Manager</b>: a secret named <code>myapp/dev</code> holding key/value JSON is environment <code>dev</code> of
       <code>myapp</code>: <code>DB_PASSWORD=aws-sm://myapp/dev#DB_PASSWORD</code>, <code>aws-sm://myapp/dev#*</code> for every key,
-      or <code>aws-sm://#DB_PASSWORD</code> for the bound secret, following the selected environment. Sign in with an access key,
-      an <b>AWS profile</b> (SSO and role profiles through the AWS CLI) or the IDE's environment variables. Create, edit, rename,
-      move and delete keys with check-and-set writes; AWS secrets themselves are never deleted. No AWS SDK: requests are signed by
-      the plugin</li>
+      or <code>aws-sm://#DB_PASSWORD</code> for the bound secret, following the selected environment; other naming schemes
+      (<code>prod/myapp</code>) through a <b>name layout</b>. Sign in with <b>IAM Identity Center</b> in the browser (no AWS CLI
+      needed), an access key, an <b>AWS profile</b> (SSO and role profiles through the AWS CLI) or the IDE's environment variables.
+      Create, edit, rename, move and delete keys with check-and-set writes; descriptions, tags and rotation shown, <i>Rotate
+      Now</i>; secrets read in batches to keep billed requests down; AWS secrets themselves are never deleted. No AWS SDK: requests
+      are signed by the plugin</li>
   <li>Reads the Infisical CLI's <code>.infisical.yaml</code> / <code>.infisical.json</code> (project, environment, Git branch
       mapping, folder), so the plugin and <code>infisical run</code> pick the same environment</li>
 </ul>
@@ -324,6 +326,15 @@ is the **environment**, everything before it the **project** (the name prefix), 
 keys. `myapp/dev` → project `myapp`, environment `dev`; `team/myapp/prod` → `team/myapp`, `prod`. Names without `/` are listed
 under *(no prefix)*. There are no folders.
 
+**Name layout** (optional, per connection): if your secrets are named differently, describe the names with `{project}` and
+`{env}`, each exactly once: `{env}/{project}` for `prod/myapp`, `acme/{env}/{project}` for `acme/prod/myapp`, `{project}-{env}`
+for `myapp-prod`. The default is `{project}/{env}`. The text around the placeholders must match exactly; `{env}` never contains
+`/`, `{project}` may span several segments, and where a name could be split two ways the environment is the shortest part
+(`{env}/{project}`: the first segment; `{project}-{env}`: the text after the last `-`). Names that don't follow the layout are
+**not shown**; the connection says how many were left out. Fixed text at the start (`acme/`) is used as a server-side filter.
+New environments are named by the layout. **References don't change with the layout**: `aws-sm://myapp/prod#KEY` always means
+project `myapp`, environment `prod`, whatever the secret's name in AWS.
+
 ```
 DB_PASSWORD=aws-sm://myapp/dev#DB_PASSWORD             key DB_PASSWORD of secret myapp/dev
 AWS=aws-sm://myapp/dev#*                               every key of myapp/dev
@@ -336,12 +347,24 @@ EU_PASSWORD=aws-sm://myapp/prod#DB_PASSWORD?connection=EU
   string** instead of JSON is one key named after its name's last segment (`aws-sm://myapp/STRIPE_KEY#STRIPE_KEY`). Binary
   secrets are not supported.
 - A connection is one region; for a secret in another region, add a connection for it and name it with `?connection=`.
-- *Secret name prefix* (optional) lists only secrets whose names start with it, for large accounts.
+- *Secret name prefix* (optional) lists only secrets whose names start with it, for large accounts (combined with the name
+  layout's fixed start, if any).
+- **Descriptions, tags and rotation**: a secret's description is the comment of all its keys; changing a key's comment in *Edit
+  Secret…* changes the secret's description (for every key of it; no new version is made). The tool window shows each
+  environment's description, tags and automatic rotation (on/off, last and next rotation) as a tooltip, and *Rotate Now…* (in the
+  environment's context menu, only where rotation is on) starts a rotation with the secret's rotation settings, after a
+  confirmation (and the production guard's).
+- **Fewer billed requests**: Secrets Manager bills API calls. Secrets needed together (a launch's references, the environments
+  read for completion) are read up to 20 at a time with `BatchGetSecretValue`; values are kept in memory with their version, so
+  browsing and completion re-read only secrets whose version changed since the last listing. Launches always read current values.
+  If `BatchGetSecretValue` isn't allowed, EnvBridge reads one by one with `GetSecretValue` (and doesn't try the batch again for an
+  hour).
 
 | Method | Setup |
 |---|---|
 | **Access key** (default) | Access key ID, secret access key and, for temporary credentials, the session token. All three are kept in the IDE's password storage. Sign-out forgets them; the key itself isn't deactivated |
 | **AWS profile** | A profile name from `~/.aws/credentials` / `~/.aws/config` (default `default`), read when needed and never copied. Profiles with static keys work as they are; **IAM Identity Center (SSO)**, role and `credential_process` profiles get temporary credentials from the AWS CLI v2 (`aws configure export-credentials`, kept in memory only): run `aws sso login --profile <name>` first when the SSO session has expired |
+| **IAM Identity Center (SSO)** | Sign in in the browser without the AWS CLI: enter the SSO start URL (`https://my-company.awsapps.com/start`), the SSO region, and the account ID and role name (both optional when you have only one). *Sign In* opens AWS's confirmation page and shows a code to compare with the one there. The session tokens are kept in the IDE's password storage and renewed automatically; the short-lived role credentials stay in memory. When the session can't be renewed, sign in again. Sign-out logs out of the AWS access portal and forgets everything |
 | **Environment variables** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` of the IDE's process |
 
 **Writing**: *New Secret…* adds a key to the environment's secret (creating the secret if it doesn't exist), *Edit Secret…*
@@ -349,9 +372,13 @@ changes a value or renames a key, *Move…* / *Copy* move keys between environme
 last one leaves `{}`), and *New Environment…* creates the secret `<prefix>/<name>` holding `{}`. **AWS secrets are never
 deleted.** Every write reads the secret, writes a new version that isn't current yet, and makes it current only if nobody changed
 the secret meanwhile (AWS's `UpdateSecretVersionStage` with `RemoveFromVersionId`); otherwise nothing changes and you are asked to
-refresh. Besides `secretsmanager:ListSecrets` and `GetSecretValue`, writing needs `PutSecretValue`, `UpdateSecretVersionStage`
-and, for new environments, `CreateSecret`. Plain-string secrets can change their value but are never converted to JSON.
-Secrets Manager has no per-key comments, so comments are ignored.
+refresh (this also happens when a rotation finishes during the write). Plain-string secrets can change their value but are never
+converted to JSON. A new key's comment becomes the secret's description only when it creates the secret or the secret has none.
+
+**IAM permissions**: reading needs `secretsmanager:ListSecrets`, `GetSecretValue` and (recommended, for fewer requests)
+`BatchGetSecretValue`, which AWS only allows together with `GetSecretValue` on each secret. Writing needs `PutSecretValue`,
+`UpdateSecretVersionStage`, `CreateSecret` (new environments), `DescribeSecret` and `UpdateSecret` (descriptions); *Rotate Now*
+needs `RotateSecret` (and the rotation function's own permissions).
 
 "Open in dashboard" opens the secret in the AWS console of its region. Requests are signed with AWS Signature Version 4 by the
 plugin itself (no AWS SDK). Tested against LocalStack and a signature-checking mock, not a live AWS account.
@@ -376,7 +403,9 @@ plugin itself (no AWS SDK). Tested against LocalStack and a signature-checking m
   its error text is shown shortened.
 - **AWS**: the secret access key only computes each request's signature and is never sent. Profile credentials stay in the
   AWS files and are read when needed; the AWS CLI gets only the profile name on its command line, and the temporary credentials it
-  prints are kept in memory, never logged.
+  prints are kept in memory, never logged. IAM Identity Center tokens (and the client registration) are kept in the IDE's password
+  storage only and sent only to AWS's sign-in and portal endpoints of the configured region, in request bodies or the
+  `x-amz-sso_bearer_token` header (never in a URL); the role credentials are kept in memory.
 - See [SECURITY.md](SECURITY.md) for reporting vulnerabilities, and the [threat model](docs/DESIGN.md#threat-model-summary).
 
 ## Building
