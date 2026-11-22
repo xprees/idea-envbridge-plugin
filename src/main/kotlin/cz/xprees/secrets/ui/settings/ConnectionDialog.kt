@@ -136,6 +136,11 @@ class ConnectionDialog(
             val field = optionFields.getValue(method.id).getValue(option.key)
             if (field.text.isBlank()) return ValidationInfo(SecretsBundle.message("connection.validation.required", option.label.trimEnd(':')), field)
         }
+        for (option in method.options) {
+            val field = optionFields.getValue(method.id).getValue(option.key)
+            val text = field.text.trim().takeIf { it.isNotEmpty() } ?: continue
+            option.validate?.invoke(text)?.let { return ValidationInfo(it, field) }
+        }
         optionFields.getValue(method.id)["callbackPort"]?.text?.takeIf { it.isNotBlank() }?.let { port ->
             if (port.toIntOrNull() !in 1024..65535) {
                 return ValidationInfo(SecretsBundle.message("connection.validation.port"), optionFields.getValue(method.id).getValue("callbackPort"))

@@ -45,7 +45,17 @@ class SecretsService {
     fun secrets(connection: SecretConnection, scope: SecretScope, fresh: Boolean = false, maxAgeMs: Long? = null): List<SecretEntry> {
         val key = connection.id to scope
         if (!fresh) secretCache[key]?.takeIf { isFresh(it.at, maxAgeMs) }?.let { return it.value }
-        return client(connection).listSecrets(scope).also { secretCache[key] = Cached(it, now()) }
+        return client(connection).listSecrets(scope, fresh).also { secretCache[key] = Cached(it, now()) }
+    }
+
+    /**
+     * Tells [connection]'s provider that [scopes] are about to be read (see [SecretsClient.prefetch]); scopes the cache already
+     * has are left out unless [fresh]. Never fails. Off the EDT.
+     */
+    fun prefetch(connection: SecretConnection, scopes: Collection<SecretScope>, fresh: Boolean) {
+        val needed = scopes.distinct().filter { fresh || secretCache[connection.id to it]?.takeIf { c -> isFresh(c.at, null) } == null }
+        if (needed.size < 2) return
+        runCatching { client(connection).prefetch(needed) }
     }
 
     /** The connection's projects, cached like [secrets]. */
@@ -153,6 +163,16 @@ class SecretsService {
         }
     }
 
+    /** Starts the rotation of the secret behind [scope] (see [SecretsClient.rotateSecret]); forgets cached values. Off the EDT. */
+    fun rotateSecret(connection: SecretConnection, scope: SecretScope) {
+        checkWritesAllowed(connection)
+        try {
+            client(connection).rotateSecret(scope)
+        } finally {
+            invalidate(connection.id)
+        }
+    }
+
     /** Creates an environment (see [SecretsClient.createEnvironment]) and forgets the connection's cached projects. Off the EDT. */
     fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment {
         checkWritesAllowed(connection)
@@ -168,6 +188,7 @@ class SecretsService {
             secretCache.keys.removeIf { it.first == connectionId }
             projectCache.remove(connectionId)
         }
+        SecretProvider.all().forEach { runCatching { it.forget(connectionId) } }
     }
 
     private fun isFresh(at: Long, maxAgeMs: Long?): Boolean = now() - at < (maxAgeMs ?: cacheTtlMs())

@@ -109,7 +109,7 @@ class AwsPlatformTest : BasePlatformTestCase() {
         assertThat(provider!!.supportsWrites).isTrue()
         assertThat(provider.instancePresets).contains("eu-west-1 (Ireland)" to "https://secretsmanager.eu-west-1.amazonaws.com")
         assertThat(provider.instancePresets.map { it.second }).allMatch { SecretConnection.normalizeBaseUrl(it) == it }
-        assertThat(provider.authMethods.map { it.id }).containsExactly(AwsAuthMethods.ACCESS_KEY, AwsAuthMethods.PROFILE, AwsAuthMethods.ENVIRONMENT)
+        assertThat(provider.authMethods.map { it.id }).containsExactly(AwsAuthMethods.ACCESS_KEY, AwsAuthMethods.PROFILE, AwsAuthMethods.SSO, AwsAuthMethods.ENVIRONMENT)
         for (method in provider.authMethods) {
             assertThat(method.setupLinks).describedAs(method.id).isNotEmpty()
             method.setupLinks.forEach { assertThat(ConnectionDialog.isWebPage(it.url(mock.baseUrl)!!)).isTrue() }

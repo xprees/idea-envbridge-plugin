@@ -22,9 +22,34 @@ class SecretValue(private val value: String) {
 
 /**
  * An environment of a provider project (Infisical: `dev`, `staging`, `prod`, …). [branchOf] names the environment this one
- * branches off (a Doppler branch or personal config: `dev_feature` of `dev`), null for an environment of its own.
+ * branches off (a Doppler branch or personal config: `dev_feature` of `dev`), null for an environment of its own. [metadata]
+ * is what the provider knows about it besides its name (shown in the tool window), or null.
  */
-data class ProviderEnvironment(val slug: String, val name: String, val id: String = slug, val branchOf: String? = null)
+data class ProviderEnvironment(
+    val slug: String,
+    val name: String,
+    val id: String = slug,
+    val branchOf: String? = null,
+    val metadata: SecretMetadata? = null,
+)
+
+/**
+ * Descriptive, non-secret facts a provider may know about an environment or the secret behind it (AWS Secrets Manager: the
+ * secret's description, tags and rotation schedule). Shown in the tool window; never holds values.
+ */
+data class SecretMetadata(
+    val description: String = "",
+    val tags: Map<String, String> = emptyMap(),
+    /** Automatic rotation, when the provider has it; null when it doesn't apply. */
+    val rotation: RotationInfo? = null,
+)
+
+/** Automatic rotation of a secret: whether it is on, when it last ran and when it runs next (each null when unknown). */
+data class RotationInfo(
+    val enabled: Boolean,
+    val lastRotated: java.time.Instant? = null,
+    val nextRotation: java.time.Instant? = null,
+)
 
 /** A project (Infisical: a Secrets Management project) with its environments. */
 data class ProviderProject(

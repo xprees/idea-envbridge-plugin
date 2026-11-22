@@ -82,6 +82,9 @@ class EditSecretDialog(
             cell(showValue)
         }
         row(SecretsBundle.message("new.secret.comment")) { cell(commentField).align(AlignX.FILL) }
+        if (connection.providerId == cz.xprees.secrets.aws.AwsSecretsManagerProvider.ID) {
+            row { comment(SecretsBundle.message("edit.secret.comment.aws", scope.environment), maxLineLength = 70) }
+        }
         row { cell(updateReferences).comment(SecretsBundle.message("edit.secret.update.references.comment")) }.visibleIf(renamed)
         row { comment(SecretsBundle.message("edit.secret.note")) }
     }

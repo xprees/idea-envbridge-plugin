@@ -64,6 +64,16 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.util.concurrent.TimeUnit
 import javax.swing.JTree
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.Task
+import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.text.StringUtil
+import cz.xprees.secrets.core.model.SecretMetadata
+import cz.xprees.secrets.core.resolve.ProdGuard
+import cz.xprees.secrets.run.SecretsNotifications
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import javax.swing.event.TreeExpansionEvent
 import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultTreeModel
@@ -110,6 +120,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             }
         })
         TreeSpeedSearch.installOn(tree, false) { path -> text(path.lastPathComponent) }
+        // Environments' details (description, tags, rotation) and full comments are tooltips
+        javax.swing.ToolTipManager.sharedInstance().registerComponent(tree)
         tree.emptyText.apply {
             text = SecretsBundle.message("toolwindow.no.connections")
             appendSecondaryText(SecretsBundle.message("toolwindow.add.connection"), SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES) { SecretsConfigurable.show(project, addConnection = true) }
@@ -157,7 +169,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
         val popupActions = DefaultActionGroup(
             newSecret, editSecret, reveal, copyGroup, Separator.create(),
             cut, copy, paste, moveAction, deleteAction, Separator.create(),
-            newEnvironment, OverrideAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
+            newEnvironment, RotateNowAction(), OverrideAction(), ActionManager.getInstance().getAction("cz.xprees.secrets.AddSecretsToRunConfiguration"),
             OpenDashboardAction(), Separator.create(), SignInOutAction(), refresh,
         )
         val toolbar = ActionManager.getInstance().createActionToolbar("SecretsToolWindow", toolbarActions, true)
@@ -324,8 +336,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                         ?: ProviderProject(restrictedTo, SecretsBundle.message("toolwindow.bound.project"), restrictedTo, listOfNotNull(binding?.environment?.let { ProviderEnvironment(it, it) }))
                     return listOf(ProjectNode(node.connection, bound, true))
                 }
+                val note = SecretProvider.byId(node.connection.providerId)?.let { runCatching { it.listingNote(node.connection) }.getOrNull() }
                 projects.map { ProjectNode(node.connection, it, it.id == binding?.projectId) }
-                    .sortedByDescending { it.bound }
+                    .sortedByDescending { it.bound } + listOfNotNull(note?.let { MessageNode(node.connection, it) })
             }
 
             is ProjectNode -> {
@@ -397,6 +410,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     private inner class Renderer : ColoredTreeCellRenderer() {
         override fun customizeCellRenderer(tree: JTree, value: Any?, selected: Boolean, expanded: Boolean, leaf: Boolean, row: Int, hasFocus: Boolean) {
+            toolTipText = null
             when (value) {
                 is ConnectionNode -> {
                     icon = SecretsIcons.PROVIDER
@@ -417,6 +431,10 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                     icon = AllIcons.Nodes.ConfigFolder
                     append(value.environment.name, if (value.bound) SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
                     append("  ${value.environment.slug}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    val metadata = value.environment.metadata
+                    if (metadata?.rotation?.enabled == true) append("  " + SecretsBundle.message("toolwindow.rotation.on"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
+                    if (metadata != null && metadata.description.isNotBlank()) append("  — ${metadata.description.lines().first()}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                    toolTipText = metadata?.let(::metadataTooltip)
                 }
 
                 is FolderNode -> {
@@ -441,6 +459,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                         SecretOrigin.LOCAL -> if (entry.path != value.scope.path) append("  ${entry.path}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                     }
                     if (entry.comment.isNotBlank()) append("  — ${entry.comment.lines().first()}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                    toolTipText = entry.comment.takeIf { it.isNotBlank() }?.let { "<html>" + StringUtil.escapeXmlEntities(it).replace("\n", "<br>") + "</html>" }
                 }
 
                 is MessageNode -> {
@@ -454,6 +473,22 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 }
             }
         }
+    }
+
+    /** An environment's details as tooltip HTML: description, tags, rotation (null when there is nothing to say). */
+    private fun metadataTooltip(metadata: SecretMetadata): String? {
+        val format = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault())
+        val lines = buildList {
+            if (metadata.description.isNotBlank()) add(SecretsBundle.message("toolwindow.metadata.description", metadata.description))
+            if (metadata.tags.isNotEmpty()) add(SecretsBundle.message("toolwindow.metadata.tags", metadata.tags.entries.joinToString { (k, v) -> if (v.isEmpty()) k else "$k=$v" }))
+            metadata.rotation?.let { rotation ->
+                add(SecretsBundle.message(if (rotation.enabled) "toolwindow.metadata.rotation.on" else "toolwindow.metadata.rotation.off"))
+                rotation.lastRotated?.let { add(SecretsBundle.message("toolwindow.metadata.rotation.last", format.format(it))) }
+                rotation.nextRotation?.let { add(SecretsBundle.message("toolwindow.metadata.rotation.next", format.format(it))) }
+            }
+        }
+        if (lines.isEmpty()) return null
+        return lines.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
     }
 
     // ---- Actions -------------------------------------------------------------------------------------------------------
@@ -714,6 +749,49 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 TreeUtil.findObjectInPath(TreePath(node.path), ConnectionNode::class.java)?.takeIf { !it.loading }?.loaded = false
                 select(SecretLocation(node.connection.id, node.project.id, created.slug, "/", null))
             }.show()
+        }
+    }
+
+    /**
+     * Starts the rotation of the secret behind the selected environment (or a key of it), where the provider says rotation is on.
+     * Asks first, and again for a production environment; refused while *Read-only* is on.
+     */
+    private inner class RotateNowAction : PanelAction(SecretsBundle.message("action.rotate.now"), AllIcons.Actions.Refresh) {
+        private fun environmentNode(): EnvironmentNode? =
+            TreeUtil.findObjectInPath(tree.selectionPath, EnvironmentNode::class.java)?.takeIf { it.environment.metadata?.rotation?.enabled == true }
+
+        override fun update(e: AnActionEvent) {
+            val node = environmentNode()
+            e.presentation.isVisible = node != null
+            e.presentation.description = SecretsBundle.message("action.rotate.now.description")
+            e.presentation.isEnabled = node != null && writable(e)
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            val node = environmentNode() ?: return
+            val scope = node.scope
+            val where = "${node.project.name} / ${node.environment.name}"
+            if (Messages.showOkCancelDialog(
+                    project, SecretsBundle.message("rotate.confirm.message", where), SecretsBundle.message("rotate.confirm.title"),
+                    SecretsBundle.message("rotate.confirm.ok"), Messages.getCancelButton(), Messages.getWarningIcon(),
+                ) != Messages.OK
+            ) return
+            if (ProdGuard.needsConfirmation(project, scope.environment) && Messages.showOkCancelDialog(
+                    project, SecretsBundle.message("rotate.prod.message", scope.environment), SecretsBundle.message("prod.guard.title"),
+                    SecretsBundle.message("rotate.confirm.ok"), Messages.getCancelButton(), Messages.getWarningIcon(),
+                ) != Messages.OK
+            ) return
+            object : Task.Backgroundable(project, SecretsBundle.message("rotate.progress", where), false) {
+                override fun run(indicator: ProgressIndicator) = SecretsService.getInstance().rotateSecret(node.connection, scope)
+
+                override fun onSuccess() {
+                    SecretsNotifications.info(project, SecretsBundle.message("rotate.done", where), SecretsBundle.message("rotate.done.details"))
+                    reloadFolder(node.connection.id, scope)
+                }
+
+                override fun onThrowable(error: Throwable) =
+                    SecretsNotifications.error(project, SecretsBundle.message("rotate.failed", where), error.message ?: error.toString())
+            }.queue()
         }
     }
 

@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   assumed-role and `credential_process` profiles go through the AWS CLI ([AwsCli]), whose temporary credentials are kept in
  *   memory only, until shortly before they expire.
  * - **Environment variables**: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` of the IDE process.
+ * - **IAM Identity Center**: signed in inside the IDE ([AwsSso]); tokens in the password storage, role credentials in memory.
  *
  * Profile and environment connections keep only a "signed in" marker in the session slot, so background features don't run
  * the AWS CLI for a connection nobody signed in to.
@@ -28,9 +29,12 @@ class AwsAuth(private val connection: SecretConnection, private val check: (AwsK
 
     private val profileName: String get() = connection.option(AwsAuthMethods.OPTION_PROFILE)?.trim() ?: DEFAULT_PROFILE
 
+    private val sso by lazy { AwsSso(connection, check) }
+
     /** Whether credentials are stored (access key) or the user signed in (profile, environment). */
     fun hasCredentials(): Boolean = when (method) {
         AwsAuthMethods.ACCESS_KEY -> secret(AwsAuthMethods.OPTION_ACCESS_KEY_ID) != null && secret(AwsAuthMethods.OPTION_SECRET_ACCESS_KEY) != null
+        AwsAuthMethods.SSO -> sso.hasSession()
         else -> CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION) != null
     }
 
@@ -45,6 +49,7 @@ class AwsAuth(private val connection: SecretConnection, private val check: (AwsK
             if (CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION) == null) throw notSignedIn()
             environmentKeys()
         }
+        AwsAuthMethods.SSO -> sso.keys()
         else -> throw SecretProviderException(Kind.CONFIGURATION, "Unknown sign-in method '$method'")
     }
 
@@ -57,13 +62,20 @@ class AwsAuth(private val connection: SecretConnection, private val check: (AwsK
         try {
             return call(keys)
         } catch (e: SecretProviderException) {
-            if (e.kind != Kind.AUTH_REQUIRED || method != AwsAuthMethods.PROFILE || cache.remove(cacheKey(), CachedKeys(keys)).not()) throw e
+            if (e.kind != Kind.AUTH_REQUIRED) throw e
+            val dropped = when (method) {
+                AwsAuthMethods.PROFILE -> cache.remove(cacheKey(), CachedKeys(keys))
+                AwsAuthMethods.SSO -> sso.drop(keys)
+                else -> false
+            }
+            if (!dropped) throw e
             return call(keys())
         }
     }
 
     /** Checks the credentials with one request and returns a short account description (never a secret). */
     fun signIn(interaction: SignInInteraction): String {
+        if (method == AwsAuthMethods.SSO) return sso.signIn(interaction)
         interaction.status("Checking the AWS credentials…")
         val keys = when (method) {
             AwsAuthMethods.ACCESS_KEY -> storedKeys()
@@ -79,6 +91,7 @@ class AwsAuth(private val connection: SecretConnection, private val check: (AwsK
 
     /** Forgets the stored keys (access key), the signed-in marker and temporary credentials in memory. */
     fun signOut() {
+        if (method == AwsAuthMethods.SSO) return sso.signOut()
         CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
         cache.remove(cacheKey())
         if (method == AwsAuthMethods.ACCESS_KEY) {
