@@ -206,12 +206,22 @@ class OptionChooser(
     val label: String,
     val keys: List<String>,
     /**
-     * Runs off the EDT for a draft connection made of the dialog's fields (its ID is the connection's). May sign in (and
-     * then stores the session as a sign-in does) and ask with [SignInInteraction.choose]. Returns the values of [keys] to put
-     * in the fields, or null when the user cancelled.
+     * Runs off the EDT for a draft connection made of the dialog's fields (its ID is the connection's). May sign in and ask
+     * with [SignInInteraction.choose]. Returns the values of [keys] to put in the fields (and a session to store when the
+     * dialog is confirmed), or null when the user cancelled. Must not replace the stored session itself.
      */
-    val choose: (connection: SecretConnection, interaction: SignInInteraction) -> Map<String, String>?,
+    val choose: (connection: SecretConnection, interaction: SignInInteraction) -> OptionChoice?,
 )
+
+/** What an [OptionChooser] chose: option [values] and, when it signed in, the session to store on OK ([pendingSession]). */
+class OptionChoice(val values: Map<String, String>, val pendingSession: PendingSession? = null) {
+    override fun toString(): String = "OptionChoice($values, session=${pendingSession != null})"
+}
+
+/** Stores a session a chooser signed in for, under the connection's ID (in the password storage; off the EDT). */
+fun interface PendingSession {
+    fun store()
+}
 
 /**
  * A link to the provider's page for creating credentials. [url] gets the connection's base URL (self-hosted instances have

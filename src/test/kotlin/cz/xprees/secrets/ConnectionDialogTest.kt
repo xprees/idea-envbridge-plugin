@@ -20,6 +20,20 @@ class ConnectionDialogTest {
     }
 
     @Test
+    fun `OK stores a session Choose signed in for, else drops a stale one`() {
+        var stored = 0
+        var removed = 0
+        val pending = cz.xprees.secrets.core.provider.PendingSession { stored++ }
+        // signed in by Choose…: stored (replacing whatever was there), and no "Sign in now?" needed
+        assertThat(ConnectionDialog.applySession(pending, stale = true) { removed++ }).isTrue()
+        assertThat(stored to removed).isEqualTo(1 to 0)
+        assertThat(ConnectionDialog.applySession(null, stale = true) { removed++ }).isFalse()
+        assertThat(stored to removed).isEqualTo(1 to 1)
+        assertThat(ConnectionDialog.applySession(null, stale = false) { removed++ }).isFalse()
+        assertThat(stored to removed).isEqualTo(1 to 1)
+    }
+
+    @Test
     fun `options that only select what the session is used for keep it`() {
         val sso = SecretConnection("c2", "aws", "AWS", "https://secretsmanager.eu-west-1.amazonaws.com", "sso", mapOf("ssoStartUrl" to "https://a.awsapps.com/start", "ssoAccountId" to "111111111111"))
         val keeps = setOf("ssoAccountId", "ssoRoleName")

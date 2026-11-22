@@ -246,7 +246,12 @@ class SecretsConfigurable(private val project: Project) : BoundConfigurable(Secr
         val connection = dialog.result ?: return
         app.addOrUpdate(connection)
         reloadConnections(select = connection)
-        if (Messages.showYesNoDialog(project, SecretsBundle.message("settings.sign.in.now", connection.name), SecretsBundle.message("settings.display.name"), SecretsIcons.PROVIDER) == Messages.YES) {
+        if (dialog.signedIn) {
+            // "Choose…" signed in already: nothing to ask
+            SecretsService.getInstance().invalidate(connection.id)
+            SecretsAppSettings.getInstance().fireChanged()
+            refreshSignInStates()
+        } else if (Messages.showYesNoDialog(project, SecretsBundle.message("settings.sign.in.now", connection.name), SecretsBundle.message("settings.display.name"), SecretsIcons.PROVIDER) == Messages.YES) {
             signIn(connection)
         }
     }

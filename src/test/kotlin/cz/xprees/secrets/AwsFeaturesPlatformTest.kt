@@ -18,6 +18,7 @@ import cz.xprees.secrets.core.resolve.LaunchSecretResolver
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
 import cz.xprees.secrets.core.settings.SecretsAppSettings
+import cz.xprees.secrets.ui.settings.ConnectionDialog
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 
@@ -489,8 +490,9 @@ class AwsFeaturesPlatformTest : BasePlatformTestCase() {
         client(connection).signIn(interaction)
         val registrations = sso.requests("/client/register").size
         val choosing = Choosing("210987654321", "Admin")
-        assertThat(chooser.choose(connection, choosing))
-            .isEqualTo(mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to "210987654321", AwsAuthMethods.OPTION_SSO_ROLE_NAME to "Admin"))
+        val reused = chooser.choose(connection, choosing)!!
+        assertThat(reused.values).isEqualTo(mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to "210987654321", AwsAuthMethods.OPTION_SSO_ROLE_NAME to "Admin"))
+        assertThat(reused.pendingSession).isNull()
         assertThat(sso.requests("/client/register")).hasSize(registrations)
         // nothing is saved: the dialog fills its fields
         assertThat(options(connection)).containsEntry(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID, "123456789012")
@@ -502,13 +504,41 @@ class AwsFeaturesPlatformTest : BasePlatformTestCase() {
         client(switched).listSecrets(SecretScope("myapp", "dev"))
         assertThat(sso.requests("/federation/credentials").last().query).isEqualTo("account_id=210987654321&role_name=Admin")
 
-        // not signed in: the browser sign-in runs and its session is stored
+        // not signed in: the browser sign-in runs; its session is stored only when the dialog is confirmed (new connection:
+        // signed in right away, so no "Sign in now?")
         val fresh = ssoConnection(account = null, role = null)
         browser.clear()
-        assertThat(chooser.choose(fresh, Choosing("Dev account", null))).containsEntry(AwsAuthMethods.OPTION_SSO_ROLE_NAME, "Developer")
+        val signedIn = chooser.choose(fresh, Choosing("Dev account", null))!!
+        assertThat(signedIn.values).containsEntry(AwsAuthMethods.OPTION_SSO_ROLE_NAME, "Developer")
         assertThat(browser).hasSize(1)
-        assertThat(CredentialVault.get(fresh.id, CredentialVault.SLOT_SESSION)).isNotNull()
+        assertThat(CredentialVault.get(fresh.id, CredentialVault.SLOT_SESSION)).isNull()
+        assertThat(signedIn.toString()).doesNotContain("access-").doesNotContain("refresh-")
+        assertThat(ConnectionDialog.applySession(signedIn.pendingSession, stale = false) { error("nothing to remove") }).isTrue()
         assertThat(client(fresh).hasCredentials()).isTrue()
+        val saved = fresh.copy(options = fresh.options + signedIn.values)
+        client(saved).listSecrets(SecretScope("myapp", "stg"))
+        assertThat(sso.requests("/federation/credentials").last().query).isEqualTo("account_id=123456789012&role_name=Developer")
+    }
+
+    fun `test Choose for a changed start URL then Cancel leaves the stored session as it was`() {
+        val connection = ssoConnection()
+        client(connection).signIn(interaction)
+        val before = CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)
+        val chooser = AwsAuthMethods.ALL.first { it.id == AwsAuthMethods.SSO }.chooser!!
+
+        // the edited fields name another start URL: the stored token doesn't belong to it, so the browser sign-in runs
+        val edited = connection.copy(options = connection.options + (AwsAuthMethods.OPTION_SSO_START_URL to "https://other.awsapps.com/start"))
+        browser.clear()
+        val choice = chooser.choose(edited, Choosing(null, null))!!
+        assertThat(browser).hasSize(1)
+        assertThat(choice.pendingSession).isNotNull()
+        // Cancel = the pending session is dropped: the stored one is untouched and still works
+        assertThat(CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)).isEqualTo(before)
+        assertThat(client(connection).listSecrets(SecretScope("myapp", "dev")).first().value.reveal()).isEqualTo("dev-pass")
+
+        // OK = stored (for the new start URL)
+        ConnectionDialog.applySession(choice.pendingSession, stale = true) { error("a pending session replaces the old one") }
+        assertThat(CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)).isNotEqualTo(before).contains("https://other.awsapps.com/start")
     }
 
     fun `test denied and expired device codes end the sign-in`() {

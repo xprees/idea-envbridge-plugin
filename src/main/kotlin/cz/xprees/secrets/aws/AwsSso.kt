@@ -10,6 +10,8 @@ import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.auth.TokenSet
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.NetworkErrors
+import cz.xprees.secrets.core.provider.OptionChoice
+import cz.xprees.secrets.core.provider.PendingSession
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SignInInteraction
@@ -94,12 +96,15 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
     /**
      * For the connection dialog's "Choose…" button: lists the accounts and then the chosen account's roles and lets the user
      * pick (the only one is taken without asking). Uses the stored token when it is still good (renewed with the refresh token
-     * if needed), else signs in in the browser and stores the new session as [signIn] does. Returns the account ID and role
-     * name options, or null when the user cancelled. Saves nothing in the settings: the dialog fills its fields.
+     * if needed), else signs in in the browser. Returns the account ID and role name options, or null when the user cancelled.
+     * Saves nothing in the settings (the dialog fills its fields), and a browser sign-in's session isn't stored yet: it comes
+     * back as [OptionChoice.pendingSession], which the dialog stores only when it is confirmed, so Cancel leaves the stored
+     * session as it was. (Renewing the stored token stores the renewed one right away: the old refresh token may be spent.)
      */
-    fun chooseForSettings(interaction: SignInInteraction): Map<String, String>? {
+    fun chooseForSettings(interaction: SignInInteraction): OptionChoice? {
         checkSettings()
         fun choose(token: String) = assignments(token).choose(interaction, null, null, currentAccount = optionAccount, currentRole = optionRole)
+        var pending: PendingSession? = null
         val choice = try {
             val stored = storedToken()
             try {
@@ -112,14 +117,19 @@ class AwsSso(private val connection: SecretConnection, private val check: (AwsKe
                 val (registration, token) = deviceFlow(interaction)
                 interaction.status("Listing your AWS accounts and roles…")
                 choose(token.accessToken).also {
-                    CredentialVault.set(connection.id, CredentialVault.SLOT_SESSION, newSession(registration, token, it.account, it.role).toJson())
+                    val session = newSession(registration, token, it.account, it.role).toJson()
+                    val id = connection.id
+                    pending = PendingSession {
+                        CredentialVault.set(id, CredentialVault.SLOT_SESSION, session)
+                        cache.remove(id)
+                    }
                 }
             }
         } catch (e: SecretProviderException) {
             if (e.kind == Kind.CANCELLED) return null
             throw e
         }
-        return mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to choice.account, AwsAuthMethods.OPTION_SSO_ROLE_NAME to choice.role)
+        return OptionChoice(mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to choice.account, AwsAuthMethods.OPTION_SSO_ROLE_NAME to choice.role), pending)
     }
 
     /** Registers a client and runs the device authorization grant until the user allows access in the browser. */

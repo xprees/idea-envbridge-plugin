@@ -1520,9 +1520,15 @@ saved, so a second one added later is offered at the next sign-in. The connectio
 account ID (`AuthMethod.chooser`, an `OptionChooser`): under a cancellable modal progress it runs `AwsSso.chooseForSettings` for
 the connection as the fields describe it (new connections get their ID when the dialog opens): the stored access token is reused
 when it belongs to the same start URL and region and is still good (renewed with the refresh token if needed; a 401 from the
-portal falls back to signing in), else the device flow runs and its session is stored as a sign-in stores it. It fills the two
-fields and saves nothing; Cancel leaves the fields unchanged. Cancelling the dialog of a new connection removes a session a
-Choose… stored. The account ID and role name are `AuthOption.keepsSession`: changing only them keeps the stored session
+portal falls back to signing in), else the device flow runs. It fills the two fields and saves nothing; cancelling the choice
+leaves the fields unchanged. A device-flow session is **not stored** by the chooser: it comes back as
+`OptionChoice.pendingSession`, kept by the dialog (memory only) and stored under the connection's ID by OK
+(`ConnectionDialog.applySession`), and only if the settings saved are the ones it was made for (else the usual staleness rule
+applies). Cancelling the dialog drops it, so an edited connection keeps exactly the session it had (even after a Choose… for a
+changed start URL), and a new connection leaves nothing behind. When OK stored such a session, the connection is signed in:
+the settings page skips its "Sign in now?" question (`ConnectionDialog.signedIn`). The one exception: renewing a still-valid
+stored token for the same settings stores the renewed one right away, because the refresh may have spent the old refresh token.
+The account ID and role name are `AuthOption.keepsSession`: changing only them keeps the stored session
 (`ConnectionDialog.sessionStale` ignores them; a session a Choose… just used for the same settings is kept too). At use time
 the options win over the account and role the session was made with, and the role credentials in memory are only reused for
 the account and role the connection names now, so switching takes effect without signing in again. To switch later: *Choose…*
@@ -1620,7 +1626,8 @@ custom addresses get none.
   descriptions from new keys; rotation info, *Rotate Now* only with rotation on and not when read-only, a rotation during a write
   refused as "changed meanwhile"; the IAM Identity Center device flow (slow_down, pending, the code shown, the URL opened, tokens
   only in PasswordSafe, never in URLs), account/role picking, several accounts and roles chosen at sign-in across pages and
-  remembered in the settings (no token there), cancelling the choice, *Choose…* reusing the stored token or signing in, a
+  remembered in the settings (no token there), cancelling the choice, *Choose…* reusing the stored token or signing in (its
+  session stored only on OK; Cancel after a Choose… for a changed start URL keeps the old session working), a
   switched account/role used with the same session, denied and expired codes, role credentials re-fetched, the token
   renewed with the refresh token, AUTH_REQUIRED when that fails, sign-out with logout; option validation.
 - `MockAwsSecretsManager`: a JDK HttpServer speaking JSON 1.1. It **verifies each request's SigV4 signature** with the known
