@@ -52,7 +52,40 @@ class KeysIndex(private val project: Project) : Disposable {
         val environmentNames: List<String> = environments.keys.toList(),
         /** The folder [folders] was read from (with its subfolders); folders outside it aren't known, not empty. */
         val indexedFolder: String = "/",
+        /** Other names a reference may give the bound project (its name and slug, unless another project shares them). */
+        val projectAliases: Set<String> = emptySet(),
+        /** [SecretProvider.namesIgnoreCase]: [projectAliases] (lowercase here) and folders match ignoring case when unambiguous. */
+        val namesIgnoreCase: Boolean = false,
+        /** [SecretProvider.keysInSubfolders]. */
+        val keysInSubfolders: Boolean = false,
+        /** Every listed project as references write it, for completing one (the bound one first). */
+        val projectNames: List<String> = emptyList(),
     ) {
+        /** Whether a reference naming the project [written] reads the bound one: its ID, or its name where unambiguous. */
+        fun namesProject(written: String): Boolean =
+            written == projectId || written in projectAliases || (namesIgnoreCase && written.lowercase() in projectAliases)
+
+        /**
+         * [path] as the index names that folder: itself, or with [namesIgnoreCase] the one indexed folder that equals it ignoring
+         * case (`/stripe` for `/Stripe`).
+         */
+        fun canonicalFolder(path: String): String {
+            val normalized = SecretScope.normalizePath(path)
+            if (!namesIgnoreCase || normalized in folders) return normalized
+            return folders.keys.singleOrNull { it.equals(normalized, ignoreCase = true) } ?: normalized
+        }
+
+        /** The keys a reference to [folder] can read, in order: the folder's own, then (with [keysInSubfolders]) its subfolders'. */
+        fun keysOf(folder: String): Map<String, KeyInfo> {
+            val canonical = canonicalFolder(folder)
+            val own = folders[canonical].orEmpty()
+            if (!keysInSubfolders) return own
+            val result = LinkedHashMap(own)
+            folders.filterKeys { it.startsWith(if (canonical == "/") "/" else "$canonical/") && it != canonical }
+                .values.forEach { keys -> keys.forEach { (key, info) -> result.putIfAbsent(key, info) } }
+            return result
+        }
+
         /** Whether [path] is [indexedFolder] or below it, so [folders] says what it holds. */
         fun isIndexed(path: String): Boolean {
             val folder = SecretScope.normalizePath(path)
@@ -135,11 +168,21 @@ class KeysIndex(private val project: Project) : Disposable {
         val service = SecretsService.getInstance()
         if (runCatching { !service.client(binding.connection).hasCredentials() }.getOrDefault(true)) return null
         val maxAge = refreshIntervalMs()
-        val listed = try {
-            service.projects(binding.connection, maxAgeMs = maxAge).firstOrNull { it.id == projectId }?.environments
+        val projects = try {
+            service.projects(binding.connection, maxAgeMs = maxAge)
         } catch (_: SecretProviderException) {
             null // least-privilege tokens may not list projects: index the bound environment only
         }
+        val boundProject = projects?.firstOrNull { it.id == projectId }
+        val listed = boundProject?.environments
+        val others = projects.orEmpty().filter { it.id != projectId }
+        // A name names the bound project only when no other project has it (ignoring case where the provider does)
+        val ignoreCase = provider.namesIgnoreCase
+        fun shared(name: String) = others.any { p -> listOf(p.id, p.name, p.slug).any { it.equals(name, ignoreCase = ignoreCase) } }
+        val aliases = listOfNotNull(boundProject?.name, boundProject?.slug).filter { it.isNotBlank() && !shared(it) }
+            .map { if (ignoreCase) it.lowercase() else it }.toSet()
+        val grammar = provider.referenceGrammar
+        val projectNames = (listOfNotNull(boundProject) + others).mapNotNull { grammar.projectName(it) }.distinct()
         val bound = SecretScope(projectId, binding.environment, binding.path)
         val environments = listed ?: listOf(ProviderEnvironment(binding.environment, binding.environment))
         val plan = provider.keysIndexScope(bound, environments)
@@ -173,6 +216,10 @@ class KeysIndex(private val project: Project) : Disposable {
             loadedAt = System.currentTimeMillis(),
             environmentNames = (listOf(binding.environment) + environments.map { it.slug }).distinct(),
             indexedFolder = plan.folders?.path?.let(SecretScope::normalizePath) ?: "/",
+            projectAliases = aliases,
+            namesIgnoreCase = ignoreCase,
+            keysInSubfolders = provider.keysInSubfolders,
+            projectNames = projectNames,
         )
     }
 

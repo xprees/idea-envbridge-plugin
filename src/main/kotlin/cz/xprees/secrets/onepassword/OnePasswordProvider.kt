@@ -42,6 +42,12 @@ class OnePasswordProvider : SecretProvider {
     override val referenceGrammar: ReferenceGrammar get() = OnePasswordGrammar
     override val supportsWrites: Boolean get() = true
 
+    // Vaults, items and sections are found by ID, else by name, exactly and then ignoring case when unique (OnePasswordConnect.pick)
+    override val namesIgnoreCase: Boolean get() = true
+
+    // op://vault/item/field finds the field in any section of the item
+    override val keysInSubfolders: Boolean get() = true
+
     // Only Connect uses the address: Connect servers are self-hosted, most often on the developer's machine or a local container
     override val instancePresets: List<Pair<String, String>> = listOf("1Password Connect on this computer" to "http://localhost:8080")
 

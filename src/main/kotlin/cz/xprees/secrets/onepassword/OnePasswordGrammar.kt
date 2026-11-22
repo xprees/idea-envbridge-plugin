@@ -1,6 +1,8 @@
 package cz.xprees.secrets.onepassword
 
+import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.reference.ReferenceCompletion
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import cz.xprees.secrets.core.reference.ReferenceSyntax
 import cz.xprees.secrets.core.reference.SecretReference
@@ -106,6 +108,34 @@ object OnePasswordGrammar : ReferenceGrammar {
             projectId = scope.projectId,
         )
     }
+
+    /**
+     * `op://` completes the vault, `op://<vault>/` its items, `op://<vault>/<item>/` the item's fields (in any section, as a
+     * reference without its section finds them) and `op://<vault>/<item>/<section>/` that section's fields.
+     */
+    override fun completionContext(body: String): ReferenceCompletion? {
+        if ('?' in body) return null
+        val raw = body.split('/')
+        val typed = raw.dropLast(1)
+        if (typed.any { it.isEmpty() || it == "*" || it == "**" }) return null
+        val names = typed.map { segment -> runCatching { decode(segment, body) }.getOrNull() ?: return null }
+        val prefix = raw.last()
+        return when (names.size) {
+            0 -> ReferenceCompletion.Project(prefix)
+            1 -> ReferenceCompletion.Folder(prefix, names[0], "/")
+            2 -> ReferenceCompletion.Key(prefix, names[0], "/" + names[1])
+            3 -> ReferenceCompletion.Key(prefix, names[0], "/" + names[1] + "/" + names[2])
+            else -> null
+        }
+    }
+
+    override val allowsSpaces: Boolean get() = true
+
+    /** A vault by its name (as people write references), by its ID when the name can't be a segment. */
+    override fun projectName(project: ProviderProject): String =
+        project.name.takeIf { it.isNotBlank() && '/' !in it && it == it.trim() && it != "*" && it != "**" } ?: project.id
+
+    override fun formatSegment(name: String): String = encode(name)
 
     /** Characters 1Password allows in a reference's names; everything else is percent-encoded. */
     private fun allowedRaw(c: Char) = c.isLetterOrDigit() || c in "-_. "

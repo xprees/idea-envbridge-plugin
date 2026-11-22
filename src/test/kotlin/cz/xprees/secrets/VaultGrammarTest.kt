@@ -1,7 +1,9 @@
 package cz.xprees.secrets
 
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.reference.ReferenceCompletion
 import cz.xprees.secrets.core.reference.SecretReference
+import cz.xprees.secrets.core.resolve.EnvReferences
 import cz.xprees.secrets.vault.VaultAuth
 import cz.xprees.secrets.vault.VaultGrammar
 import org.assertj.core.api.Assertions.assertThat
@@ -186,5 +188,46 @@ class VaultGrammarTest {
         assertThat(VaultGrammar.normalizeNamespace("team-a/dev/")).isEqualTo("team-a/dev")
         assertThat(VaultAuth.stateOf("https://idp.example/auth?client_id=x&state=st%2B1&nonce=n")).isEqualTo("st+1")
         assertThat(VaultAuth.stateOf("https://idp.example/auth?client_id=x")).isNull()
+    }
+
+    @Test
+    fun `completion contexts - mount, path segments, then fields after the hash`() {
+        fun context(body: String) = VaultGrammar.completionContext(body)
+        assertThat(context("")).isEqualTo(ReferenceCompletion.Project(""))
+        assertThat(context("sec")).isEqualTo(ReferenceCompletion.Project("sec"))
+        assertThat(context("secret/")).isEqualTo(ReferenceCompletion.Folder("", "secret", "/"))
+        assertThat(context("secret/myapp/d")).isEqualTo(ReferenceCompletion.Folder("d", "secret", "/myapp"))
+        // the hash: fields of the secret written before it (this broke the old folder pattern)
+        assertThat(context("secret/myapp/db#")).isEqualTo(ReferenceCompletion.Key("", "secret", "/myapp/db"))
+        assertThat(context("secret/myapp/db#pass")).isEqualTo(ReferenceCompletion.Key("pass", "secret", "/myapp/db"))
+        assertThat(context("my%20mount/a%20b#k")).isEqualTo(ReferenceCompletion.Key("k", "my mount", "/a b"))
+        // the short forms of an environment layout
+        assertThat(context("#")).isEqualTo(ReferenceCompletion.Key("", null, null))
+        assertThat(context("#MO")).isEqualTo(ReferenceCompletion.Key("MO", null, null))
+        assertThat(context("./")).isEqualTo(ReferenceCompletion.Folder("", null, "/"))
+        assertThat(context("./api/")).isEqualTo(ReferenceCompletion.Folder("", null, "/api"))
+        assertThat(context("./db#")).isEqualTo(ReferenceCompletion.Key("", null, "/db"))
+        assertThat(context(".#K")).isEqualTo(ReferenceCompletion.Key("K", null, null))
+        // no place to complete: a mount alone before #, the query, a stray slash after #
+        assertThat(context("secret#")).isNull()
+        assertThat(context(".")).isNull()
+        assertThat(context("secret/app/db#password?namespace=")).isNull()
+        assertThat(context("secret/app/db#a/b")).isNull()
+        assertThat(context("secret//x")).isNull()
+    }
+
+    @Test
+    fun `completion inside a vault reference in a line, and a comment after one`() {
+        val schemes = listOf("infisical", "vault")
+        assertThat(EnvReferences.referenceCompletion("DB=vault://secret/myapp/db#pa", schemes))
+            .isEqualTo("vault" to ReferenceCompletion.Key("pa", "secret", "/myapp/db"))
+        assertThat(EnvReferences.referenceCompletion("""x = "vault://./db#""", schemes)).isEqualTo("vault" to ReferenceCompletion.Key("", null, "/db"))
+        // raw whitespace ends a Vault reference; an infisical:// reference keeps the default completion
+        assertThat(EnvReferences.referenceCompletion("DB=vault://secret/my app", schemes)).isNull()
+        assertThat(EnvReferences.referenceCompletion("DB=infisical://", schemes)).isNull()
+        // a ` # comment` after a Vault reference isn't part of it
+        val found = EnvReferences.find("DB=vault://secret/app/db#password # the database\n", schemes).single()
+        assertThat(found.name).isEqualTo("password")
+        assertThat(found.reference!!.path).isEqualTo("/app/db")
     }
 }
