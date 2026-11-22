@@ -11,6 +11,7 @@ import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.KeysIndexScope
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretsClient
@@ -48,6 +49,12 @@ class VaultProvider : SecretProvider {
         VaultGrammar.normalizeNamespace(connection.option(VaultAuthMethods.OPTION_NAMESPACE))
 
     override fun createClient(connection: SecretConnection): SecretsClient = VaultClient(connection)
+
+    /**
+     * Only the bound secret path and what is below it: walking a whole mount costs a request per path (up to
+     * [VaultClient.MAX_RECURSIVE_PATHS]), and a mount's root holds no fields, so no namespace's root is read.
+     */
+    override fun keysIndexScope(bound: SecretScope, environments: List<ProviderEnvironment>): KeysIndexScope = KeysIndexScope.boundFolder(bound)
 
     /**
      * The Vault UI's page of the scope (OpenBao's UI uses the same routes). Called on the EDT, so the mount's KV version is only

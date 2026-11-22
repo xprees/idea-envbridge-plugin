@@ -51,6 +51,7 @@ import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.reference.SecretReference
+import cz.xprees.secrets.core.resolve.KeysIndex
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
@@ -473,6 +474,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 load(lazy, force = true)
                 tree.expandPath(TreePath(lazy.path))
             }
+            // The cache is cleared: completion and hover reload what they know from the server too
+            KeysIndex.getInstance(project).refreshAsync()
         }
     }
 

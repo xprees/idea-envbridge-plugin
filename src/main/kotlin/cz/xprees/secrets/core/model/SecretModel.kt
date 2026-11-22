@@ -20,8 +20,11 @@ class SecretValue(private val value: String) {
     }
 }
 
-/** An environment of a provider project (Infisical: `dev`, `staging`, `prod`, …). */
-data class ProviderEnvironment(val slug: String, val name: String, val id: String = slug)
+/**
+ * An environment of a provider project (Infisical: `dev`, `staging`, `prod`, …). [branchOf] names the environment this one
+ * branches off (a Doppler branch or personal config: `dev_feature` of `dev`), null for an environment of its own.
+ */
+data class ProviderEnvironment(val slug: String, val name: String, val id: String = slug, val branchOf: String? = null)
 
 /** A project (Infisical: a Secrets Management project) with its environments. */
 data class ProviderProject(

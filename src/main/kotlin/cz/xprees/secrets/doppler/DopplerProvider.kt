@@ -12,6 +12,7 @@ import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
 import cz.xprees.secrets.core.provider.CopyResult
+import cz.xprees.secrets.core.provider.KeysIndexScope
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.ProjectFileDefaults
 import cz.xprees.secrets.core.provider.SecretProvider
@@ -48,6 +49,13 @@ class DopplerProvider : SecretProvider {
     override fun defaultEnvironment(connection: SecretConnection): String = "dev"
 
     override fun createClient(connection: SecretConnection): SecretsClient = DopplerClient(connection)
+
+    /**
+     * Root configs and the bound one (branch and personal configs are [ProviderEnvironment.branchOf] their environment, so the
+     * default leaves them out), and no folder listing: a config is flat, so it would read the bound config a second time.
+     */
+    override fun keysIndexScope(bound: SecretScope, environments: List<ProviderEnvironment>): KeysIndexScope =
+        super.keysIndexScope(bound, environments).copy(folders = null)
 
     override fun readProjectFile(projectDir: Path): ProjectFileDefaults? = DopplerProjectFile.find(projectDir)?.toDefaults()
 
@@ -151,7 +159,8 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
                 id = project.slug,
                 name = project.name,
                 slug = project.slug,
-                environments = configs.map { ProviderEnvironment(slug = it.name, name = displayName(it)) },
+                // Branch and personal configs are branches of their environment: the keys index reads root configs only
+                environments = configs.map { ProviderEnvironment(slug = it.name, name = displayName(it), branchOf = branchOf(it)) },
                 organizationId = me?.workplaceSlug,
             )
         }
@@ -329,7 +338,7 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
             throw SecretProviderException(Kind.CONFIGURATION, "'$configName' isn't a valid Doppler config name (lowercase letters, digits, _)")
         }
         val created = auth.withToken { api.createConfig(it, projectId, environment, configName) }
-        return ProviderEnvironment(slug = created.name, name = displayName(created))
+        return ProviderEnvironment(slug = created.name, name = displayName(created), branchOf = branchOf(created))
     }
 
     // ---- Helpers -----------------------------------------------------------------------------------------------------
@@ -401,6 +410,9 @@ class DopplerClient(private val connection: SecretConnection) : SecretsClient {
         }
 
         private fun where(scope: SecretScope) = "${scope.projectId}/${scope.environment}"
+
+        /** The environment a branch or personal config branches off; null for a root config. */
+        fun branchOf(config: DopplerApi.Config): String? = if (config.root) null else config.environment.ifBlank { config.name.substringBefore('_') }
 
         /** `dev`, or `dev_feature (branch of dev)`. */
         fun displayName(config: DopplerApi.Config): String =

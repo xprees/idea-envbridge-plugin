@@ -199,6 +199,27 @@ class FakeOp : AutoCloseable {
     fun item(vaultId: String, itemId: String): JsonObject =
         JsonParser.parseString(Files.readString(dir.resolve("data").resolve("item").resolve(vaultId).resolve("$itemId.json"))).asJsonObject
 
+    /**
+     * Changes an item as another client would: [change] edits its stored JSON, and its `version` goes up there and in the
+     * vault's item listing (`op item list`).
+     */
+    fun touch(vaultId: String, itemId: String, change: (JsonObject) -> Unit = {}) {
+        val data = dir.resolve("data")
+        val itemFile = data.resolve("item").resolve(vaultId).resolve("$itemId.json")
+        val item = JsonParser.parseString(Files.readString(itemFile)).asJsonObject
+        change(item)
+        val version = item.get("version").asInt + 1
+        item.addProperty("version", version)
+        write(itemFile, item)
+        val vault = OnePasswordFixtures.vaults.first { it.id == vaultId }
+        for (name in listOf(vault.id, vault.name)) {
+            val listFile = data.resolve("items").resolve("$name.json")
+            val list = JsonParser.parseString(Files.readString(listFile)).asJsonArray
+            list.map { it.asJsonObject }.filter { it.get("id").asString == itemId }.forEach { it.addProperty("version", version) }
+            write(listFile, list)
+        }
+    }
+
     /** The templates `op item create` read from stdin, in order. */
     fun created(): List<JsonObject> = Files.list(dir.resolve("created")).use { files ->
         files.sorted().toList().map { JsonParser.parseString(Files.readString(it)).asJsonObject }
@@ -316,9 +337,12 @@ class MockOnePasswordConnect : AutoCloseable {
     fun itemByTitle(vaultId: String, title: String): JsonObject? =
         synchronized(items) { items[vaultId]?.firstOrNull { it.get("title").asString == title }?.deepCopy() }
 
-    /** Changes the item as another client would: its version goes up. */
-    fun touch(vaultId: String, itemId: String) = synchronized(items) {
-        items[vaultId]?.firstOrNull { it.get("id").asString == itemId }?.let { it.addProperty("version", it.get("version").asInt + 1) }
+    /** Changes the item as another client would: [change] edits its JSON and its version goes up. */
+    fun touch(vaultId: String, itemId: String, change: (JsonObject) -> Unit = {}) = synchronized(items) {
+        items[vaultId]?.firstOrNull { it.get("id").asString == itemId }?.let {
+            change(it)
+            it.addProperty("version", it.get("version").asInt + 1)
+        }
     }
 
     private fun handle(exchange: HttpExchange) {

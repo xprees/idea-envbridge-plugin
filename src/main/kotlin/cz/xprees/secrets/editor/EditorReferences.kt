@@ -37,6 +37,8 @@ object EditorReferences {
             (reference.projectId == null || reference.projectId == snapshot.projectId) && reference.connectionId == null
         ) {
             val path = SecretScope.normalizePath(reference.path)
+            // Outside the folder the provider indexes (Vault, 1Password: the bound one): unknown, not missing
+            if (!snapshot.isIndexed(path)) return Resolved(found, snapshot, null, emptyList(), false)
             if (path != snapshot.path && snapshot.folders.isNotEmpty()) {
                 val info = snapshot.folders[path]?.get(found.name)
                 return Resolved(found, snapshot, info, if (info != null) listOf(snapshot.boundEnvironment) else emptyList(), true)

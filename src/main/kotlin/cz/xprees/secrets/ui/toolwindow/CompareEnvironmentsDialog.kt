@@ -25,7 +25,7 @@ import javax.swing.table.DefaultTableModel
  * compared in memory and never shown.
  */
 class CompareEnvironmentsDialog(private val project: Project) : DialogWrapper(project) {
-    private val environments = KeysIndex.getInstance(project).current()?.environments?.keys?.toList().orEmpty()
+    private val environments = KeysIndex.getInstance(project).current()?.environmentNames.orEmpty()
     private val left = ComboBox(environments.toTypedArray())
     private val right = ComboBox(environments.toTypedArray()).apply { if (environments.size > 1) selectedIndex = 1 }
     private val model = object : DefaultTableModel(

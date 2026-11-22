@@ -74,6 +74,10 @@
 
 ### Fixed
 
+- The background keys index (completion, hints, tooltips) re-read everything whenever it reloaded, because it reloads every
+  10 minutes while cached listings expire after 5: a reload after a binding or settings change, or soon after the tool window
+  read the same folder, now reuses what was read. It never refreshes more often than the cache time you set, and *Refresh* in the
+  Secrets tool window now also reloads it, from the server
 - Connection dialog: the redirect URIs of Vault OIDC and Infisical OAuth lost their `<port>`, and the password storage note its
   "&"; the dialog shrinks back after choosing a sign-in method with fewer fields
 - Network failures read as words ("the connection was refused or the server can't be reached…") instead of exception class
@@ -119,6 +123,17 @@
 
 ### Changed
 
+- **Fewer requests in the background**, so editor features stay within secret managers' rate limits (a 1Password service
+  account's hourly limit, Doppler's) even with several IDEs open. Completion, hints and tooltips now read:
+  - **Vault/OpenBao**: only the bound secret path (*This Project › Folder*) and the secrets below it, a couple of requests,
+    instead of walking the whole mount (up to ~500 requests every 10 minutes)
+  - **1Password**: only the bound item, one `op item get` or Connect request, instead of every item of the vault (up to 101 calls).
+    Bound to a whole vault, and for `op://vault/**` imports, only items whose version changed since they were last read are read
+    again
+  - **Doppler**: root configs and the bound config, no longer every branch and personal config (nor the bound config twice)
+
+  With Vault and 1Password, keys of other secrets and items are no longer suggested in completion; references to them still
+  resolve when you run. Leave the folder at `/` to index everything as before
 - The run configuration variable that picks the environment is `ENVBRIDGE_ENVIRONMENT` (for every secret manager);
   `INFISICAL_ENVIRONMENT` keeps working
 - Intention and inspection descriptions no longer assume Infisical
