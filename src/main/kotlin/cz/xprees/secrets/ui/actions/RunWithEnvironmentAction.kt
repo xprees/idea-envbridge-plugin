@@ -40,7 +40,7 @@ class RunWithEnvironmentAction : DumbAwareAction(AllIcons.Actions.Execute) {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val settings = RunManager.getInstance(project).selectedConfiguration ?: return
-        val environments = KeysIndex.getInstance(project).current()?.environments?.keys?.toList().orEmpty()
+        val environments = KeysIndex.getInstance(project).current()?.environmentNames.orEmpty()
         if (environments.isEmpty()) return
         val popup = JBPopupFactory.getInstance().createListPopup(
             object : BaseListPopupStep<String>(SecretsBundle.message("run.with.environment.title", settings.name), environments) {

@@ -70,7 +70,7 @@ class SecretsStatusBarWidget(private val project: Project) : StatusBarWidget, St
 
     override fun getPopup(): JBPopup? {
         val snapshot = KeysIndex.getInstance(project).current()
-        val environments = snapshot?.environments?.keys?.toList().orEmpty().ifEmpty { listOfNotNull(environment) }
+        val environments = snapshot?.environmentNames.orEmpty().ifEmpty { listOfNotNull(environment) }
         val items = environments + listOf(DEFAULT_ITEM, SETTINGS_ITEM)
         return JBPopupFactory.getInstance().createListPopup(object : BaseListPopupStep<String>(SecretsBundle.message("status.popup.title"), items) {
             override fun getTextFor(value: String): String = when (value) {

@@ -13,6 +13,7 @@ import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
 import cz.xprees.secrets.core.provider.AuthOption
+import cz.xprees.secrets.core.provider.KeysIndexScope
 import cz.xprees.secrets.core.provider.MoveResult
 import cz.xprees.secrets.core.provider.WriteOutcome
 import cz.xprees.secrets.core.provider.SecretProvider
@@ -48,6 +49,12 @@ class OnePasswordProvider : SecretProvider {
     override fun defaultEnvironment(connection: SecretConnection): String = ENVIRONMENT
 
     override fun createClient(connection: SecretConnection): SecretsClient = OnePasswordClient(connection)
+
+    /**
+     * Only the bound item (one `op item get` or request), not every item of the vault; bound to the vault's root, every item,
+     * re-reading only those whose version changed (see [OnePasswordItemMemory]). A vault's root holds no fields.
+     */
+    override fun keysIndexScope(bound: SecretScope, environments: List<ProviderEnvironment>): KeysIndexScope = KeysIndexScope.boundFolder(bound)
 
     /**
      * CLI connections: an item's private link, else the account's web app (see [OnePasswordDashboard]); called on the EDT, so
@@ -162,6 +169,7 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         }
         CredentialVault.remove(connection.id, CredentialVault.SLOT_SESSION)
         OnePasswordDashboard.forget(connection)
+        OnePasswordItemMemory.forget(connection.id)
     }
 
     override fun hasCredentials(): Boolean = when (method) {
@@ -199,7 +207,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
 
     /**
      * `/<item>`: every field of the item (top-level fields first, then by section); `/<item>/<section>`: that section's;
-     * `/` with `recursive`: every field of every item, at most [MAX_RECURSIVE_ITEMS] items. Fields without a value are left out.
+     * `/` with `recursive`: every field of every item, at most [MAX_RECURSIVE_ITEMS] items, reading again only the items whose
+     * version changed since this connection last read them ([OnePasswordItemMemory]). Fields without a value are left out.
      */
     override fun listSecrets(scope: SecretScope): List<SecretEntry> {
         val segments = segments(scope.path)
@@ -224,9 +233,10 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
                 "Vault ${scope.projectId} has more than $MAX_RECURSIVE_ITEMS items; import single items (op://<vault>/<item>/*)",
             )
         }
+        OnePasswordItemMemory.retain(connection.id, scope.projectId, items.mapTo(HashSet()) { it.id })
         return itemSegments(items).flatMap { (summary, segment) ->
-            val item = try {
-                backend.item(scope.projectId, summary.id)
+            val item = OnePasswordItemMemory.get(connection.id, scope.projectId, summary) ?: try {
+                backend.item(scope.projectId, summary.id).also { OnePasswordItemMemory.put(connection.id, scope.projectId, summary, it) }
             } catch (e: SecretProviderException) {
                 if (e.kind != Kind.NOT_FOUND) throw e
                 return@flatMap emptyList() // deleted meanwhile
@@ -451,6 +461,8 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
      * must not look like success. Skipped when the answer has no fields.
      */
     private fun save(vault: String, json: JsonObject, expect: Expect) {
+        // Read again by the next whole-vault listing, even if 1Password's listing were slow to show the new version
+        json.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.let { OnePasswordItemMemory.forgetItem(connection.id, it) }
         val result = backend.replaceItem(vault, json)
         val ids = OnePasswordEdits.fieldIds(result) ?: return
         val labelsApplied = expect.labels.isEmpty() || OnePasswordEdits.fieldLabels(result).let { labels -> expect.labels.all { (id, label) -> labels[id] == label } }

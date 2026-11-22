@@ -38,14 +38,19 @@ class SecretsService {
 
     fun client(connection: SecretConnection): SecretsClient = provider(connection).createClient(connection)
 
-    fun secrets(connection: SecretConnection, scope: SecretScope, fresh: Boolean = false): List<SecretEntry> {
+    /**
+     * Secrets of [scope]: cached ones if younger than the cache TTL (or than [maxAgeMs] when given, as the keys index asks),
+     * else read now and cached. [fresh] always reads (launches).
+     */
+    fun secrets(connection: SecretConnection, scope: SecretScope, fresh: Boolean = false, maxAgeMs: Long? = null): List<SecretEntry> {
         val key = connection.id to scope
-        if (!fresh) secretCache[key]?.takeIf { isFresh(it.at) }?.let { return it.value }
+        if (!fresh) secretCache[key]?.takeIf { isFresh(it.at, maxAgeMs) }?.let { return it.value }
         return client(connection).listSecrets(scope).also { secretCache[key] = Cached(it, now()) }
     }
 
-    fun projects(connection: SecretConnection, fresh: Boolean = false): List<ProviderProject> {
-        if (!fresh) projectCache[connection.id]?.takeIf { isFresh(it.at) }?.let { return it.value }
+    /** The connection's projects, cached like [secrets]. */
+    fun projects(connection: SecretConnection, fresh: Boolean = false, maxAgeMs: Long? = null): List<ProviderProject> {
+        if (!fresh) projectCache[connection.id]?.takeIf { isFresh(it.at, maxAgeMs) }?.let { return it.value }
         return client(connection).listProjects().also { projectCache[connection.id] = Cached(it, now()) }
     }
 
@@ -165,7 +170,10 @@ class SecretsService {
         }
     }
 
-    private fun isFresh(at: Long): Boolean = now() - at < SecretsAppSettings.getInstance().state.cacheTtlSeconds * 1000L
+    private fun isFresh(at: Long, maxAgeMs: Long?): Boolean = now() - at < (maxAgeMs ?: cacheTtlMs())
+
+    /** How long browsing and editor features reuse fetched values (Settings › Tools › EnvBridge). */
+    fun cacheTtlMs(): Long = SecretsAppSettings.getInstance().state.cacheTtlSeconds * 1000L
 
     private fun now() = System.currentTimeMillis()
 

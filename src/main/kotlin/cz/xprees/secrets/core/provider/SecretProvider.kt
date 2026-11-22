@@ -53,6 +53,21 @@ interface SecretProvider {
      */
     fun createdSecretLocation(scope: SecretScope, key: String): Pair<String, String> = scope.path to key
 
+    /**
+     * What the background keys index (completion, hover, inlays, inspections; see `KeysIndex`) reads for a project bound to
+     * [bound] (the binding's project, environment and folder). [environments] are the project's environments as listed (only
+     * the bound one when they can't be listed). Called off the EDT; it must not do I/O itself.
+     *
+     * By default: the root folder of the bound environment and of every environment that isn't a branch of another
+     * ([ProviderEnvironment.branchOf]), for "which environments define this key", and the bound environment from `/` with
+     * every subfolder. A provider whose environments aren't something users switch between, or whose folders are expensive
+     * to walk, narrows it (Vault and 1Password: only the bound folder, see [KeysIndexScope.boundFolder]).
+     */
+    fun keysIndexScope(bound: SecretScope, environments: List<ProviderEnvironment>): KeysIndexScope = KeysIndexScope(
+        environments = (listOf(bound.environment) + environments.filter { it.branchOf == null }.map { it.slug }).distinct(),
+        folders = SecretScope(bound.projectId, bound.environment, "/", recursive = true),
+    )
+
     /** Instances offered when a connection is created (name -> base URL); a custom URL is always possible. */
     val instancePresets: List<Pair<String, String>>
 
@@ -83,6 +98,26 @@ interface SecretProvider {
         fun byId(id: String): SecretProvider? = all().firstOrNull { it.id == id }
 
         fun byScheme(scheme: String): SecretProvider? = all().firstOrNull { it.referenceScheme.equals(scheme, ignoreCase = true) }
+    }
+}
+
+/** What the keys index reads for a binding (see [SecretProvider.keysIndexScope]). Keys only are kept from what it reads. */
+data class KeysIndexScope(
+    /**
+     * Environments whose root folder is read (non-recursively): the keys a reference without a folder reads, and the
+     * environments hover and inspections name as defining a key. When the bound environment isn't among them, its root keys
+     * are taken from [folders] (none when that starts below `/`).
+     */
+    val environments: List<String>,
+    /** Read with its subfolders, in the bound environment: the folders completion and hover know. Null reads none. */
+    val folders: SecretScope?,
+) {
+    companion object {
+        /**
+         * Only the bound folder and what is below it, no environment's root: for providers whose environment is fixed account
+         * structure and whose folder walk costs one request per secret (Vault, 1Password). Bound to `/`, that is everything.
+         */
+        fun boundFolder(bound: SecretScope) = KeysIndexScope(environments = emptyList(), folders = bound.copy(recursive = true))
     }
 }
 

@@ -160,6 +160,7 @@ stops and says to write `infisical://prod:KEY`.
 | Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
 | Creating secrets | *New Secret…* in the tool window and *Extract Value to Secret Manager…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
 | Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
+| Keeping up to date | What completion, hints and tooltips know is read in the background, keys only, and refreshed every 10 minutes (or the cache time, if you set it longer) and when the binding changes; it reuses what the tool window just read. *Refresh* in the tool window reloads it. Vault/OpenBao and 1Password index only the bound folder (secret path or item), and Doppler only root configs plus the bound one, to save requests (see their sections) |
 | Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
 | Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |
 | Status bar | `Infisical: dev`, click to switch. Production-like environments show a warning icon |
@@ -217,6 +218,12 @@ is written. The token's policy decides what is allowed. Namespaces themselves ar
   its write (a fraction of a second) is overwritten, and can't be detected.** Removing a secret's last field deletes the secret
   for good (KV v1 keeps no history).
 
+**Editor features** (completion, hints, tooltips, the missing-secret inspection) know the fields of the **bound folder**
+(*Settings › Tools › EnvBridge › This Project › Folder*, e.g. `/app/db`) and of the secrets below it, read in the background with
+a couple of requests. Fields of other secrets aren't suggested and aren't reported as missing; references to them still resolve
+when you run. With the folder left at `/`, the whole mount is read (one request per folder and secret, up to 500 secrets), as
+before.
+
 ### 1Password
 
 A **vault** is a project, an **item** is a folder and the item's **fields** are its keys. 1Password has no environments, so every
@@ -245,8 +252,14 @@ WORK_DB=op://Private/Database/password?connection=Work
 | **Service account (through the CLI)** | A [service account](https://developer.1password.com/docs/service-accounts/) token, kept in the IDE's password storage and given to `op` only in the environment variable `OP_SERVICE_ACCOUNT_TOKEN`, never on its command line. Sign-out forgets the token |
 | **1Password Connect server** | The server's address (`http://localhost:8080` for one on your machine) and an access token, kept in the password storage. Sign-out forgets the token |
 
-`op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item. Values are
+`op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item, and later
+whole-vault imports only one call per item that changed since (1Password counts every change in the item's version). Values are
 cached in memory like any other secrets.
+
+**Editor features** (completion, hints, tooltips) know the fields of the **bound item** (*This Project › Folder*, e.g.
+`/Database`): one `op item get` or Connect request every 10 minutes, which keeps a service account well within its hourly limit.
+Other items' fields aren't suggested; references to them still resolve when you run. With the folder left at `/`, every item of
+the vault is indexed: one listing, plus one read per item that changed.
 
 **Open in Dashboard** (CLI methods): an item, or a field of it, opens through its 1Password private link
 (`https://start.1password.com/open/i?…`, as *Copy Private Link* in the 1Password app makes), in the 1Password app or on the web;
@@ -294,6 +307,9 @@ WEB_URL=doppler://PUBLIC_URL?project=web&connection=Work
 |---|---|
 | **Browser sign-in** (default) | None. **Sign In** opens Doppler in your browser and shows a code in the IDE; approve in the browser if it shows the same code, as with `doppler login`. The token is kept in the IDE's password storage and revoked on sign-out |
 | **Token** | A personal token (`dp.pt.…`), a service account token (`dp.sa.…`) or a service token (`dp.st.…`), kept in the password storage. A service token reads one config, so only that project and config are offered. Sign-out forgets the token but doesn't revoke it |
+
+Editor features (completion, tooltips' "defined in", the missing-secret inspection) read the root configs (`dev`, `stg`, `prd`) and
+the bound config, not the other branch and personal configs; the status bar and *Run with Secrets Environment…* still offer every config.
 
 Doppler is a hosted service: the API address is `https://api.doppler.com` (it can be changed, e.g. for a proxy in front of it).
 "Open in dashboard" opens the config in the Doppler dashboard. Doppler can't be self-hosted, so this integration is tested

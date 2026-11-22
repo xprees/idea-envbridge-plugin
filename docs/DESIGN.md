@@ -75,8 +75,9 @@ interface SecretsClient {                 // blocking, called off the EDT
 }
 ```
 
-A provider also contributes how it is configured per project (Infisical: `.infisical.yaml`). Everything else (run
-configurations, references, tool window, caching, credentials) is shared.
+A provider also contributes how it is configured per project (Infisical: `.infisical.yaml`) and, optionally, what the
+background keys index reads (`keysIndexScope`, see [Caching](#caching)). Everything else (run configurations, references, tool
+window, caching, credentials) is shared.
 
 ## Authentication
 
@@ -157,7 +158,56 @@ configuration's variables:
 - Values are kept **in memory only**. Browsing and editor features use a short-lived cache (default 5 minutes, configurable),
   which is cleared on sign-out, when the project closes and on demand.
 - Every launch fetches fresh values.
-- A keys-only index (no values) lives longer, for completion.
+- A keys-only index (`KeysIndex`, no values) lives longer, for completion, hover, inlays and inspections.
+
+### The keys index: what it reads and when
+
+**When.** The index snapshot is reloaded when it is older than its *refresh interval*, `max(10 minutes, cache TTL)`, and when
+the binding or the connections change. Its reads go through the secrets cache but accept cached listings up to the refresh
+interval old (`SecretsService.secrets(…, maxAgeMs)`), not just the cache TTL. So:
+
+- the periodic reload re-reads (its own listings are older than the interval by then): at most one full index read per interval;
+- a reload right after a binding or settings change, or soon after the tool window or a hover read the same folder, reuses
+  what was read and costs no requests (before, with the 5-minute TTL and a 10-minute interval, every reload missed the cache);
+- a cache TTL longer than 10 minutes slows the index down with it: it never refreshes more often than the cache would;
+- *Refresh* in the tool window clears the cache and then reloads the index, so what the user asked for is read fresh. Writes
+  from the IDE clear the connection's cache and reload the index too.
+
+Keys shown by the editor can therefore be up to two intervals old (a listing up to one interval old in a snapshot up to one
+interval old); launches never use the index.
+
+**What.** `SecretProvider.keysIndexScope(bound, environments)` returns a `KeysIndexScope`: the environments whose root folder is
+read (the keys a reference without a folder reads, and "which environments define this key" in hover, completion and the
+missing-secret inspection) and one folder of the bound environment read with its subfolders (what completion and hover know
+about folders). The snapshot also keeps every environment's name (`environmentNames`) for the status bar switcher, *Run with
+environment…* and *Compare environments*, whether its keys are indexed or not, and the folder it indexed (`indexedFolder`): a
+reference to a folder outside it is *unknown* to the editor (no hint, no "missing" warning), not missing.
+
+| Provider | Environments' roots read | Folder read | Per refresh (requests) |
+|---|---|---|---|
+| Infisical, AWS (default) | Every environment of the project | Bound environment from `/`, recursive | 1 per environment + 1 recursive listing |
+| Doppler | Root configs and the bound config; branch and personal configs (`ProviderEnvironment.branchOf`) are left out | None (a config is flat; the root read has every key) | 1 per root config (+1 when bound to a branch config) |
+| Vault / OpenBao | None (a mount's root holds no fields) | The bound secret path, recursive (`KeysIndexScope.boundFolder`) | A secret path: 1 LIST + 1 GET (+ the mounts listing); bound to `/`: the whole mount as before, up to `MAX_RECURSIVE_PATHS` |
+| 1Password | None (a vault's root holds no fields) | The bound item (`KeysIndexScope.boundFolder`) | One `op item get` / request (Connect: +1 list when the item is named by title); bound to the vault: 1 list + 1 per item **changed** since the last read |
+
+**Trade-off (Vault, 1Password):** completion and hover know only the keys of the bound secret path / item (and, for Vault, the
+paths below it). Keys of other secrets or items aren't suggested and get no hint, and references to them aren't reported as
+missing; they resolve at launch exactly as before, because launches read every reference fresh and never consult the index.
+Binding the vault's / mount's root (folder `/`) indexes everything, as before, at the old cost (1Password then re-reads only
+changed items). The Vault and 1Password per-namespace / per-vault root reads were dropped because they read nothing.
+
+**Doppler:** hover's "defined in", the struck-out "only in other environments" completions and the missing-secret inspection
+consider root configs (`dev`, `stg`, `prd`) and the bound config, not other branch or personal configs; switching and *Run with
+environment…* still offer every config.
+
+**1Password item memory** (`OnePasswordItemMemory`): a whole-vault read (`op://vault/**`, or the index bound to a vault's root)
+lists the vault's items (`op item list --vault … --format json`, Connect `GET /v1/vaults/{id}/items`) and reads with `op item
+get` / `GET …/items/{id}` only the items whose `version` or update time (`updated_at` from the CLI, `updatedAt` from Connect)
+differs from when this connection last read them; the others come from memory. Kept per connection, vault and item, memory only
+(never persisted; values included, like the secrets cache), forgotten on sign-out, for an item this IDE writes (in case a
+listing were slow to show the new version) and for items no longer listed. A listing without either field reads every item, as
+before. This also applies to launches with `op://vault/**`: the listing is always read fresh and the version changes with every
+edit, so the values are the current ones.
 
 ## Tool window "Secrets" (right side)
 
@@ -174,7 +224,7 @@ Language-agnostic by design: variable names are found by text patterns, so compl
 hover and gutter (`externalAnnotator language=""`) and the missing-secret inspection (no language) work in every file type. Inlay
 hints have to be registered per language, so they are, in the optional configs of the plugins that define the languages (Java,
 Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`, PHP, Ruby, Rust, plain text). A keys-only index
-(`KeysIndex`) of the bound folder in every environment feeds them; it never holds values.
+(`KeysIndex`, see [the keys index](#the-keys-index-what-it-reads-and-when)) feeds them; it never holds values.
 
 
 - Completion of secret keys in `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `os.environ[…]` / `os.getenv`, `os.Getenv`,
@@ -326,10 +376,19 @@ auth method including the OIDC round trip, expired tokens and permission errors;
 KV v2, a new secret, a reserved name); creating, changing, renaming and deleting fields (the whole secret as the body, no
 `cas`, the secret deleted with its last field); conflicts refused before writing; moves within KV v1, across namespaces and in
 both directions between KV v1 and KV v2 (destination written first); a source that refuses the removal; a mount upgraded to
-KV v2 meanwhile; the dashboard link per version; launches. Integration tests (`scripts/integration/setup.sh` mounts a KV v1
+KV v2 meanwhile; the dashboard link per version; launches. `KeysIndexScopePlatformTest` counts the requests of a keys index
+refresh: bound to `secret/app/db` 3 (mounts, LIST, GET) against 9 for the old whole-mount read of the mock, and hover / the
+missing-secret inspection still knowing the bound secret's fields while another path is unknown. Integration tests (`scripts/integration/setup.sh` mounts a KV v1
 engine `legacy` on Vault and OpenBao, also in OpenBao's `team-a` namespace) cover listing, reading, the preflight and the probe
 against the real servers, create / update / rename / delete, moves between KV v1 secrets, KV v1 ↔ KV v2 and across namespaces,
 and launches.
+
+### Known limits (keys index)
+
+- The keys index reads only the bound secret path and the paths below it (see [the keys index](#the-keys-index-what-it-reads-and-when)):
+  completion and hover don't know other secrets of the mount. Bound to the mount's root (`/`) it walks the whole mount, one LIST
+  per folder and one GET per secret (at most `MAX_RECURSIVE_PATHS` = 500; more leaves the folder index empty), once per refresh
+  interval.
 
 ## Third provider: 1Password
 
@@ -532,6 +591,10 @@ belongs to no signed-in account, and its address is not 1Password's web app).
   fixture JSON, logs argv and whether `OP_SERVICE_ACCOUNT_TOKEN` was set, can require a token, act signed out, and report an
   ambiguous title like `op` does. `MockOnePasswordConnect`: a JDK HttpServer with the three Connect endpoints, bearer check,
   403 and 404.
+- `KeysIndexScopePlatformTest`: a keys index refresh bound to an item reads that item only (one `op item get`, against `item
+  list` + four `item get` for the vault before); bound to a vault, an unchanged vault costs one listing, an item another client
+  changed (`FakeOp.touch`, `MockOnePasswordConnect.touch` raise its version) is read again with its new value and the others
+  aren't; sign-out forgets the items; an item written through the IDE is read again although the fake's listing keeps its version.
 - `OnePasswordPlatformTest`: each method lists vaults, items and fields; sections by label and ID; duplicate titles; the
   whole-vault import and its cap; the token only in the environment; errors (op missing, not signed in, wrong token, missing
   item, ambiguous title, Connect 401 / 403); launches resolving `op://` references against a bound vault (vault by name and by
@@ -557,11 +620,18 @@ belongs to no signed-in account, and its address is not 1Password's web app).
 - Whether `op read` resolves `op://vault/item/field` for a field inside a section is assumed, not verified; EnvBridge does.
 - The `op` error texts used for classification are known examples; an unknown text is SERVER with the text shown.
 - `--reveal` behaviour of older CLI versions is assumed (retry without it on "unknown flag").
-- Background features (completion's keys index, every 10 minutes) run `op` for a signed-in app connection; when the app's
-  authorization of the CLI has expired, the app may ask to approve at that moment. Signing out stops it.
+- Background features (completion's keys index, every 10 minutes or the cache TTL if longer) run `op` for a signed-in app
+  connection: one `op item get` for the bound item, or, bound to a vault's root, `op item list` plus one `op item get` per
+  changed item. When the app's authorization of the CLI has expired, the app may ask to approve at that moment. Signing out stops it.
+- The keys index reads only the bound item: completion and hover don't know other items' fields (they still resolve at launch).
+- That `op item list --format json` reports `version` and `updated_at` per item is taken from 1Password's `op-js` type
+  definitions (`Item`, `version?: number`, `updated_at: string`, the type it gives `item list`), and Connect's `version` /
+  `updatedAt` from `connect-sdk-go` (`onepassword.Item`, which its `GetItems` decodes the list into); not verified against a live
+  account or server. The fixtures (`FakeOp`, `MockOnePasswordConnect`) list both. Without either field every item is read.
 - `?attribute=otp`, `?attribute=type`, `?ssh-format=` and field lookup by field ID (except where ID and label are equal, as for
   built-in `username` / `password`) are not supported.
-- A whole-vault import makes one `op` call per item (≈0.5 s each); it is capped at 100 items.
+- A whole-vault import makes one `op` call per item that changed since this connection last read it (≈0.5 s each; the first
+  time, every item); it is capped at 100 items.
 - The dashboard link's private-link format (below) is from 1Password's apps as remembered, not verified against a live
   account while writing this.
 - Writes through the CLI rely on `op item edit` accepting piped item JSON (confidence above); there is no argv fallback.
@@ -693,6 +763,10 @@ the dashboard's start page. For another API address, `api.<domain>` becomes `das
   values and the `DOPPLER_*` metadata, writes, delete, notes, branch configs, the browser sign-in (409 until approved after N
   polls, or declined), revocation, service tokens bound to one config, locked configs, failing deletions and a 429 with
   `Retry-After`.
+- `KeysIndexScopePlatformTest`: a keys index refresh reads `dev`, `stg` and `prd` (3 requests, against 5 before: also
+  `dev_personal` and `dev` a second time), coverage of keys over the root configs, every config still offered for switching, a
+  bound personal config indexed; the cache rule (a reload within the interval reuses listings even with the cache TTL at 0, a
+  cleared cache reads fresh, a longer TTL lengthens the interval).
 - `DopplerPlatformTest`: registration; listings with each token type (service token offered alone, without listing projects);
   the browser sign-in round trip (code in the progress text, polling code only in bodies, token only in the header, never in
   exceptions or `toString`, revoked on sign-out), declined, cancelled and timed-out sign-ins, a revoked session; error mapping
@@ -718,6 +792,8 @@ note}}`), deleting with a null value, notes and error bodies (`messages`). The m
 - No retry on 429: the error says when to retry. Pagination stops at a short page (≤ 2 000 projects or configs).
 - `ENVBRIDGE_ENVIRONMENT` (or `INFISICAL_ENVIRONMENT`) on a run configuration picks the config (the core's override variable); `DOPPLER_CONFIG` /
   `DOPPLER_PROJECT` / `DOPPLER_TOKEN` in the IDE's or run configuration's environment are not read.
+- The keys index reads root configs and the bound config only (`root` from the configs listing; when Doppler omits it, a name
+  without `_` counts as root). Keys that exist only in another branch or personal config aren't shown as "defined elsewhere".
 
 ## Fifth provider: AWS Secrets Manager
 
