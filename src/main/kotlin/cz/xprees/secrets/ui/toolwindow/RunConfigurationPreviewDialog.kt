@@ -104,6 +104,9 @@ class RunConfigurationPreviewDialog(private val project: Project) : DialogWrappe
         is EnvResolution.Source.LocalOverride -> SecretsBundle.message("preview.source.override", describe(source.replaced))
         is EnvResolution.Source.Reference -> SecretsBundle.message("preview.source.reference", source.reference.format(), EnvResolution.describe(source.scope))
         is EnvResolution.Source.Scope -> SecretsBundle.message("preview.source.scope", source.reference.format(), source.secretPath)
+        is EnvResolution.Source.Varlock -> SecretsBundle.message(
+            "preview.source.varlock", source.functions.joinToString(", ") { "$it()" }, source.secrets.joinToString(", ") { it.reference.format() },
+        )
         else -> SecretsBundle.message("preview.source.explicit")
     }
 }

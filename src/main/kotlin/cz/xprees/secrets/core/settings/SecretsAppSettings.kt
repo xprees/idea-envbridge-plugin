@@ -56,8 +56,9 @@ class SecretsAppSettings : SimplePersistentStateComponent<SecretsAppSettings.App
         var layeredEnvFiles by property(false)
 
         /**
-         * varlock compatibility mode (off by default). No behaviour yet: the single switch later work hooks into (varlock's
-         * editor support and resolving its secret-manager functions such as `op(…)`, `infisical(…)`, `vaultSecret(…)`).
+         * varlock compatibility mode (off by default), the single switch for varlock support: launches read the layered env
+         * files as varlock does and resolve its function values (`infisical(…)`, `vaultSecret(…)`, `op(…)`, `ref(…)`, `${…}`, …)
+         * through EnvBridge connections (see `run/VarlockLaunch`); `exec(…)` and plugins are never run.
          */
         var varlockCompatibility by property(false)
     }

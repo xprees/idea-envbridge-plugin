@@ -184,6 +184,12 @@ object DotEnvLines {
         )
     }
 
+    /** Replaces the value (and any comment) of the last [name] line of [document] with [value] (a varlock function, as written). */
+    fun setValue(document: Document, name: String, value: String) {
+        val line = parse(document.text).lastOrNull { it.name == name } ?: return
+        document.replaceString(line.afterEquals.startOffset, line.afterEquals.endOffset, value)
+    }
+
     /**
      * Binds the last [name] line of [document] to [reference] with a comment, replacing any comment it had. With [keepValue]
      * the value stays as the fallback for tools outside the IDE; otherwise it is cleared.

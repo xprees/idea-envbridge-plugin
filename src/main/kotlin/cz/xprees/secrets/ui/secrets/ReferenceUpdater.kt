@@ -19,6 +19,7 @@ import cz.xprees.secrets.core.resolve.MovedReferences
 import cz.xprees.secrets.core.resolve.SecretBindingService
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.ProjectSecretsSettings
+import cz.xprees.secrets.core.settings.SecretsAppSettings
 import cz.xprees.secrets.editor.DotEnvLines
 import cz.xprees.secrets.run.EnvPatcher
 
@@ -134,7 +135,8 @@ class ReferenceUpdater(private val project: Project) {
         ProjectFileIndex.getInstance(project).iterateContent { file ->
             if (!file.isDirectory && DotEnvLines.isDotEnv(file.name) && file.length < MAX_FILE_BYTES) {
                 val text = FileDocumentManager.getInstance().getDocument(file)?.text ?: runCatching { String(file.contentsToByteArray(), file.charset) }.getOrNull()
-                val edits = text?.let { moved.edits(it, defaults) }.orEmpty()
+                val varlock = SecretsAppSettings.getInstance().state.varlockCompatibility
+                val edits = text?.let { moved.edits(it, defaults) + if (varlock) moved.varlockEdits(it, defaults) else emptyList() }.orEmpty()
                 if (edits.isNotEmpty()) files += file to edits
             }
             true

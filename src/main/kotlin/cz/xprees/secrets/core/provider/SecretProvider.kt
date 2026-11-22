@@ -430,7 +430,7 @@ interface SignInInteraction {
     fun status(text: String) {}
 }
 
-class SecretProviderException(
+open class SecretProviderException(
     val kind: Kind,
     message: String,
     cause: Throwable? = null,

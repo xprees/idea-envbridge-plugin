@@ -428,8 +428,8 @@ it all off. The files: attached env files, the program's own `.env` / `.env.loca
 either (its decorators only, unless layered). For the program's own files, EnvBridge only checks and masks: the program loads
 them itself, so `@internal` can't keep a key from it there.
 
-Not covered: terminals (they don't read `.env` files), varlock's `@import`, `@currentEnv`, function values and the other
-decorators (recognised, no effect).
+Not covered: terminals (they don't read `.env` files); without the varlock mode also varlock's `@import`, `@currentEnv`,
+function values and the other decorators (recognised, no effect).
 
 ### Layered env files
 
@@ -454,15 +454,112 @@ more on top (see *Editor support* below).
 |---|---|---|
 | `envSpecDecorators` | on | Launches act on decorators (only files using them are affected) |
 | `layeredEnvFiles` | off | Layered env files as above |
-| `varlockCompatibility` | off | The single switch of the varlock compatibility mode: editor support (below) |
+| `varlockCompatibility` | off | The single switch of the varlock compatibility mode: editor support and resolving values (below; implies layered files) |
 
-### varlock compatibility mode (builds on this)
+### varlock compatibility mode: resolving varlock values
 
-The opt-in mode reuses the same pieces rather than add a second parser: the AST already carries item function values
-(`op(…)`, `infisical(…)`, `vaultSecret(…)`) for EnvBridge to resolve through its providers, `EnvSpecLayers.Defaults.VARLOCK` gives
-varlock's reading of unmarked files, `EnvSpecDecorators` knows varlock's root decorators (`@currentEnv`, `@import`, `@init*`), and
-`.env.schema` is already the lowest layer. It switches on with `SecretsAppSettings.state.varlockCompatibility`. Never executed:
-`exec(…)` and varlock plugins (npm code).
+`SecretsAppSettings.state.varlockCompatibility` (off) is the single switch. EnvBridge resolves varlock's function values itself
+(no Node.js, no varlock CLI, no plugin code), through the user's EnvBridge connections. Behaviour follows varlock 1.25.0 and its
+plugins (`@varlock/infisical-plugin` 2.1.3, `hashicorp-vault-plugin` 2.1.2, `1password-plugin` 2.0.7, `doppler-plugin` 2.0.2,
+`aws-secrets-plugin` 1.3.0), read from their sources; nothing is copied.
+
+**Pure core (`core/varlock`, no platform dependencies).**
+
+- `VarlockCompiler` turns the env-spec AST into `VarlockExpr` (`Text`, `Undefined`, `Ref`, `Pure(function, args)`,
+  `Secret(SecretCall)`). It expands strings as varlock's `expand()` does (not single-quoted ones; `\$` is kept): `$A` / `${A}` →
+  `Ref`, `${A:-d}` / `${A-d}` → `fallback(ref(A), "d")`, mixed text → `concat`, and `$(cmd)` → refused (varlock makes it `exec`).
+  Unquoted `true` / `false` are booleans, `undefined` is no value. `PURE` = `concat`, `fallback`, `forEnv`, `eq`, `if`, `ifs`, `not`,
+  `and`, `or`, `isEmpty`; `ref(NAME)`; `cache(x, …)` is `x`. `REFUSED` = `exec` (COMMAND), `keychain`, `varlock` (LOCAL_ENCRYPTION),
+  `generateOtp` (OTP). Anything else is `UNSUPPORTED` (`random*`, `remap`, `regex`, `domainFromUrl`, `awsParam`, `vaultToken`,
+  bulk loaders, other plugins' functions). Problems (`VarlockProblem`: code, key, args) carry names only.
+- Instance IDs: a secret function given its most arguments takes the instance first (`vaultSecret(id, ref)`, `op(id, ref)`,
+  `doppler(id, name)`, `awsSecret(id, name)`, `infisical(id, name, path)`). **`infisical(a, b)` deviates on purpose**: varlock
+  1.25.0 treats any static first argument as an instance, which contradicts its own README example `infisical("KEY", "/path")`;
+  EnvBridge treats `a` as an instance only when an `@initInfisical(id=a)` declares it, else as name and path. An ID no `@init…`
+  declares is `UNKNOWN_INSTANCE`.
+- `VarlockEvaluator` evaluates lazily per item (memoized, cycles → `CYCLE`) with varlock's semantics: `concat` (undefined as ""),
+  `fallback` (first value neither undefined nor ""), `forEnv` (needs a current environment, else `NO_ENVIRONMENT`), `eq` (strict),
+  `if` / `ifs` / `not` / `and` / `or` (short-circuit, varlock truthiness), `isEmpty`. `ref` reads the varlock definitions first,
+  then `external` (values the launch already has, then the IDE's process environment). Every `VarlockValue` carries the
+  `SecretUse`s (reference, scope, value; masked `toString`) it was made from, through `ref`. Arguments of secret functions and
+  `@init…` values made from secrets are refused (`INVALID_CALL`, `SECRET_IN_DECORATOR`): they would end up in request URLs
+  (Infisical's `secretPath`) and in messages.
+- `VarlockSecrets.map(provider, itemKey, args, named, init, connection)` builds the reference text in the provider's grammar and
+  parses it with `SecretReference.parse`, so it is validated like a hand-written reference:
+
+  | Function | Reference |
+  |---|---|
+  | `infisical([name], [path])` | `infisical://[environment:][secretPath/]NAME?project=projectId` (`@initInfisical`); name defaults to the item; `allowMissing` (call or init) |
+  | `vaultSecret([ref], key=, raw=)` | `ref` = `path[#key]`, path defaults to `defaultPath`, `pathPrefix` prepended, first segment = mount; field = `key=` > `#key` > item name; `raw=true` → `vault://mount/path#*`, assembled as a JSON object of string values; `namespace` → `?namespace=` |
+  | `op(ref)` | the `op://` text, `?connection=` added for a mapped instance; `OnePasswordGrammar` refuses `?attribute=otp` |
+  | `doppler([name])` | `doppler://config:NAME?project=project` |
+  | `awsSecret([ref], key=)` | `aws-sm://namePrefix+name#key`; without a key `#*`: a plain-string secret (one key named like the name's last segment) gives its string, otherwise the JSON of the fields |
+
+  `VarlockSecrets.call(reference, itemKey, init, instance)` is the inverse (`infisical()` when the secret has the item's name), or
+  null when the instance can't name it (another environment / project than its `@init…`, Vault short references, AWS `#KEY`
+  short references, scope imports). `VarlockSecrets.find(text)` finds secret calls with static arguments in a `.env` file (for the
+  editor and reference updates; `op(…)` is left to the `op://` finder).
+
+**At launch** (`run/`). `EnvFileReferences.prepare` takes `prepareVarlock` when the mode is on:
+
+1. Environment: *Run with environment…* > the value of the item `@currentEnv` names (evaluated purely from the run
+   configuration, the base files `.env.schema` / `.env` / `.env.local` and the IDE's environment; a secret function there is
+   `SECRET_IN_DECORATOR`) > `layerEnvironment` (`ENVBRIDGE_ENVIRONMENT`, the binding). Names that aren't plain file name parts are
+   ignored.
+2. Files: always layered (`specFiles(profile, env)`), each preceded by its `@import(path, pick=, omit=, allowMissing=, enabled=)`
+   files, recursively, each file once, depth ≤ 10. The import path is resolved against the importing file's real directory and
+   must lie inside the project's real base directory (symbolic links followed): else `IMPORT_OUTSIDE`. A missing file is
+   `IMPORT_MISSING` unless `allowMissing=true`; `enabled=false` / `forEnv(…)` skips it. Imported items rank below the importing file.
+3. Per key the highest-precedence definition wins; `KEY=` defines nothing (varlock: undefined). An EnvBridge binding comment
+   stands for its reference. Plain values (`Text`) go to `Prepared.envs` (so `infisical://` references resolve as before),
+   expressions to `VarlockPlan.definitions`. Keys set on the run configuration are skipped (they win).
+4. `@init…`: only `VarlockProvider.connectionArgs` are compiled (`projectId`, `environment`, `secretPath`, `siteUrl`,
+   `allowMissing`; `url`, `namespace`, `defaultPath`, `pathPrefix`; `account`; `project`, `config`; `region`, `namePrefix`).
+   `credentialArgs` are never evaluated; names they refer to become `credentialKeys` (exempt from `@required`), and a secret
+   written inline (`SECRET_CREDENTIALS`) adds a warning naming the decorator and argument. `@setValuesBulk` → `BULK`; `@plugin`
+   is ignored.
+5. Decorators: `EnvSpecLayers.of(..., Defaults.VARLOCK, always = true)`: varlock's reading of unmarked files (required,
+   sensitive), applied even when no file uses a decorator.
+
+`SecretsProgramRunner`: `canRun` also claims configurations whose files hold varlock values (`usesVarlock`: a call, a reference,
+an unquoted / double-quoted `$`, or `@import` / `@currentEnv` / `@init…`). In the background task: `VarlockLaunch.checkProblems`
+(before any request: refusals stop here, so a refused `exec` never leads to a fetch or a started process) → the usual
+`resolver.resolve` → `VarlockLaunch.resolve`, which evaluates every definition. Secret functions go through
+`LaunchSecretResolver.fetcher` (same bindings, `referenceDefaults`, "only the bound project" check and fresh fetching as
+`resolve`, one fetch per scope; a missing folder is empty). A missing secret is `MISSING_SECRET` unless `allowMissing`. All
+problems of a launch are collected into one `VarlockLaunchException` (a `SecretProviderException`, CONFIGURATION), shown by
+`SecretsNotifications.varlockFailed` (one line per key and function, *Open <file>* at the item's line, *Retry*, *Settings*).
+
+Instance → connection (`VarlockLaunch.connectionFor`), chosen as least surprising: a server named in `@init…` (`siteUrl` of
+Infisical, `url` of Vault, `region` of AWS) selects the connection with that base URL / region, and **fails** (`NO_CONNECTION`)
+when there is none, as the project file's domain does: the file never makes EnvBridge talk to a new server. Otherwise a named
+instance uses the provider's connection whose name equals the ID (case-insensitive); otherwise the binding chooses (bound
+connection, else the provider's first), as for `scheme://` references. No extra setting.
+
+Results: a value made from secrets gets `Source.Varlock(functions, secrets)` (summary `[varlock infisical(): dev:/]`, prod
+guard environments, preview); a value made only of plain parts is `Source.Explicit`. `Result.partialSecretValues` holds every
+secret used, so a secret inside a `concat(…)` is masked on its own too. Local overrides apply to varlock keys.
+`LaunchChecks` then applies the decorators to the resolved values (`Prepared.check` drops `credentialKeys` from the missing ones).
+
+**Editor** (small hooks; the varlock editor support proper lives elsewhere). `EditorReferences.of` adds `VarlockSecrets.find`
+results in `.env` files when the mode is on, so masked hints, hover, the missing-secret inspection and *Show in tool window*
+work on `infisical()` & co. `rebind` (*Extract Value to Secret Manager…*, *Bind to Secret…* when clearing the value) writes
+`KEY=<call>` via `DotEnvLines.setValue` when `VarlockSecrets.call` can express the reference with the file's default instance,
+else the usual binding comment; a function value isn't offered for extraction. `MovedReferences.varlockEdits` (used by
+`ReferenceUpdater` for `.env` files) rewrites calls of the default instance whose secret was renamed or moved, when the target
+can still be named (`infisical("OLD")` → `infisical("NEW")`, a folder → `infisical("K", "/folder")`).
+
+Left out: `@setValuesBulk` (also `infisicalBulk`, `dopplerBulk`, `opLoadEnvironment`, Vault `raw=true` bulk), `random*`,
+`remap`, `regex`, `domainFromUrl`, `awsParam` (Parameter Store isn't a provider), `vaultToken`, directory imports, `@disable`,
+terminals, rewriting calls of named instances or with dynamic arguments, nested JSON in Vault `raw=true` (values are strings),
+varlock's process-environment precedence over file values (EnvBridge: the configuration wins, then files, then the IDE's
+environment for names no file defines).
+
+Tests: `VarlockTest` (expansion, refusals, instance detection, mapping both ways, the editor finder, evaluation, cycles, rename
+edits), `VarlockPlatformTest` (a launch against `MockInfisical`, `MockVault` and `FakeOp` with `infisical()`, `vaultSecret()`,
+`op()`, `ref()`, `concat()`, `fallback()`, raw JSON, masking and sources; missing secrets, unknown Vault URL, varlock defaults;
+`exec()` refused through the runner with no request and no command run; `@import` with `pick`, outside paths, missing files;
+`@currentEnv` precedence; the mode off; inline credentials; editor references and extract).
 
 #### Editor support (`editor/varlock`)
 

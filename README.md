@@ -151,6 +151,53 @@ stops and says to write `infisical://prod:KEY`.
 | Database data sources | *Data Source › Authentication: Infisical (EnvBridge)*: user and password as references or plain values, resolved when a connection opens; only the references are saved |
 | Terminal | **New Terminal Tab with Secrets** (next to the terminal's **+**, or *Tools* menu) opens one tab with the secrets, in any shell (PowerShell, cmd, bash, zsh). To give every new tab secrets: *Settings › Tools › EnvBridge › Terminal*, opt in and list what tabs get (`infisical://*` or `NAME=infisical://KEY`, one per line). **Load Secrets into This Terminal** puts them into the shell of the current tab instead, in that shell's own syntax, decided from the tab's shell: PowerShell, cmd, bash / zsh / sh (also Git Bash and WSL on Windows) or fish. The values go through a short-lived owner-only file the shell loads and deletes, so they appear neither on screen nor in the shell history. Typing `export KEY=infisical://…` yourself does nothing: nothing resolves references inside a running shell |
 
+## varlock compatibility mode
+
+*Settings › Tools › EnvBridge › varlock compatibility mode* (off by default) reads `.env` files the way
+[varlock](https://github.com/dmno-dev/varlock) (1.25.0) does, for projects that already describe their configuration in a
+`.env.schema`. Nothing of varlock runs: no Node.js, no varlock CLI, no varlock plugins. EnvBridge resolves the values itself,
+through the connections you are signed in to.
+
+### Resolving varlock values at launch
+
+With the mode on, a launch reads the layered files (`.env.schema` < `.env` < `.env.local` < `.env.[env]` < `.env.[env].local`, as
+with *Layered .env files*, which the mode implies) and evaluates item values:
+
+| In the file | What EnvBridge does |
+|---|---|
+| `infisical()`, `infisical("KEY")`, `infisical("KEY", "/path")`, `infisical(id, "KEY")`, `allowMissing=true` | Reads the secret through an Infisical connection, in the project and environment of `@initInfisical(projectId=…, environment=…, secretPath=…)` (else the project's binding). With two arguments the first is an instance only when an `@initInfisical(id=…)` declares it, else it is the name and the second the folder |
+| `vaultSecret("secret/db#password")`, `vaultSecret("secret/db", key="PORT")`, `vaultSecret("secret/db")` (the item's name is the field), `vaultSecret()` with `defaultPath`, `raw=true` (every field as a JSON object) | Reads through a Vault / OpenBao connection: the first path segment is the mount. `@initHcpVault(url=…, namespace=…, defaultPath=…, pathPrefix=…)` are honoured |
+| `op(op://vault/item/field)`, `op(id, op://…)` | The `op://` reference itself, through a 1Password connection. `?attribute=otp` and other attributes are refused with a message |
+| `doppler()`, `doppler("KEY")`, `doppler(id, "KEY")` | `@initDoppler(project=…, config=…)` give the project and config |
+| `awsSecret()`, `awsSecret("name")`, `awsSecret("name#key")`, `awsSecret("name", key="k")` | AWS Secrets Manager; `namePrefix` of `@initAws` is prepended. Without a key: the secret's plain string, or its JSON |
+| `$NAME`, `${NAME}`, `${NAME:-default}`, `"text ${A} $B"`, `ref(NAME)` | Interpolation and references to other items (or values set on the run configuration). Single-quoted values are taken literally, `\$` isn't expanded |
+| `concat(…)`, `fallback(…)`, `forEnv(…)`, `eq`, `if`, `ifs`, `not`, `and`, `or`, `isEmpty`, `cache(x)` (just `x`) | Evaluated as varlock does |
+| `@currentEnv=$APP_ENV` | The environment of the launch (which `.env.[env]` files are read, what `forEnv(…)` sees): *Run with environment…* first, then the item `@currentEnv` names (its value on the run configuration, else in `.env.schema` / `.env` / `.env.local`), then EnvBridge's selected environment |
+| `@import(./other.env, pick=[A, B], omit=[C], allowMissing=true, enabled=forEnv(dev))` | Adds that file's items below the importing file's. Only files inside the project: an absolute path or `../` out of it is refused |
+
+**Refused, always**: `exec(…)` and `$(command)` (no command runs from an env file), `keychain(…)`, `varlock(…)` (local
+encryption), `generateOtp(…)`. **Not supported**: other functions (`random…`, `remap`, `awsParam`, `vaultToken`, plugin functions
+of other secret managers, …) and `@setValuesBulk(…)`. Either stops the launch before anything is fetched; the notification names
+the variable and the function (never a value) and opens the file. `@plugin(…)` is ignored: plugins are never loaded.
+
+**Instances and connections.** `@initInfisical(siteUrl=…)` and `@initHcpVault(url=…)` choose the connection with that URL
+(`@initAws(region=…)` the one with that region); a launch fails when you have none, EnvBridge never connects to a server you
+didn't add. Otherwise an instance with an ID (`@initHcpVault(id=prod, …)`, `vaultSecret(prod, …)`) uses your connection of that
+provider named like it (`prod`), and an instance without an ID the project's binding. **Credentials in `@init…`**
+(`clientSecret=`, `token=`, `secretId=`, `serviceToken=`, …) are never read; written inline, they get a warning. Items only
+credentials refer to (`INFISICAL_CLIENT_SECRET=`) aren't required.
+
+Resolved values are secrets like any other: masked in the console (also a secret inside a `concat(…)`), listed in the launch
+summary, subject to the production guard and to local overrides. `@required`, `@sensitive`, `@internal` and `@type` apply to the
+resolved values, with varlock's defaults for files without `@defaultRequired` / `@defaultSensitive` (required and sensitive).
+Values set on the run configuration win over the files. EnvBridge references (`infisical://KEY`, binding comments) keep working
+in the same files.
+
+In `.env` files the editor understands these functions too: masked hints, hover and *Secret missing* work on `infisical()`,
+`vaultSecret(…)`, `doppler(…)` and `awsSecret(…)` with plain arguments; *Extract Value to Secret Manager…* and *Bind to Secret…*
+(when clearing the value) write `KEY=infisical()` instead of a binding comment; renaming or moving a secret rewrites the
+functions that read it (`infisical("OLD")` → `infisical("NEW")`).
+
 ## In the editor
 
 | Feature | Where |

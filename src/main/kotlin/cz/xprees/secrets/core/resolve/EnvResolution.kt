@@ -46,6 +46,12 @@ object EnvResolution {
 
         /** A secret replaced by the user's local override (kept in the credential store). */
         data class LocalOverride(val replaced: Source) : Source
+
+        /**
+         * A varlock function value (varlock compatibility mode) made from the secrets [secrets] (one or more: `concat(…)`,
+         * `fallback(…)`), named by the varlock functions it used ([functions], e.g. `infisical`).
+         */
+        data class Varlock(val functions: List<String>, val secrets: List<Reference>) : Source
     }
 
     data class Result(
@@ -53,7 +59,14 @@ object EnvResolution {
         val sources: Map<String, Source>,
         /** Non-fatal problems (secrets of a scope import whose value may not be read, so they were left out). */
         val warnings: List<String> = emptyList(),
+        /**
+         * Secret values that are only part of a variable's value (a varlock `concat(…)` of a secret), masked in consoles on
+         * their own too. Never log them.
+         */
+        val partialSecretValues: Set<String> = emptySet(),
     ) {
+        override fun toString(): String = "Result(keys=${environment.keys}, sources=$sources, warnings=$warnings)"
+
         /** Environments the secrets came from (for the prod guard). */
         val environments: Set<String>
             get() = sources.values.mapNotNull { source ->
@@ -62,7 +75,9 @@ object EnvResolution {
                     is Source.Scope -> s.scope.environment
                     else -> null
                 }
-            }.toSet()
+            }.toSet() + sources.values.flatMap { source ->
+                ((source as? Source.LocalOverride)?.replaced ?: source).let { s -> (s as? Source.Varlock)?.secrets?.map { it.scope.environment }.orEmpty() }
+            }
 
         /**
          * This result with [overrides] applied: a variable that came from a secret manager and has an override gets the
@@ -101,12 +116,15 @@ object EnvResolution {
             is Source.Reference -> "[${EnvResolution.describe(source.scope)}]"
             is Source.Scope -> "[${EnvResolution.describe(source.scope)}]"
             is Source.LocalOverride -> "[local override]"
+            is Source.Varlock -> "[varlock ${source.functions.joinToString(", ") { "$it()" }}: " +
+                source.secrets.map { EnvResolution.describe(it.scope) }.distinct().joinToString(", ") + "]"
             Source.Explicit -> ""
         }
 
         /** Values that came from a secret manager (to mask them in consoles). */
         val secretValues: Set<String>
-            get() = sources.filterValues { it !is Source.Explicit }.keys.mapNotNull { environment[it] }.filter { it.isNotEmpty() }.toSet()
+            get() = sources.filterValues { it !is Source.Explicit }.keys.mapNotNull { environment[it] }.filter { it.isNotEmpty() }.toSet() +
+                partialSecretValues.filter { it.isNotEmpty() }
     }
 
     /** Splits [envs] into plain values, references and scope imports for the given reference [schemes]. */
