@@ -106,6 +106,10 @@ generic on purpose):
   connection's projects (AWS: how many names didn't fit the name layout).
 - `AuthOption.validate`: a check the connection dialog runs on a non-blank option value (AWS: the name layout, SSO settings;
   Vault: the environment layout).
+- `AuthOption.keepsSession`: changing only such an option keeps the stored session (AWS SSO account ID and role name).
+  `AuthMethod.chooser` (`OptionChooser`): a *Choose…* button in the connection dialog that fills option fields from what the
+  signed-in user can use (AWS SSO account and role). `SignInInteraction.canChoose` / `choose(…)`: a flow may ask the user to pick
+  one of several items (a modal searchable list in the IDE; unsupported by default).
 - Per-connection reference semantics (added for Vault's [environment layout](#environment-layout)):
   `SecretProvider.switchesEnvironments(connection)` (defaults to the `switchesEnvironments` property),
   `followsSelection(connection, reference)` (whether moves leave a reference because it follows the selected environment; by
@@ -1470,7 +1474,7 @@ for loopback.
 |---|---|---|
 | **Access key** (default) | Access key ID, secret access key, optional session token | All three are secret options (PasswordSafe). The access key ID isn't secret by AWS's definition, but it identifies the account's user, so it isn't put in settings either. Sign-out forgets them (never deactivates the key: it is the user's own) |
 | **AWS profile** | A profile of `~/.aws/credentials` / `~/.aws/config` (`AWS_SHARED_CREDENTIALS_FILE` / `AWS_CONFIG_FILE` honoured), name in the connection (default `default`) | Read **at use time**, never copied to PasswordSafe or settings. Static keys (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) are read from the files directly. Profiles that get credentials another way (`sso_session` / `sso_start_url`, `role_arn`, `credential_process`, `web_identity_token_file`) are handed to the AWS CLI: `aws configure export-credentials --profile <name> --format process` (AWS CLI v2.9+), whose stdout is the credential JSON. argv carries only the profile name; stdin is closed; stdout is never logged; temporary credentials are kept in memory until five minutes before they expire |
-| **IAM Identity Center (SSO)** | SSO start URL, SSO region, account ID and role name (both optional: picked when there is only one) | Access token, refresh token and the OIDC client registration (client ID and secret, expiry) in the session slot (PasswordSafe), as one JSON entry; role credentials in memory only, until five minutes before they expire. See below |
+| **IAM Identity Center (SSO)** | SSO start URL, SSO region, account ID and role name (both optional: the only one is used, several are chosen at sign-in or with *Choose…* and saved) | Access token, refresh token and the OIDC client registration (client ID and secret, expiry) in the session slot (PasswordSafe), as one JSON entry; role credentials in memory only, until five minutes before they expire. See below |
 | **Environment variables** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` of the IDE process | Read at use time; nothing stored |
 
 *Sign In* checks the credentials with `ListSecrets {MaxResults: 1}` and shows the access key ID shortened (`AKIA…WXYZ`) and the
@@ -1497,12 +1501,32 @@ device authorization grant):
    `interval` seconds (default 5): `authorization_pending` → keep polling; `slow_down` → five seconds more; `expired_token` →
    AUTH_REQUIRED "the code expired"; `access_denied` → AUTH_REQUIRED; a passing network or 5xx error is tolerated a few times.
    Errors are read from the JSON `error` field or the exception name (`x-amzn-ErrorType` / `__type`).
-4. Account and role: the connection's options, else `GET https://portal.sso.<region>.amazonaws.com/assignment/accounts` /
-   `…/assignment/roles?account_id=` (paged): one → used, several → CONFIGURATION listing them ("set the account ID in the
-   connection's settings: 1234… (Dev), …"), none → FORBIDDEN.
+4. Account and role (`AwsSsoAssignments`): the connection's options, else `GET
+   https://portal.sso.<region>.amazonaws.com/assignment/accounts?max_result=100` / `…/assignment/roles?account_id=…&max_result=100`,
+   every page followed with `next_token` (at most 50 pages; a repeated token stops): one → used without asking; several → the
+   user picks (below); none → FORBIDDEN. Without a way to ask (`SignInInteraction.canChoose` false: tests, headless) several are
+   a CONFIGURATION error listing them ("set the account ID in the connection's settings: 1234… (Dev), …").
 5. `GET …/federation/credentials?account_id=…&role_name=…` with `x-amz-sso_bearer_token: <access token>` → `roleCredentials`
    (`accessKeyId`, `secretAccessKey`, `sessionToken`, `expiration` in epoch **milliseconds**), checked with `ListSecrets`
    `{MaxResults: 1}` before anything is stored.
+
+**Choosing the account and role.** `SignInInteraction.choose(title, items, text, selected)` asks the user to pick one item:
+the IDE's `IdeSignInInteraction` shows `ChooseItemDialog` (a modal list with a search field filtering the rows) on the EDT with
+`invokeAndWait` in the progress indicator's modality, while the sign-in thread waits. Accounts show *name · ID · email*, then
+the roles of the chosen account; the only account or role is taken without asking. Cancel → CANCELLED, nothing stored. A pick
+made during *Sign In* is saved in the connection's options (`ssoAccountId`, `ssoRoleName`, plain settings: they aren't secret;
+via `SecretsAppSettings.addOrUpdate` on the EDT), so later sign-ins don't ask; a single account/role taken automatically isn't
+saved, so a second one added later is offered at the next sign-in. The connection dialog has a **Choose…** button next to the
+account ID (`AuthMethod.chooser`, an `OptionChooser`): under a cancellable modal progress it runs `AwsSso.chooseForSettings` for
+the connection as the fields describe it (new connections get their ID when the dialog opens): the stored access token is reused
+when it belongs to the same start URL and region and is still good (renewed with the refresh token if needed; a 401 from the
+portal falls back to signing in), else the device flow runs and its session is stored as a sign-in stores it. It fills the two
+fields and saves nothing; Cancel leaves the fields unchanged. Cancelling the dialog of a new connection removes a session a
+Choose… stored. The account ID and role name are `AuthOption.keepsSession`: changing only them keeps the stored session
+(`ConnectionDialog.sessionStale` ignores them; a session a Choose… just used for the same settings is kept too). At use time
+the options win over the account and role the session was made with, and the role credentials in memory are only reused for
+the account and role the connection names now, so switching takes effect without signing in again. To switch later: *Choose…*
+in the connection's settings, or clear both fields and sign in again (until then the session's account and role are used).
 
 Afterwards, `keys()` uses the role credentials in memory until five minutes before they expire, then fetches new ones with the
 stored token. The token is renewed with `CreateToken` `{grantType: "refresh_token", refreshToken, clientId, clientSecret}` when it
@@ -1510,14 +1534,15 @@ expires within 15 minutes (the CLI's window), or when the portal answers 401 (re
 an expired client registration or a missing refresh token → AUTH_REQUIRED "sign in again". A Secrets Manager AUTH_REQUIRED drops
 the role credentials and retries once. Sign-out calls `POST …/logout` with the token (best effort) and forgets the session and the
 credentials. A changed start URL or SSO region makes the stored session unusable (the connection dialog drops sessions on any
-option change anyway). None of these endpoints is SigV4-signed: the OIDC calls are unauthenticated JSON, the portal takes the bearer
+option change but the account ID and role name anyway). None of these endpoints is SigV4-signed: the OIDC calls are unauthenticated JSON, the portal takes the bearer
 header. Tokens never go into URLs (only account ID and role name do, which aren't secret), logs or messages.
 
 The shapes were verified against botocore's service models (`botocore/data/sso-oidc/2019-06-10/service-2.json`,
 `sso/2019-06-10/service-2.json`: operations, members, query and header names, error shapes) and the AWS CLI v2's
 `SSOTokenFetcher` (registration with `scopes`, polling with `interval`, `slow_down` +5 s, `expired_token`, refresh-token grant) on
-GitHub; the AWS documentation site wasn't reachable from the build environment. Tested against a mock only (`MockAwsSso`):
-LocalStack's community edition has no IAM Identity Center. China regions use `amazonaws.com.cn`; other partitions (GovCloud is
+GitHub; the AWS documentation site wasn't reachable from the build environment. Tested against a mock only (`MockAwsSso`,
+with paging) and a fake portal function (`AwsSsoAssignmentsTest`): LocalStack's community edition has no IAM Identity Center, so
+there is no integration test. China regions use `amazonaws.com.cn`; other partitions (GovCloud is
 `amazonaws.com` too) are untested.
 
 Setup links for the method: the IAM Identity Center console (`https://console.aws.amazon.com/singlesignon/home`) and the IAM
@@ -1594,7 +1619,9 @@ custom addresses get none.
   and by `LastChangedDate`), the keys index from one batch; descriptions as comments, the description edit without a new version,
   descriptions from new keys; rotation info, *Rotate Now* only with rotation on and not when read-only, a rotation during a write
   refused as "changed meanwhile"; the IAM Identity Center device flow (slow_down, pending, the code shown, the URL opened, tokens
-  only in PasswordSafe, never in URLs), account/role picking, denied and expired codes, role credentials re-fetched, the token
+  only in PasswordSafe, never in URLs), account/role picking, several accounts and roles chosen at sign-in across pages and
+  remembered in the settings (no token there), cancelling the choice, *Choose…* reusing the stored token or signing in, a
+  switched account/role used with the same session, denied and expired codes, role credentials re-fetched, the token
   renewed with the refresh token, AUTH_REQUIRED when that fails, sign-out with logout; option validation.
 - `MockAwsSecretsManager`: a JDK HttpServer speaking JSON 1.1. It **verifies each request's SigV4 signature** with the known
   secret (and rejects a wrong one with `InvalidSignatureException`, an unknown key with `UnrecognizedClientException`), checks

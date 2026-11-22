@@ -427,6 +427,90 @@ class AwsFeaturesPlatformTest : BasePlatformTestCase() {
         assertThat(choose.message).contains("123456789012 (Dev account)").contains("210987654321 (Prod account)")
     }
 
+    /** Picks the row containing [account] / [role] (null: cancels) and records the rows it was offered. */
+    private inner class Choosing(private val account: String?, private val role: String?) : SignInInteraction by interaction {
+        val offered = mutableListOf<List<String>>()
+
+        override val canChoose: Boolean get() = true
+
+        override fun <T : Any> choose(title: String, items: List<T>, text: (T) -> String, selected: T?): T? {
+            offered += items.map(text)
+            val wanted = (if (offered.size == 1) account else role) ?: return null
+            return items.first { text(it).contains(wanted) }
+        }
+    }
+
+    private fun options(connection: SecretConnection) = SecretsAppSettings.getInstance().connection(connection.id)!!.options
+
+    fun `test several accounts and roles are chosen at sign-in, from every page, and the choice is remembered`() {
+        sso.pageSize = 1
+        sso.accounts["210987654321"] = "Prod account"
+        sso.accounts["333333333333"] = "Sandbox"
+        sso.roles["210987654321"] = listOf("Developer", "ReadOnly")
+        val connection = ssoConnection(account = null, role = null)
+        val choosing = Choosing("Prod account", "ReadOnly")
+
+        assertThat(client(connection).signIn(choosing)).contains("ReadOnly @ 210987654321")
+        assertThat(choosing.offered[0]).containsExactly(
+            "Dev account · 123456789012 · a@example.test", "Prod account · 210987654321 · a@example.test", "Sandbox · 333333333333 · a@example.test",
+        )
+        assertThat(choosing.offered[1]).containsExactly("Developer", "ReadOnly")
+        assertThat(sso.requests("/assignment/accounts")).hasSize(3)
+        assertThat(sso.requests("/assignment/accounts").last().query).contains("next_token=page-2")
+        assertThat(sso.requests("/assignment/accounts")).allMatch { it.bearer!!.startsWith("access-") && !it.query.orEmpty().contains("access-") }
+        assertThat(sso.requests("/federation/credentials").single().query).isEqualTo("account_id=210987654321&role_name=ReadOnly")
+
+        // remembered in the settings (account and role only, never a token), so the next sign-in doesn't ask
+        val saved = options(connection)
+        assertThat(saved).containsEntry(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID, "210987654321").containsEntry(AwsAuthMethods.OPTION_SSO_ROLE_NAME, "ReadOnly")
+        assertThat(saved.values).noneMatch { it.contains("access-") || it.contains("refresh-") || it.contains(sso.clientSecret) }
+        val again = Choosing(null, null)
+        val updated = SecretsAppSettings.getInstance().connection(connection.id)!!
+        assertThat(client(updated).signIn(again)).contains("ReadOnly @ 210987654321")
+        assertThat(again.offered).isEmpty()
+    }
+
+    fun `test cancelling the choice at sign-in changes nothing`() {
+        sso.accounts["210987654321"] = "Prod account"
+        val connection = ssoConnection(account = null, role = null)
+        assertThat(failure { client(connection).signIn(Choosing(null, null)) }.kind).isEqualTo(Kind.CANCELLED)
+        assertThat(CredentialVault.get(connection.id, CredentialVault.SLOT_SESSION)).isNull()
+        assertThat(options(connection)).doesNotContainKeys(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID, AwsAuthMethods.OPTION_SSO_ROLE_NAME)
+    }
+
+    fun `test Choose in the connection dialog reuses the stored token, or signs in when there is none`() {
+        sso.accounts["210987654321"] = "Prod account"
+        sso.roles["210987654321"] = listOf("Admin", "Developer")
+        val chooser = AwsAuthMethods.ALL.first { it.id == AwsAuthMethods.SSO }.chooser!!
+        assertThat(chooser.keys).containsExactly(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID, AwsAuthMethods.OPTION_SSO_ROLE_NAME)
+
+        // signed in already: no new browser sign-in
+        val connection = ssoConnection()
+        client(connection).signIn(interaction)
+        val registrations = sso.requests("/client/register").size
+        val choosing = Choosing("210987654321", "Admin")
+        assertThat(chooser.choose(connection, choosing))
+            .isEqualTo(mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to "210987654321", AwsAuthMethods.OPTION_SSO_ROLE_NAME to "Admin"))
+        assertThat(sso.requests("/client/register")).hasSize(registrations)
+        // nothing is saved: the dialog fills its fields
+        assertThat(options(connection)).containsEntry(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID, "123456789012")
+        // cancelling returns nothing
+        assertThat(chooser.choose(connection, Choosing(null, null))).isNull()
+
+        // the switched account and role are used with the same session (the role credentials in memory aren't reused)
+        val switched = connection.copy(options = connection.options + mapOf(AwsAuthMethods.OPTION_SSO_ACCOUNT_ID to "210987654321", AwsAuthMethods.OPTION_SSO_ROLE_NAME to "Admin"))
+        client(switched).listSecrets(SecretScope("myapp", "dev"))
+        assertThat(sso.requests("/federation/credentials").last().query).isEqualTo("account_id=210987654321&role_name=Admin")
+
+        // not signed in: the browser sign-in runs and its session is stored
+        val fresh = ssoConnection(account = null, role = null)
+        browser.clear()
+        assertThat(chooser.choose(fresh, Choosing("Dev account", null))).containsEntry(AwsAuthMethods.OPTION_SSO_ROLE_NAME, "Developer")
+        assertThat(browser).hasSize(1)
+        assertThat(CredentialVault.get(fresh.id, CredentialVault.SLOT_SESSION)).isNotNull()
+        assertThat(client(fresh).hasCredentials()).isTrue()
+    }
+
     fun `test denied and expired device codes end the sign-in`() {
         sso.pollError = "access_denied"
         assertThat(failure { client(ssoConnection()).signIn(interaction) }.message).contains("denied")

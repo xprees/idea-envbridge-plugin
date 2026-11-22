@@ -1,13 +1,11 @@
 package cz.xprees.secrets.ui.auth
 
-import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import cz.xprees.secrets.SecretsBundle
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.provider.SecretProviderException
-import cz.xprees.secrets.core.provider.SignInInteraction
 import cz.xprees.secrets.core.resolve.SecretsService
 import cz.xprees.secrets.core.settings.SecretsAppSettings
 import cz.xprees.secrets.run.SecretsNotifications
@@ -20,13 +18,7 @@ object SignInHelper {
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                account = SecretsService.getInstance().client(connection).signIn(object : SignInInteraction {
-                    override fun openBrowser(url: String) = BrowserUtil.browse(url)
-                    override fun isCancelled() = indicator.isCanceled
-                    override fun status(text: String) {
-                        indicator.text = text
-                    }
-                })
+                account = SecretsService.getInstance().client(connection).signIn(IdeSignInInteraction(project, indicator))
             }
 
             override fun onSuccess() {

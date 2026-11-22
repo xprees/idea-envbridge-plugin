@@ -194,6 +194,23 @@ data class AuthMethod(
     val usesBaseUrl: Boolean = true,
     /** Where to get the credentials this method asks for (a token, a service account), shown as links in the connection dialog. */
     val setupLinks: List<SetupLink> = emptyList(),
+    /** Fills some of [options] by asking the service (a "Choose…" button in the connection dialog), see [OptionChooser]. */
+    val chooser: OptionChooser? = null,
+)
+
+/**
+ * Fills option fields of the connection dialog from what the signed-in user can use (for example the AWS account and role
+ * of IAM Identity Center). The dialog shows a button labelled [label] next to the field of the first of [keys].
+ */
+class OptionChooser(
+    val label: String,
+    val keys: List<String>,
+    /**
+     * Runs off the EDT for a draft connection made of the dialog's fields (its ID is the connection's). May sign in (and
+     * then stores the session as a sign-in does) and ask with [SignInInteraction.choose]. Returns the values of [keys] to put
+     * in the fields, or null when the user cancelled.
+     */
+    val choose: (connection: SecretConnection, interaction: SignInInteraction) -> Map<String, String>?,
 )
 
 /**
@@ -221,6 +238,11 @@ data class AuthOption(
     val required: Boolean = true,
     val hint: String = "",
     val validate: ((String) -> String?)? = null,
+    /**
+     * Whether a stored session stays usable when only this option changes (it selects what the session is used for, like an
+     * AWS account and role, rather than how it was created). Other option changes drop the session.
+     */
+    val keepsSession: Boolean = false,
 )
 
 /**
@@ -428,6 +450,16 @@ interface SignInInteraction {
 
     /** Status text for a progress indicator. */
     fun status(text: String) {}
+
+    /** Whether [choose] can ask the user (false in tests and headless use: flows then report the choices in an error). */
+    val canChoose: Boolean get() = false
+
+    /**
+     * Asks the user to pick one of [items] in a modal list with a search field (shown on the EDT; this call blocks until the
+     * user answers). [text] is what a row shows (never a secret), [selected] is preselected. Null when the user cancelled
+     * or [canChoose] is false.
+     */
+    fun <T : Any> choose(title: String, items: List<T>, text: (T) -> String, selected: T? = null): T? = null
 }
 
 open class SecretProviderException(
