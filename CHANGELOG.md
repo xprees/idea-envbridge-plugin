@@ -132,6 +132,8 @@
 
 ### Fixed
 
+- Secrets tool window: the tooltip of a secret or folder whose details are read on demand stayed on "Loading details…" until
+  the mouse moved; it now shows the details as soon as they arrive while the mouse is still over that row
 - The background keys index (completion, hints, tooltips) re-read everything whenever it reloaded, because it reloads every
   10 minutes while cached listings expire after 5: a reload after a binding or settings change, or soon after the tool window
   read the same folder, now reuses what was read. It never refreshes more often than the cache time you set, and *Refresh* in the
