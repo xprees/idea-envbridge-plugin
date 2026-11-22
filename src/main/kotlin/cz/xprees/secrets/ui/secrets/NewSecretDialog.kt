@@ -59,9 +59,13 @@ class NewSecretDialog(
     // Completion (Ctrl+Space, and as you type) of the environment's folders, loaded in the background
     private val pathField = TextFieldWithAutoCompletion.create(project, listOf(path), true, path)
 
+    /** Tags the provider offers for a new secret (Infisical: the project's tags), filled in once read. */
+    private val metadataFields = MetadataFields()
+
     init {
         environmentCombo.addActionListener { loadFolders() }
         loadFolders()
+        loadMetadataEditor(environment, path)
         title = SecretsBundle.message("new.secret.title")
         setOKButtonText(SecretsBundle.message("new.secret.create"))
         init()
@@ -76,7 +80,26 @@ class NewSecretDialog(
         row(SecretsBundle.message("new.secret.comment")) { cell(commentField).align(AlignX.FILL) }
         row(SecretsBundle.message("new.secret.environment")) { cell(environmentCombo) }
         row(SecretsBundle.message("new.secret.folder")) { cell(pathField).align(AlignX.FILL).comment(SecretsBundle.message("new.secret.folder.comment")) }
+        row { cell(metadataFields.component).align(AlignX.FILL) }
         row { comment(SecretsBundle.message("new.secret.note", connection.name)) }
+    }
+
+    /**
+     * Reads what the provider lets a new secret have besides its value (Infisical: tags from the project's list; nothing for
+     * providers whose metadata belongs to an existing secret). Off the EDT.
+     */
+    private fun loadMetadataEditor(environment: String, path: String) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val result = runCatching {
+                SecretsService.getInstance().metadataEditor(connection, SecretScope(projectId, environment, SecretScope.normalizePath(path)), null)
+            }
+            ApplicationManager.getApplication().invokeLater({
+                if (isDisposed) return@invokeLater
+                result.onSuccess { editor -> editor?.let(metadataFields::show) }
+                    .onFailure { e -> metadataFields.showError((e as? SecretProviderException)?.message ?: e.javaClass.simpleName) }
+                pack()
+            }, ModalityState.any())
+        }
     }
 
     /** Offers the folders of the selected environment (a stale answer for another environment is dropped). */
@@ -116,7 +139,7 @@ class NewSecretDialog(
         Arrays.fill(chars, ' ')
         val outcome = try {
             ProgressManager.getInstance().runProcessWithProgressSynchronously<WriteOutcome, SecretProviderException>(
-                { SecretsService.getInstance().createSecret(connection, scope, key, value, commentField.text.trim()) },
+                { SecretsService.getInstance().createSecret(connection, scope, key, value, commentField.text.trim(), metadataFields.result()) },
                 SecretsBundle.message("new.secret.creating", key),
                 true,
                 project,

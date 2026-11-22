@@ -8,6 +8,7 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
@@ -101,6 +102,12 @@ interface SecretProvider {
      * fit the connection's settings, say), or null.
      */
     fun listingNote(connection: SecretConnection): String? = null
+
+    /**
+     * Whether [SecretsClient.secretDetails] can say more about [entry] (a folder of [connection] when null) than the listing
+     * did, so the tool window asks when the user hovers over it (never while listing). False by default.
+     */
+    fun hasSecretDetails(connection: SecretConnection, entry: SecretEntry?): Boolean = false
 
     companion object {
         val EP_NAME: ExtensionPointName<SecretProvider> = ExtensionPointName.create("cz.xprees.secrets.provider")
@@ -277,10 +284,61 @@ interface SecretsClient {
     fun rotateSecret(scope: SecretScope): Unit =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't rotate secrets")
 
+    /**
+     * Starts the rotation that manages the secret [key] in the folder of [scope] (Infisical: the secret rotation writing it,
+     * where [SecretEntry.metadata] says so). By default the rotation of the secret behind [scope] ([rotateSecret]).
+     */
+    fun rotateSecret(scope: SecretScope, key: String): Unit = rotateSecret(scope)
+
+    /**
+     * Details of the secret [key] in the folder of [scope] (of the folder itself when [key] is null) that listings leave out
+     * because they cost a request per secret (Vault: the path's `custom_metadata`; Infisical: the schedule of the rotation
+     * managing it). Read on demand only (the tool window's tooltip, the Edit dialog); null when there is nothing more. Asked
+     * only where [SecretProvider.hasSecretDetails] says so.
+     */
+    fun secretDetails(scope: SecretScope, key: String?): SecretMetadata? = null
+
+    /**
+     * What the Edit Secret dialog ([key]) or New Secret dialog ([key] null) can change of a secret's metadata in the folder of
+     * [scope], with its current value; null when nothing (the default). Read when a dialog opens, off the EDT.
+     */
+    fun metadataEditor(scope: SecretScope, key: String?): MetadataEditor? = null
+
+    /**
+     * Replaces what [MetadataEditor] offered of the metadata of [key] in the folder of [scope] with [metadata] (its other parts
+     * are ignored). A write: explicit user action only, CONFIGURATION when this connection can't.
+     */
+    fun updateMetadata(scope: SecretScope, key: String, metadata: SecretMetadata): WriteOutcome =
+        throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't change the metadata of secrets")
+
+    /**
+     * [createSecret] with the metadata [MetadataEditor] offered for a new secret. By default the secret is created and then
+     * given its metadata ([updateMetadata]) unless the creation waits for approval; a provider that can do both in one write
+     * (Infisical: `tagIds`) does.
+     */
+    fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String, metadata: SecretMetadata?): WriteOutcome {
+        val outcome = createSecret(scope, key, value, comment)
+        if (metadata != null && outcome == WriteOutcome.APPLIED) updateMetadata(scope, key, metadata)
+        return outcome
+    }
+
     /** Creates an environment ([name] shown in the UI, [slug] used in references) in the project [projectId]. */
     fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
         throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "This connection can't create environments")
 }
+
+/**
+ * What the secret dialogs can change of a secret's metadata ([SecretsClient.metadataEditor]): [current] is what is stored now.
+ * [tagChoices]: tags are picked from this list (Infisical: the project's tags, by slug; empty when the project has none); null
+ * when not. [freeForm]: a description and `key=value` tags are typed in (Vault: `custom_metadata`). [note]: what the user
+ * should know (Vault: it applies to every field of the path), or null.
+ */
+data class MetadataEditor(
+    val current: SecretMetadata,
+    val tagChoices: List<String>? = null,
+    val freeForm: Boolean = false,
+    val note: String? = null,
+)
 
 /** What [SecretsClient.moveSecrets] did, per key. */
 data class MoveResult(

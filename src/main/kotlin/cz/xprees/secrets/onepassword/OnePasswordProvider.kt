@@ -9,6 +9,7 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
@@ -84,6 +85,19 @@ object OnePasswordAuthMethods {
     const val OPTION_ACCOUNT = "account"
     const val OPTION_SERVICE_ACCOUNT_TOKEN = "serviceAccountToken"
     const val OPTION_CONNECT_TOKEN = "connectToken"
+    const val OPTION_TAGS = "onlyTagged"
+
+    /** "Only items tagged": narrows listings (the tool window, the keys index) to items with one of these tags. */
+    private val ONLY_TAGGED = AuthOption(
+        OPTION_TAGS,
+        SecretsBundle.message("auth.onepassword.option.onlyTagged.label"),
+        required = false,
+        hint = SecretsBundle.message("auth.onepassword.option.onlyTagged.hint"),
+    )
+
+    /** The tags of a connection's "Only items tagged" option (comma-separated), empty when it isn't set. */
+    fun tagFilter(connection: cz.xprees.secrets.core.model.SecretConnection): List<String> =
+        connection.option(OPTION_TAGS).orEmpty().split(',').map { it.trim().trim('/') }.filter { it.isNotEmpty() }.distinct()
 
     private val OP_PATH = AuthOption(
         OPTION_OP_PATH,
@@ -105,6 +119,7 @@ object OnePasswordAuthMethods {
                     hint = SecretsBundle.message("auth.onepassword.option.account.hint"),
                 ),
                 OP_PATH,
+                ONLY_TAGGED,
             ),
             usesBaseUrl = false,
         ),
@@ -115,7 +130,7 @@ object OnePasswordAuthMethods {
             ),
             displayName = SecretsBundle.message("auth.onepassword.service.account.name"),
             description = SecretsBundle.message("auth.onepassword.service.account.description"),
-            options = listOf(OP_PATH),
+            options = listOf(OP_PATH, ONLY_TAGGED),
             secretOptions = listOf(
                 AuthOption(OPTION_SERVICE_ACCOUNT_TOKEN, SecretsBundle.message("auth.onepassword.option.serviceAccountToken.label")),
             ),
@@ -128,6 +143,7 @@ object OnePasswordAuthMethods {
             ),
             displayName = SecretsBundle.message("auth.onepassword.connect.name"),
             description = SecretsBundle.message("auth.onepassword.connect.description"),
+            options = listOf(ONLY_TAGGED),
             secretOptions = listOf(AuthOption(OPTION_CONNECT_TOKEN, SecretsBundle.message("auth.onepassword.option.connectToken.label"))),
         ),
     )
@@ -197,11 +213,11 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
     /** The vault's items (at `/`); an item's fields are its secrets, sections are not shown as folders. */
     override fun listFolders(scope: SecretScope): List<SecretFolder> {
         if (segments(scope.path).isNotEmpty()) return emptyList()
-        val segments = itemSegments(backend.items(scope.projectId))
+        val segments = listedItems(scope.projectId)
         OnePasswordDashboard.rememberItems(connection, scope.projectId, segments.associate { (item, segment) -> segment to item.id })
         return segments.map { (item, segment) ->
             val name = if (segment == item.id && item.title.isNotBlank()) "${item.title} (${item.id})" else item.title.ifBlank { item.id }
-            SecretFolder(name, "/$segment")
+            SecretFolder(name, "/$segment", tagMetadata(item.tags))
         }.sortedBy { it.name.lowercase() }
     }
 
@@ -225,8 +241,18 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
         }
     }
 
+    /**
+     * The vault's items with the path segment each is read by, narrowed to the connection's "Only items tagged" (filtered here:
+     * segments are worked out from every item, so a title another, untagged item shares is still read by ID).
+     */
+    private fun listedItems(vault: String): List<Pair<OpItemSummary, String>> {
+        val filter = OnePasswordAuthMethods.tagFilter(connection)
+        return itemSegments(backend.items(vault)).filter { (item, _) -> OnePasswordJson.matchesTagFilter(item.tags, filter) }
+    }
+
     private fun allFields(scope: SecretScope): List<SecretEntry> {
-        val items = backend.items(scope.projectId)
+        val listed = listedItems(scope.projectId)
+        val items = listed.map { it.first }
         if (items.size > MAX_RECURSIVE_ITEMS) {
             throw SecretProviderException(
                 Kind.CONFIGURATION,
@@ -234,7 +260,7 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
             )
         }
         OnePasswordItemMemory.retain(connection.id, scope.projectId, items.mapTo(HashSet()) { it.id })
-        return itemSegments(items).flatMap { (summary, segment) ->
+        return listed.flatMap { (summary, segment) ->
             val item = OnePasswordItemMemory.get(connection.id, scope.projectId, summary) ?: try {
                 backend.item(scope.projectId, summary.id).also { OnePasswordItemMemory.put(connection.id, scope.projectId, summary, it) }
             } catch (e: SecretProviderException) {
@@ -249,6 +275,7 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
     private fun entries(item: OpItem, itemSegment: String, scope: SecretScope): List<Pair<SecretEntry, OpSection?>> {
         // 1Password fields have no comments: the item's notes are every field's comment (Edit Secret changes them)
         val notes = OnePasswordEdits.notes(item)
+        val metadata = tagMetadata(item.tags)
         return orderedFields(item)
             .filter { (field, _) -> field.value.isNotEmpty() }
             .map { (field, section) ->
@@ -260,9 +287,13 @@ class OnePasswordClient(private val connection: SecretConnection) : SecretsClien
                     path = path,
                     environment = scope.environment,
                     id = field.id,
+                    metadata = metadata,
                 ) to section
             }
     }
+
+    /** An item's tags as the tool window shows them (read-only), or null when it has none. */
+    private fun tagMetadata(tags: List<String>): SecretMetadata? = tags.takeIf { it.isNotEmpty() }?.let { SecretMetadata(tags = it.associateWith { "" }) }
 
     /** The item's fields, top-level first (a section without a label counts as top level), each with its labelled section. */
     private fun orderedFields(item: OpItem): List<Pair<OpField, OpSection?>> {

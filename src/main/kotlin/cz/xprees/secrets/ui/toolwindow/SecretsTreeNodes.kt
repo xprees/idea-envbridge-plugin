@@ -4,7 +4,9 @@ import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
+import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.provider.SecretsClient
 import javax.swing.tree.DefaultMutableTreeNode
 
 /** Tree nodes of the Secrets tool window. Children of [LazyNode]s are loaded in the background when the node is expanded. */
@@ -39,13 +41,41 @@ class EnvironmentNode(
     val scope: SecretScope get() = SecretScope(project.id, environment.slug, "/")
 }
 
-class FolderNode(override val connection: SecretConnection, val scope: SecretScope, val name: String) : LazyNode()
+class FolderNode(
+    override val connection: SecretConnection,
+    val scope: SecretScope,
+    val name: String,
+    /** What the listing said about the folder (a 1Password item's tags), or null. */
+    val metadata: SecretMetadata? = null,
+) : LazyNode() {
+    /** Details read on demand when the user hovers over it ([SecretsClient.secretDetails]). */
+    val details = OnDemandDetails()
+}
 
 class SecretNode(override val connection: SecretConnection, val scope: SecretScope, val entry: SecretEntry) : SecretsNode() {
     @Volatile
     var revealed = false
 
+    /** Details read on demand when the user hovers over it ([SecretsClient.secretDetails]). */
+    val details = OnDemandDetails()
+
     override fun isLeaf(): Boolean = true
+}
+
+/** Details of a node read once, in the background, the first time its tooltip is asked for; then kept with the node. */
+class OnDemandDetails {
+    enum class State { NOT_READ, READING, READ, FAILED }
+
+    @Volatile
+    var state = State.NOT_READ
+
+    /** What was read (null: nothing more to say). */
+    @Volatile
+    var metadata: SecretMetadata? = null
+
+    /** Why reading failed (a provider's message, no values), when [state] is FAILED. */
+    @Volatile
+    var error: String? = null
 }
 
 /** A message in place of children: loading, an error, "sign in", "no secrets". */

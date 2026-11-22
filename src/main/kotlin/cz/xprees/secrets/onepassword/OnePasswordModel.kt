@@ -12,9 +12,9 @@ data class OpVault(val id: String, val name: String)
 /**
  * An item as listed (`op item list`, Connect `GET /v1/vaults/{id}/items`): no fields. [stamp] is what changes whenever the
  * item does (its `version` and update time, `updated_at` from the CLI, `updatedAt` from Connect), null when the listing has
- * neither.
+ * neither. [tags] are the item's tags (`tags`, in both listings).
  */
-data class OpItemSummary(val id: String, val title: String, val stamp: String? = null)
+data class OpItemSummary(val id: String, val title: String, val stamp: String? = null, val tags: List<String> = emptyList())
 
 data class OpSection(val id: String, val label: String)
 
@@ -30,7 +30,7 @@ data class OpField(
     override fun toString(): String = "OpField(id=$id, label=$label, type=$type)"
 }
 
-data class OpItem(val id: String, val title: String, val sections: List<OpSection>, val fields: List<OpField>) {
+data class OpItem(val id: String, val title: String, val sections: List<OpSection>, val fields: List<OpField>, val tags: List<String> = emptyList()) {
     fun section(id: String?): OpSection? = id?.let { sid -> sections.firstOrNull { it.id == sid } }
 }
 
@@ -119,8 +119,19 @@ object OnePasswordJson {
         val id = o.str("id") ?: return@mapNotNull null
         val version = o.str("version")
         val updated = o.str("updated_at") ?: o.str("updatedAt")
-        OpItemSummary(id, o.str("title").orEmpty(), if (version == null && updated == null) null else "$version|$updated")
+        OpItemSummary(id, o.str("title").orEmpty(), if (version == null && updated == null) null else "$version|$updated", tags(o))
     }
+
+    /** An item's `tags` (strings; 1Password nests them with `/`, as in `env/dev`). */
+    fun tags(o: JsonObject): List<String> =
+        o.get("tags")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { t -> t.takeIf { it.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }.orEmpty()
+
+    /**
+     * Whether an item with [tags] passes the connection's "Only items tagged" [filter] (any of its tags; a tag also matches its
+     * nested tags: `env` matches `env/dev`). An empty filter passes everything.
+     */
+    fun matchesTagFilter(tags: List<String>, filter: List<String>): Boolean =
+        filter.isEmpty() || tags.any { tag -> filter.any { wanted -> tag.equals(wanted, ignoreCase = true) || tag.startsWith("$wanted/", ignoreCase = true) } }
 
     fun item(json: JsonElement): OpItem {
         val o = json.takeIf { it.isJsonObject }?.asJsonObject ?: throw unexpected("item")
@@ -143,7 +154,7 @@ object OnePasswordJson {
                 sectionId = sectionId,
             )
         }.orEmpty()
-        return OpItem(o.str("id").orEmpty(), o.str("title").orEmpty(), sections, fields)
+        return OpItem(o.str("id").orEmpty(), o.str("title").orEmpty(), sections, fields, tags(o))
     }
 
     private fun array(json: JsonElement, what: String) = when {

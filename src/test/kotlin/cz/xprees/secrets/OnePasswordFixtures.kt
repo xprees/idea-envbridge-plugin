@@ -37,7 +37,7 @@ object OnePasswordFixtures {
 
     data class Section(val id: String, val label: String?)
 
-    data class Item(val id: String, val title: String, val category: String, val sections: List<Section>, val fields: List<Field>)
+    data class Item(val id: String, val title: String, val category: String, val sections: List<Section>, val fields: List<Field>, val tags: List<String> = emptyList())
 
     data class Vault(val id: String, val name: String, val items: List<Item>)
 
@@ -55,6 +55,7 @@ object OnePasswordFixtures {
                         Field("k1", "api key", "extra-key", section = "s1"),
                         Field("p1", "port", "5432", type = "STRING", section = "add more"),
                     ),
+                    tags = listOf("env/dev", "db"),
                 ),
                 Item(
                     STRIPE, "Stripe", "API_CREDENTIAL",
@@ -63,6 +64,7 @@ object OnePasswordFixtures {
                         Field("credential", "credential", "sk_test_123"),
                         Field("w1", "secret", "whsec_1", section = "s2"),
                     ),
+                    tags = listOf("payments"),
                 ),
                 Item(DUP1, "Dup", "PASSWORD", emptyList(), listOf(Field("password", "password", "dup-1", purpose = "PASSWORD"))),
                 Item(DUP2, "Dup", "PASSWORD", emptyList(), listOf(Field("password", "password", "dup-2", purpose = "PASSWORD"))),
@@ -87,6 +89,7 @@ object OnePasswordFixtures {
         addProperty("version", 1)
         add("vault", JsonObject().apply { addProperty("id", v.id); if (cli) addProperty("name", v.name) })
         addProperty("category", item.category)
+        if (item.tags.isNotEmpty()) add("tags", JsonArray().apply { item.tags.forEach(::add) })
         addProperty(if (cli) "updated_at" else "updatedAt", "2026-11-01T10:00:00Z")
     }
 
@@ -364,7 +367,7 @@ class MockOnePasswordConnect : AutoCloseable {
                 return when (exchange.requestMethod) {
                     "GET" -> json(exchange, JsonArray().apply {
                         stored.forEach { item ->
-                            add(JsonObject().apply { listOf("id", "title", "version", "vault", "category").forEach { k -> item.get(k)?.let { add(k, it) } } })
+                            add(JsonObject().apply { listOf("id", "title", "version", "vault", "category", "tags").forEach { k -> item.get(k)?.let { add(k, it) } } })
                         }
                     })
                     "POST" -> {

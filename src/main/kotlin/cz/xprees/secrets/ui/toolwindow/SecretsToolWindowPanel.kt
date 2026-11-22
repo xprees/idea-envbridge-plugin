@@ -67,13 +67,9 @@ import javax.swing.JTree
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.util.text.StringUtil
 import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.resolve.ProdGuard
 import cz.xprees.secrets.run.SecretsNotifications
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 import javax.swing.event.TreeExpansionEvent
 import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultTreeModel
@@ -87,7 +83,14 @@ import javax.swing.tree.TreePath
 class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPanel(true, true), Disposable {
     private val root = RootNode()
     private val model = DefaultTreeModel(root)
-    val tree = Tree(model)
+    val tree = object : Tree(model) {
+        // Details a listing leaves out (Vault's custom_metadata, an Infisical rotation's schedule) are read when asked for here
+        override fun getToolTipText(event: java.awt.event.MouseEvent): String? {
+            val node = getPathForLocation(event.x, event.y)?.lastPathComponent
+            if (node is SecretNode || node is FolderNode) detailsTooltip(node as SecretsNode)?.let { return it }
+            return super.getToolTipText(event)
+        }
+    }
 
     /** Secrets cut with Cut, waiting for Paste on a folder or environment (kept here only, never on the system clipboard). */
     private var cutSecrets: List<SecretNode> = emptyList()
@@ -356,7 +359,7 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
 
     private fun folderChildren(connection: cz.xprees.secrets.core.model.SecretConnection, scope: SecretScope, fresh: Boolean): List<SecretsNode> {
         val service = SecretsService.getInstance()
-        val folders = service.folders(connection, scope).map { FolderNode(connection, SecretScope(scope.projectId, scope.environment, it.path), it.name) }
+        val folders = service.folders(connection, scope).map { FolderNode(connection, SecretScope(scope.projectId, scope.environment, it.path), it.name, it.metadata) }
         val secrets = service.secrets(connection, scope, fresh).sortedBy { it.key.lowercase() }.map { SecretNode(connection, scope, it) }
         return folders + secrets
     }
@@ -440,6 +443,8 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 is FolderNode -> {
                     icon = AllIcons.Nodes.Folder
                     append(value.name)
+                    SecretMetadataText.badge(value.metadata).takeIf { it.isNotEmpty() }?.let { append("  $it", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES) }
+                    toolTipText = value.metadata?.let { SecretMetadataText.tooltip(null, SecretMetadataText.lines(it)) }
                 }
 
                 is SecretNode -> {
@@ -458,8 +463,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                         SecretOrigin.PERSONAL -> append("  " + SecretsBundle.message("toolwindow.personal"), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES)
                         SecretOrigin.LOCAL -> if (entry.path != value.scope.path) append("  ${entry.path}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                     }
+                    SecretMetadataText.badge(entry.metadata).takeIf { it.isNotEmpty() }?.let { append("  $it", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES) }
                     if (entry.comment.isNotBlank()) append("  — ${entry.comment.lines().first()}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
-                    toolTipText = entry.comment.takeIf { it.isNotBlank() }?.let { "<html>" + StringUtil.escapeXmlEntities(it).replace("\n", "<br>") + "</html>" }
+                    toolTipText = SecretMetadataText.tooltip(entry.comment, entry.metadata?.let { SecretMetadataText.lines(it) }.orEmpty())
                 }
 
                 is MessageNode -> {
@@ -476,19 +482,56 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     }
 
     /** An environment's details as tooltip HTML: description, tags, rotation (null when there is nothing to say). */
-    private fun metadataTooltip(metadata: SecretMetadata): String? {
-        val format = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM).withZone(ZoneId.systemDefault())
-        val lines = buildList {
-            if (metadata.description.isNotBlank()) add(SecretsBundle.message("toolwindow.metadata.description", metadata.description))
-            if (metadata.tags.isNotEmpty()) add(SecretsBundle.message("toolwindow.metadata.tags", metadata.tags.entries.joinToString { (k, v) -> if (v.isEmpty()) k else "$k=$v" }))
-            metadata.rotation?.let { rotation ->
-                add(SecretsBundle.message(if (rotation.enabled) "toolwindow.metadata.rotation.on" else "toolwindow.metadata.rotation.off"))
-                rotation.lastRotated?.let { add(SecretsBundle.message("toolwindow.metadata.rotation.last", format.format(it))) }
-                rotation.nextRotation?.let { add(SecretsBundle.message("toolwindow.metadata.rotation.next", format.format(it))) }
+    private fun metadataTooltip(metadata: SecretMetadata): String? = SecretMetadataText.tooltip(null, SecretMetadataText.lines(metadata))
+
+    /**
+     * The tooltip of a secret or folder whose provider can say more than the listing did ([SecretProvider.hasSecretDetails]):
+     * read once in the background the first time it is asked for ("Loading details…" until then), then kept with the node.
+     * Null where the provider has nothing more (the renderer's tooltip is used).
+     */
+    private fun detailsTooltip(node: SecretsNode): String? {
+        val connection = node.connection ?: return null
+        val entry = (node as? SecretNode)?.entry
+        val provider = SecretProvider.byId(connection.providerId) ?: return null
+        if (!runCatching { provider.hasSecretDetails(connection, entry) }.getOrDefault(false)) return null
+        val details = when (node) {
+            is SecretNode -> node.details
+            is FolderNode -> node.details
+            else -> return null
+        }
+        val comment = entry?.comment
+        val listed = (entry?.metadata ?: (node as? FolderNode)?.metadata)?.let { SecretMetadataText.lines(it) }.orEmpty()
+        return when (details.state) {
+            OnDemandDetails.State.NOT_READ -> {
+                readDetails(node, details, connection)
+                SecretMetadataText.tooltip(comment, listed + SecretsBundle.message("toolwindow.metadata.loading"))
+            }
+            OnDemandDetails.State.READING -> SecretMetadataText.tooltip(comment, listed + SecretsBundle.message("toolwindow.metadata.loading"))
+            OnDemandDetails.State.FAILED -> SecretMetadataText.tooltip(comment, listed + SecretsBundle.message("toolwindow.metadata.failed", details.error.orEmpty()))
+            // What was read replaces what the listing said (it is the fuller version of it)
+            OnDemandDetails.State.READ -> SecretMetadataText.tooltip(comment, details.metadata?.let { SecretMetadataText.lines(it) } ?: listed)
+        }
+    }
+
+    private fun readDetails(node: SecretsNode, details: OnDemandDetails, connection: cz.xprees.secrets.core.model.SecretConnection) {
+        details.state = OnDemandDetails.State.READING
+        val (scope, key) = when (node) {
+            is SecretNode -> sourceOf(node) to node.entry.key
+            is FolderNode -> node.scope to null
+            else -> return
+        }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                details.metadata = SecretsService.getInstance().secretDetails(connection, scope, key)
+                details.state = OnDemandDetails.State.READ
+            } catch (e: SecretProviderException) {
+                details.error = e.message ?: e.kind.name
+                details.state = OnDemandDetails.State.FAILED
+            } catch (e: Exception) {
+                details.error = e.javaClass.simpleName
+                details.state = OnDemandDetails.State.FAILED
             }
         }
-        if (lines.isEmpty()) return null
-        return lines.joinToString("<br>", "<html>", "</html>") { StringUtil.escapeXmlEntities(it) }
     }
 
     // ---- Actions -------------------------------------------------------------------------------------------------------
@@ -753,26 +796,35 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
     }
 
     /**
-     * Starts the rotation of the secret behind the selected environment (or a key of it), where the provider says rotation is on.
-     * Asks first, and again for a production environment; refused while *Read-only* is on.
+     * Starts the rotation of the secret behind the selected environment (or a key of it), where the provider says rotation is on,
+     * or of the secret rotation managing the selected secret (Infisical). Asks first, and again for a production environment;
+     * refused while *Read-only* is on.
      */
     private inner class RotateNowAction : PanelAction(SecretsBundle.message("action.rotate.now"), AllIcons.Actions.Refresh) {
-        private fun environmentNode(): EnvironmentNode? =
-            TreeUtil.findObjectInPath(tree.selectionPath, EnvironmentNode::class.java)?.takeIf { it.environment.metadata?.rotation?.enabled == true }
+        /** What to rotate: the selected secret's managing rotation, else the selected environment's secret. */
+        private fun target(): RotationTarget? {
+            selectedSecret()?.takeIf { it.entry.metadata?.rotation?.managed == true && it.entry.origin == SecretOrigin.LOCAL }?.let { node ->
+                return RotationTarget(node.connection, sourceOf(node), node.entry.key, node.entry.key)
+            }
+            val node = TreeUtil.findObjectInPath(tree.selectionPath, EnvironmentNode::class.java)?.takeIf { it.environment.metadata?.rotation?.enabled == true }
+                ?: return null
+            return RotationTarget(node.connection, node.scope, null, "${node.project.name} / ${node.environment.name}")
+        }
 
         override fun update(e: AnActionEvent) {
-            val node = environmentNode()
-            e.presentation.isVisible = node != null
+            val target = target()
+            e.presentation.isVisible = target != null
             e.presentation.description = SecretsBundle.message("action.rotate.now.description")
-            e.presentation.isEnabled = node != null && writable(e)
+            e.presentation.isEnabled = target != null && writable(e)
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            val node = environmentNode() ?: return
-            val scope = node.scope
-            val where = "${node.project.name} / ${node.environment.name}"
+            val target = target() ?: return
+            val scope = target.scope
+            val where = target.label
+            val message = if (target.key == null) SecretsBundle.message("rotate.confirm.message", where) else SecretsBundle.message("rotate.confirm.managed.message", where)
             if (Messages.showOkCancelDialog(
-                    project, SecretsBundle.message("rotate.confirm.message", where), SecretsBundle.message("rotate.confirm.title"),
+                    project, message, SecretsBundle.message("rotate.confirm.title"),
                     SecretsBundle.message("rotate.confirm.ok"), Messages.getCancelButton(), Messages.getWarningIcon(),
                 ) != Messages.OK
             ) return
@@ -782,11 +834,12 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
                 ) != Messages.OK
             ) return
             object : Task.Backgroundable(project, SecretsBundle.message("rotate.progress", where), false) {
-                override fun run(indicator: ProgressIndicator) = SecretsService.getInstance().rotateSecret(node.connection, scope)
+                override fun run(indicator: ProgressIndicator) = SecretsService.getInstance().rotateSecret(target.connection, scope, target.key)
 
                 override fun onSuccess() {
-                    SecretsNotifications.info(project, SecretsBundle.message("rotate.done", where), SecretsBundle.message("rotate.done.details"))
-                    reloadFolder(node.connection.id, scope)
+                    val details = if (target.key == null) SecretsBundle.message("rotate.done.details") else SecretsBundle.message("rotate.done.managed.details")
+                    SecretsNotifications.info(project, SecretsBundle.message("rotate.done", where), details)
+                    reloadFolder(target.connection.id, scope)
                 }
 
                 override fun onThrowable(error: Throwable) =
@@ -794,6 +847,9 @@ class SecretsToolWindowPanel(private val project: Project) : SimpleToolWindowPan
             }.queue()
         }
     }
+
+    /** What Rotate Now rotates: the secret behind [scope], or the rotation managing its secret [key]; [label] names it. */
+    private class RotationTarget(val connection: cz.xprees.secrets.core.model.SecretConnection, val scope: SecretScope, val key: String?, val label: String)
 
     private inner class RevealAction : PanelAction(SecretsBundle.message("action.reveal"), AllIcons.Actions.Show) {
         override fun update(e: AnActionEvent) {

@@ -7,6 +7,8 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
+import cz.xprees.secrets.core.provider.MetadataEditor
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.AuthMethod
@@ -49,6 +51,9 @@ class VaultProvider : SecretProvider {
         VaultGrammar.normalizeNamespace(connection.option(VaultAuthMethods.OPTION_NAMESPACE))
 
     override fun createClient(connection: SecretConnection): SecretsClient = VaultClient(connection)
+
+    /** A secret path's `custom_metadata` (KV v2): read when the user hovers over its field or folder, never while listing. */
+    override fun hasSecretDetails(connection: SecretConnection, entry: SecretEntry?): Boolean = true
 
     /**
      * Only the bound secret path and what is below it: walking a whole mount costs a request per path (up to
@@ -412,6 +417,41 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
         return MoveResult(moved = copied, notRemoved = notRemoved)
     }
 
+    // ---- custom_metadata (KV v2) -------------------------------------------------------------------------------------
+
+    /**
+     * The `custom_metadata` of the secret at the scope's path (the folder itself or the path of field [key] alike: metadata
+     * belongs to the path): its `description` key as the description, the other keys as tags. One `GET <mount>/metadata/<path>`;
+     * null on KV v1 (no metadata) and where there is no secret.
+     */
+    override fun secretDetails(scope: SecretScope, key: String?): SecretMetadata? {
+        if (scope.path == "/") return null
+        return withKv(scope, scope.path) { token, kv ->
+            if (kv == 1) null else api.customMetadata(token, scope.environment, scope.projectId, scope.path)?.let(::toMetadata)
+        }
+    }
+
+    /** KV v2: a description and `key=value` tags, saved as the path's `custom_metadata` (shared by all its fields). KV v1: none. */
+    override fun metadataEditor(scope: SecretScope, key: String?): MetadataEditor? {
+        if (key == null) return null
+        val path = secretPath(scope)
+        return withKv(scope, path) { token, kv ->
+            if (kv == 1) return@withKv null
+            val current = api.customMetadata(token, scope.environment, scope.projectId, path).orEmpty()
+            MetadataEditor(current = toMetadata(current), freeForm = true, note = "custom_metadata of ${location(scope)}, shared by all its fields")
+        }
+    }
+
+    /** Replaces the path's `custom_metadata` (`POST <mount>/metadata/<path>`); refused on KV v1, which has none. */
+    override fun updateMetadata(scope: SecretScope, key: String, metadata: SecretMetadata): WriteOutcome {
+        val path = secretPath(scope)
+        withKv(scope, path) { token, kv ->
+            if (kv == 1) throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "${location(scope)} is on a KV version 1 engine, which has no metadata")
+            api.writeCustomMetadata(token, scope.environment, scope.projectId, path, fromMetadata(metadata))
+        }
+        return WriteOutcome.APPLIED
+    }
+
     override fun createEnvironment(projectId: String, name: String, slug: String): ProviderEnvironment =
         throw SecretProviderException(
             SecretProviderException.Kind.CONFIGURATION,
@@ -461,6 +501,19 @@ class VaultClient(private val connection: SecretConnection) : SecretsClient {
 
     companion object {
         const val MAX_RECURSIVE_PATHS = 500
+
+        /** The `custom_metadata` key shown as the description; the other keys are tags. */
+        const val DESCRIPTION_KEY = "description"
+
+        /** `custom_metadata` as shown: [DESCRIPTION_KEY] as the description, the other keys as tags (sorted). */
+        fun toMetadata(custom: Map<String, String>): SecretMetadata =
+            SecretMetadata(description = custom[DESCRIPTION_KEY].orEmpty(), tags = custom.filterKeys { it != DESCRIPTION_KEY }.toSortedMap())
+
+        /** The `custom_metadata` to write for [metadata]: its tags, and its description under [DESCRIPTION_KEY] when not blank. */
+        fun fromMetadata(metadata: SecretMetadata): Map<String, String> = buildMap {
+            putAll(metadata.tags.filterKeys { it.isNotBlank() && it != DESCRIPTION_KEY })
+            if (metadata.description.isNotBlank()) put(DESCRIPTION_KEY, metadata.description)
+        }
 
         private fun csv(value: String?): List<String> = value.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
     }

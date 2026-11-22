@@ -174,6 +174,52 @@ class VaultApi(val http: VaultHttp) {
         if (!response.isSuccess && response.status != 404) throw VaultHttp.failure(response, "Deleting $mount${displayPath(path)}")
     }
 
+    /**
+     * The `custom_metadata` of the KV v2 secret at [path] (`GET <mount>/metadata/<path>`): string keys and values. Null when
+     * there is no secret there (a folder only). Needs `read` on `<mount>/metadata/<path>`; a refusal is FORBIDDEN with what
+     * the policy lacks.
+     */
+    fun customMetadata(token: String, namespace: String, mount: String, path: String): Map<String, String>? {
+        if (VaultHttp.path(path).isEmpty()) return null
+        val response = http.send("GET", location(mount, path, 2, "metadata"), token, namespace)
+        if (response.status == 404) return null
+        if (!response.isSuccess) {
+            val failure = VaultHttp.failure(response, "Reading the metadata of $mount${displayPath(path)}")
+            throw if (failure.kind == Kind.FORBIDDEN) {
+                SecretProviderException(
+                    Kind.FORBIDDEN,
+                    "Not allowed to read the metadata of $mount${displayPath(path)} (the policy needs read on $mount/metadata${displayPath(path)})",
+                )
+            } else {
+                failure
+            }
+        }
+        val custom = runCatching { response.json().asJsonObject.obj("data")?.get("custom_metadata") }.getOrNull()
+        return custom?.takeIf { it.isJsonObject }?.asJsonObject?.entrySet()?.associate { (key, value) -> key to textOf(value) }.orEmpty()
+    }
+
+    /**
+     * Replaces the `custom_metadata` of the KV v2 secret at [path] (`POST <mount>/metadata/<path>` with only `custom_metadata`,
+     * so its other settings stay). Needs `create`/`update` on `<mount>/metadata/<path>`; a refusal is FORBIDDEN with what the
+     * policy lacks.
+     */
+    fun writeCustomMetadata(token: String, namespace: String, mount: String, path: String, metadata: Map<String, String>) {
+        val body = JsonObject().apply {
+            add("custom_metadata", JsonObject().apply { metadata.forEach { (k, v) -> addProperty(k, v) } })
+        }
+        val response = http.send("POST", location(mount, path, 2, "metadata"), token, namespace, json = body.toString())
+        if (response.isSuccess) return
+        val failure = VaultHttp.failure(response, "Saving the metadata of $mount${displayPath(path)}")
+        throw if (failure.kind == Kind.FORBIDDEN) {
+            SecretProviderException(
+                Kind.FORBIDDEN,
+                "Not allowed to change the metadata of $mount${displayPath(path)} (the policy needs update on $mount/metadata${displayPath(path)})",
+            )
+        } else {
+            failure
+        }
+    }
+
     /** `<mount>/<prefix>/<path>` on KV v2 (prefix `data` or `metadata`), `<mount>/<path>` on KV v1. */
     private fun location(mount: String, path: String, kv: Int, v2Prefix: String): String =
         if (kv == 1) "${VaultHttp.path(mount)}/${VaultHttp.path(path)}" else "${VaultHttp.path(mount)}/$v2Prefix/${VaultHttp.path(path)}"

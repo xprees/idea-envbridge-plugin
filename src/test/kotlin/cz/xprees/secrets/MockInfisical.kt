@@ -32,6 +32,24 @@ class MockInfisical : AutoCloseable {
     /** Environments created through the API: slug -> name. The project listing includes them. */
     val createdEnvironments = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    /** Tags sent with writes (`tagIds`): "env:path:KEY" -> IDs. */
+    val tagWrites = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+
+    /** Rotations rotated through the API: "type/id". */
+    val rotations = CopyOnWriteArrayList<String>()
+
+    /** Refuse listing tags (403); answer the new tags route with 404 only (an older instance: `/api/v1/workspace/{id}/tags`). */
+    @Volatile
+    var tagsForbidden = false
+    @Volatile
+    var legacyTagsOnly = false
+
+    /** Refuse listing secret rotations, or rotating them (403). */
+    @Volatile
+    var rotationsForbidden = false
+    @Volatile
+    var rotateForbidden = false
+
     /** Answer creations with a change request instead of creating the secret. */
     @Volatile
     var requireApproval = false
@@ -82,6 +100,7 @@ class MockInfisical : AutoCloseable {
             val path = json.get("secretPath").asString
             if (key in listOf("DB_PASSWORD", "API_KEY") && env == "dev" && path == "/") return respond(exchange, 400, """{"message":"Secret already exist"}""")
             if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a1","status":"open"}}""")
+            json.getAsJsonArray("tagIds")?.let { ids -> tagWrites["$env:$path:$key"] = ids.map { it.asString } }
             created["$env:$path:$key"] = json.get("secretValue").asString
             return respond(exchange, 200, """{"secret":{"id":"s1","secretKey":"$key","environment":"$env","type":"shared"}}""")
         }
@@ -110,7 +129,11 @@ class MockInfisical : AutoCloseable {
             val env = json.get("environment").asString
             val path = json.get("secretPath").asString
             if (key == "MISSING") return respond(exchange, 404, """{"message":"Secret not found"}""")
+            if (key == "DB_PASS" && path == "/tagged" && (json.has("secretValue") || json.has("newSecretName"))) {
+                return respond(exchange, 400, """{"message":"Cannot update rotated secret name or value"}""")
+            }
             if (requireApproval) return respond(exchange, 200, """{"approval":{"id":"a2","status":"open"}}""")
+            json.getAsJsonArray("tagIds")?.let { ids -> tagWrites["$env:$path:$key"] = ids.map { it.asString } }
             val newName = json.get("newSecretName")?.asString
             val name = newName ?: key
             json.get("secretValue")?.asString?.let { updated["$env:$path:$name"] = it }
@@ -124,7 +147,27 @@ class MockInfisical : AutoCloseable {
             createdEnvironments[slug] = json.get("name").asString
             return respond(exchange, 200, """{"message":"ok","projectId":"p1","environment":{"id":"e-$slug","name":"${json.get("name").asString}","slug":"$slug","position":3}}""")
         }
+        if (request.method == "POST" && request.path.startsWith("/api/v2/secret-rotations/") && request.path.endsWith("/rotate-secrets")) {
+            if (rotateForbidden) return respond(exchange, 403, """{"message":"You are not allowed to rotate secrets"}""")
+            rotations += request.path.removePrefix("/api/v2/secret-rotations/").removeSuffix("/rotate-secrets")
+            return respond(exchange, 200, """{"secretRotation":{"id":"r1","name":"db-credentials","type":"postgres-credentials"}}""")
+        }
         when (request.path) {
+            "/api/v1/projects/p1/tags" -> when {
+                tagsForbidden -> respond(exchange, 403, """{"message":"Forbidden"}""")
+                legacyTagsOnly -> respond(exchange, 404, """{"message":"Route not found"}""")
+                else -> respond(exchange, 200, """{"tags":[{"id":"t-backend","slug":"backend","color":null},{"id":"t-critical","slug":"critical"},{"id":"t-db","slug":"db"}]}""")
+            }
+            "/api/v1/workspace/p1/tags" -> respond(exchange, 200, """{"workspaceTags":[{"id":"t-backend","slug":"backend"},{"id":"t-db","slug":"db"}]}""")
+            "/api/v2/secret-rotations" -> if (rotationsForbidden) {
+                respond(exchange, 403, """{"message":"Forbidden"}""")
+            } else {
+                respond(
+                    exchange, 200,
+                    """{"secretRotations":[{"id":"r1","name":"db-credentials","type":"postgres-credentials","isAutoRotationEnabled":true,
+                       "lastRotatedAt":"2026-11-01T10:00:00.000Z","nextRotationAt":"2026-12-01T10:00:00.000Z","rotationInterval":30}]}""",
+                )
+            }
             "/api/v1/projects" -> {
                 val extra = createdEnvironments.entries.joinToString("") { (slug, name) -> """,{"name":"$name","slug":"$slug","id":"e-$slug"}""" }
                 respond(
@@ -147,6 +190,9 @@ class MockInfisical : AutoCloseable {
                         (if (query["recursive"] == "true") """,{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared","secretPath":"/backend"}""" else "")
                     env == "prod" && path == "/" -> """{"secretKey":"DB_PASSWORD","secretValue":"prod-pass","type":"shared"},{"secretKey":"PROD_ONLY","secretValue":"p","type":"shared"}"""
                     env == "dev" && path == "/backend" -> """{"secretKey":"BACKEND_ONLY","secretValue":"b","type":"shared"}"""
+                    // Tags, a secret a rotation writes, a reminder
+                    env == "dev" && path == "/tagged" -> """{"id":"id-API_TOKEN","secretKey":"API_TOKEN","secretValue":"tok","type":"shared","tags":[{"id":"t-backend","slug":"backend","name":"backend","color":null},{"id":"t-critical","slug":"critical","name":"critical"}],"secretReminderRepeatDays":30,"secretReminderNote":"Ask the vendor","isRotatedSecret":false,"rotationId":null},""" +
+                        """{"id":"id-DB_PASS","secretKey":"DB_PASS","secretValue":"rotated-pass","type":"shared","tags":[],"isRotatedSecret":true,"rotationId":"r1"},{"id":"id-PLAIN","secretKey":"PLAIN","secretValue":"p","type":"shared","tags":[],"secretReminderRepeatDays":null}"""
                     else -> return respond(exchange, 404, """{"message":"Folder not found"}""")
                 }
                 val extra = created.entries.filter { it.key.startsWith("$env:$path:") }

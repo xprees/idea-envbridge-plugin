@@ -8,7 +8,10 @@ import cz.xprees.secrets.core.auth.TokenSet
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretEntry
+import cz.xprees.secrets.core.model.RotationInfo
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
+import cz.xprees.secrets.core.model.SecretReminder
 import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
@@ -69,10 +72,32 @@ class InfisicalApi(val http: InfisicalHttp) {
     }
 
     /**
+     * The shared secret [key] defined in the folder of [scope] as Infisical describes it (`GET /api/v4/secrets` without values,
+     * imports or subfolders: `viewSecretValue=false`), or null when the folder has none: its tags, rotation ID and reminder.
+     */
+    fun describeSecret(token: String, scope: SecretScope, key: String): JsonObject? {
+        val response = http.get(
+            "/api/v4/secrets",
+            mapOf(
+                "projectId" to scope.projectId,
+                "environment" to scope.environment,
+                "secretPath" to scope.path,
+                "recursive" to "false",
+                "includeImports" to "false",
+                "viewSecretValue" to "false",
+            ),
+            bearer = token,
+        )
+        if (!response.isSuccess) throw InfisicalHttp.failure(response, "Reading $key in ${scope.environment}:${scope.path}")
+        return response.json().obj().array("secrets").mapNotNull { it.asObjectOrNull() }
+            .firstOrNull { it.string("secretKey") == key && it.string("type") != "personal" }
+    }
+
+    /**
      * `POST /api/v4/secrets/{name}`: creates a shared secret in the folder of [scope]. With a change policy on the folder,
      * Infisical opens a change request instead (answered with `approval`).
      */
-    fun createSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String): WriteOutcome {
+    fun createSecret(token: String, scope: SecretScope, key: String, value: SecretValue, comment: String, tagIds: List<String>? = null): WriteOutcome {
         val body = JsonObject().apply {
             addProperty("projectId", scope.projectId)
             addProperty("environment", scope.environment)
@@ -80,6 +105,7 @@ class InfisicalApi(val http: InfisicalHttp) {
             addProperty("secretValue", value.reveal())
             if (comment.isNotBlank()) addProperty("secretComment", comment)
             addProperty("type", "shared")
+            if (!tagIds.isNullOrEmpty()) add("tagIds", JsonArray().apply { tagIds.forEach(::add) })
         }
         val response = http.postJson("/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)
         if (!response.isSuccess) {
@@ -96,9 +122,18 @@ class InfisicalApi(val http: InfisicalHttp) {
 
     /**
      * `PATCH /api/v4/secrets/{name}`: changes the value (and the comment, when given) of a shared secret, and renames it to
-     * [newKey] (`newSecretName`) when given. A null [value] leaves the value as stored (`secretValue` is optional).
+     * [newKey] (`newSecretName`) when given. A null [value] leaves the value as stored (`secretValue` is optional). [tagIds],
+     * when not null, replace the secret's tags (Infisical removes the old ones and attaches these; empty removes all).
      */
-    fun updateSecret(token: String, scope: SecretScope, key: String, value: SecretValue?, comment: String?, newKey: String? = null): WriteOutcome {
+    fun updateSecret(
+        token: String,
+        scope: SecretScope,
+        key: String,
+        value: SecretValue?,
+        comment: String?,
+        newKey: String? = null,
+        tagIds: List<String>? = null,
+    ): WriteOutcome {
         val body = JsonObject().apply {
             addProperty("projectId", scope.projectId)
             addProperty("environment", scope.environment)
@@ -106,6 +141,7 @@ class InfisicalApi(val http: InfisicalHttp) {
             value?.let { addProperty("secretValue", it.reveal()) }
             comment?.let { addProperty("secretComment", it) }
             newKey?.let { addProperty("newSecretName", it) }
+            tagIds?.let { ids -> add("tagIds", JsonArray().apply { ids.forEach(::add) }) }
             addProperty("type", "shared")
         }
         val response = http.patchJson("/api/v4/secrets/${encodePath(key)}", body.toString(), bearer = token)
@@ -163,6 +199,85 @@ class InfisicalApi(val http: InfisicalHttp) {
         }
         val o = runCatching { response.json().obj() }.getOrNull()
         return if (o?.get("approval")?.isJsonObject == true && o.get("secret")?.isJsonObject != true) WriteOutcome.APPROVAL_REQUESTED else WriteOutcome.APPLIED
+    }
+
+    /** A tag of a project (`GET /api/v1/projects/{id}/tags`): its ID and slug (what secrets show). */
+    data class Tag(val id: String, val slug: String)
+
+    /**
+     * `GET /api/v1/projects/{id}/tags` (`tags`): the project's tags. Instances from before that route answer 404 there; they
+     * have the older `GET /api/v1/workspace/{id}/tags` (`workspaceTags`), asked then.
+     */
+    fun listTags(token: String, projectId: String): List<Tag> {
+        var response = http.get("/api/v1/projects/${encodePath(projectId)}/tags", bearer = token)
+        var field = "tags"
+        if (response.status == 404) {
+            response = http.get("/api/v1/workspace/${encodePath(projectId)}/tags", bearer = token)
+            field = "workspaceTags"
+        }
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Listing the project's tags")
+            throw if (failure.kind == Kind.FORBIDDEN) {
+                SecretProviderException(Kind.FORBIDDEN, "Not allowed to read this project's tags (the project role needs the Tags \"Read\" permission)")
+            } else {
+                failure
+            }
+        }
+        return response.json().obj().array(field).mapNotNull { element ->
+            val o = element.asObjectOrNull() ?: return@mapNotNull null
+            Tag(o.string("id") ?: return@mapNotNull null, o.string("slug") ?: return@mapNotNull null)
+        }.sortedBy { it.slug }
+    }
+
+    /** A secret rotation (Secret Rotations v2): what rotating it and showing its schedule need. */
+    data class Rotation(
+        val id: String,
+        val name: String,
+        val type: String,
+        val autoRotation: Boolean,
+        val lastRotated: java.time.Instant?,
+        val nextRotation: java.time.Instant?,
+    )
+
+    /**
+     * `GET /api/v2/secret-rotations?projectId=…` (`secretRotations`): the project's secret rotations of every type. 403 when
+     * the caller may not read them (Secret Rotation "Read"); 404 on instances without Secret Rotations v2.
+     */
+    fun listRotations(token: String, projectId: String): List<Rotation> {
+        val response = http.get("/api/v2/secret-rotations", mapOf("projectId" to projectId), bearer = token)
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Listing the project's secret rotations")
+            throw when (failure.kind) {
+                Kind.FORBIDDEN -> SecretProviderException(
+                    Kind.FORBIDDEN,
+                    "Not allowed to read this project's secret rotations (the project role needs the Secret Rotation \"Read\" permission)",
+                )
+                Kind.NOT_FOUND -> SecretProviderException(Kind.CONFIGURATION, "This Infisical instance has no Secret Rotations (v2) API; update it or rotate in the dashboard")
+                else -> failure
+            }
+        }
+        return response.json().obj().array("secretRotations").mapNotNull { it.asObjectOrNull()?.let(::parseRotation) }
+    }
+
+    /**
+     * `POST /api/v2/secret-rotations/{type}/{id}/rotate-secrets`: rotates the rotation's credentials now. 403 when the caller
+     * lacks the Secret Rotation "Rotate Secrets" permission.
+     */
+    fun rotate(token: String, rotation: Rotation) {
+        val response = http.postJson(
+            "/api/v2/secret-rotations/${encodePath(rotation.type)}/${encodePath(rotation.id)}/rotate-secrets", "{}", bearer = token,
+        )
+        if (!response.isSuccess) {
+            val failure = InfisicalHttp.failure(response, "Rotating ${rotation.name}")
+            throw if (failure.kind == Kind.FORBIDDEN) {
+                SecretProviderException(
+                    Kind.FORBIDDEN,
+                    "Not allowed to rotate the secret rotation ${rotation.name} (the project role needs the Secret Rotation \"Rotate Secrets\" permission)",
+                )
+            } else {
+                failure
+            }
+        }
     }
 
     /** `POST /api/v1/projects/{id}/environments`: creates an environment. */
@@ -323,6 +438,35 @@ class InfisicalApi(val http: InfisicalHttp) {
                 },
                 valueHidden = hidden,
                 id = o.string("id") ?: o.string("_id").orEmpty(),
+                metadata = parseMetadata(o),
+            )
+        }
+
+        /**
+         * The secret's tags (`tags[].slug`), whether a secret rotation writes it (`isRotatedSecret`) and its reminder
+         * (`secretReminderRepeatDays`, `secretReminderNote`), or null when it has none of them.
+         */
+        fun parseMetadata(o: JsonObject): SecretMetadata? {
+            val tags = o.array("tags").mapNotNull { t -> t.asObjectOrNull()?.let { it.string("slug") ?: it.string("name") } }
+                .filter { it.isNotBlank() }.associateWith { "" }
+            val rotation = if (o.bool("isRotatedSecret") == true) RotationInfo(enabled = false, managed = true) else null
+            val reminder = o.long("secretReminderRepeatDays")?.takeIf { it > 0 }?.let { SecretReminder(it.toInt(), o.string("secretReminderNote").orEmpty()) }
+            return SecretMetadata(tags = tags, rotation = rotation, reminder = reminder).takeUnless { it.isEmpty }
+        }
+
+        /** The rotation ID a listed secret carries (`rotationId`), for [listRotations]. */
+        fun rotationId(o: JsonObject): String? = o.string("rotationId")
+
+        /** A secret rotation as `GET /api/v2/secret-rotations` lists it; null without an ID or type. */
+        fun parseRotation(o: JsonObject): Rotation? {
+            val id = o.string("id") ?: return null
+            return Rotation(
+                id = id,
+                name = o.string("name") ?: id,
+                type = o.string("type") ?: return null,
+                autoRotation = o.bool("isAutoRotationEnabled") != false,
+                lastRotated = o.string("lastRotatedAt")?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() },
+                nextRotation = o.string("nextRotationAt")?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() },
             )
         }
 
