@@ -66,6 +66,12 @@ seed_vault() { # addr, token, prefix of the env variables, namespaces supported 
   vapi POST legacy/envbridge/app/db '{"password":"v1-db-pass-'"$prefix"'","user":"app"}' >/dev/null
   vapi POST legacy/envbridge/app/api '{"key":"v1-api-key-'"$prefix"'","limits":{"rps":5}}' >/dev/null
   vapi POST legacy/forbidden/x '{"hidden":"no"}' >/dev/null
+  # Environments in paths, for the environment layout {project}/{env} (KV v2 and KV v1)
+  vapi POST secret/data/envbridge-layout/dev '{"data":{"MODE":"development-'"$prefix"'"}}' >/dev/null
+  vapi POST secret/data/envbridge-layout/dev/db '{"data":{"password":"layout-dev-'"$prefix"'","user":"app"}}' >/dev/null
+  vapi POST secret/data/envbridge-layout/prod/db '{"data":{"password":"layout-prod-'"$prefix"'","user":"app"}}' >/dev/null
+  vapi POST legacy/envbridge-layout/dev/db '{"password":"layout-v1-dev-'"$prefix"'"}' >/dev/null
+  vapi POST legacy/envbridge-layout/prod/db '{"password":"layout-v1-prod-'"$prefix"'"}' >/dev/null
 
   local policy='path "secret/data/envbridge/*" { capabilities = ["read"] }
 path "secret/data/envbridge" { capabilities = ["read"] }
@@ -86,7 +92,16 @@ path "secret/envbridge-probe" { capabilities = ["read"] }
 path "legacy/envbridge/*" { capabilities = ["read", "list"] }
 path "legacy/envbridge" { capabilities = ["read", "list"] }
 path "legacy/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete", "list"] }
-path "team-a/legacy/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete", "list"] }'
+path "team-a/legacy/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+path "secret/data/envbridge-layout/*" { capabilities = ["read"] }
+path "secret/metadata/envbridge-layout" { capabilities = ["list"] }
+path "secret/metadata/envbridge-layout/*" { capabilities = ["list", "read"] }
+path "secret/data/envbridge-layout-rw/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/envbridge-layout-rw" { capabilities = ["list"] }
+path "secret/metadata/envbridge-layout-rw/*" { capabilities = ["list", "read"] }
+path "legacy/" { capabilities = ["list"] }
+path "legacy/envbridge-layout" { capabilities = ["list"] }
+path "legacy/envbridge-layout/*" { capabilities = ["read", "list"] }'
   vapi PUT sys/policies/acl/envbridge "$(python3 -c 'import json,sys; print(json.dumps({"policy": sys.argv[1]}))' "$policy")" >/dev/null
 
   # AppRole with fixed (test-only) credentials

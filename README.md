@@ -52,8 +52,9 @@ handed to the process in memory. Nothing is written to disk.</p>
       settings apply)</li>
   <li><b>Sign in through the system browser</b> (like the Infisical CLI), with a read-only <b>OAuth application</b> (PKCE), or with a
       <b>machine identity</b>. Tokens and client secrets are kept only in the IDE's password storage</li>
-  <li><b>HashiCorp Vault and OpenBao</b> (KV version 1 and 2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
-      <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
+  <li><b>HashiCorp Vault and OpenBao</b> (KV version 1 and 2, namespaces, or environments in paths such as
+      <code>secret/myapp/dev</code>): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
+      <code>vault://secret/app/db#*</code> for every field of a secret, or <code>vault://./db#password</code> in the selected environment. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
       Create, edit, move and delete fields too; a secret's KV v2 <code>custom_metadata</code> is shown on hover and edited as its
       description and tags</li>
@@ -165,7 +166,7 @@ stops and says to write `infisical://prod:KEY`.
 | Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
 | Creating secrets | *New Secret…* in the tool window and *Extract Value to Secret Manager…* in `.env` files: key, value, comment, environment and folder. Needs browser sign-in or a machine identity with write permission (OAuth applications are read-only). A folder with a change policy gets a change request instead |
 | Tooltip | The environments that define the key, and its comment. Values are never shown unless you ask |
-| Keeping up to date | What completion, hints and tooltips know is read in the background, keys only, and refreshed every 10 minutes (or the cache time, if you set it longer) and when the binding changes; it reuses what the tool window just read. *Refresh* in the tool window reloads it. Vault/OpenBao and 1Password index only the bound folder (secret path or item), and Doppler only root configs plus the bound one, to save requests (see their sections) |
+| Keeping up to date | What completion, hints and tooltips know is read in the background, keys only, and refreshed every 10 minutes (or the cache time, if you set it longer) and when the binding changes; it reuses what the tool window just read. *Refresh* in the tool window reloads it. Vault/OpenBao and 1Password index only the bound folder (secret path or item; with an environment layout, Vault also each environment's own path), and Doppler only root configs plus the bound one, to save requests (see their sections) |
 | Masked hint | `dev ••••••` after code that reads a secret (Settings › Editor › Inlay Hints › EnvBridge) |
 | Inspection *Secret missing in the bound environment* | An `infisical://KEY` whose key doesn't exist, or a variable other environments define but the bound one doesn't. Quick fix: switch environment |
 | Status bar | `Infisical: dev`, click to switch. Production-like environments show a warning icon |
@@ -211,11 +212,33 @@ userpass and LDAP sign in again by themselves; OIDC asks you to sign in again.
 **KV version 1 and 2** mounts both work, for reading, injecting and writing. EnvBridge finds a mount's version the way the
 Vault CLI does (it asks the server once per mount and remembers it for a few minutes), so nothing needs to be configured.
 
+**Environments in paths (environment layout).** Open-source Vault and OpenBao have no namespaces, so most teams put the
+environment into the path: `secret/myapp/dev/db`, `secret/myapp/prod/db`. Set the connection's **Environment layout** to say
+where, with `{project}` and `{env}` as whole path segments: `{project}/{env}` (`secret/myapp/dev/db`), `{env}/{project}`
+(`secret/dev/myapp/db`), `{env}` (a mount per application) or with fixed segments (`apps/{project}/{env}`). Then a project is the
+mount plus the application (`secret/myapp`), its environments are the paths found at `{env}`, and the status bar switcher, the
+production guard, *Compare environments* and *Run with environment…* work as with Infisical. Empty (the default) keeps
+namespaces as environments, so existing connections and references are unchanged. With a layout everything is read in the
+connection's namespace. A short reference follows the selected environment:
+
+```
+DB_PASSWORD=vault://./db#password            secret/myapp/<selected environment>/db
+MODE=vault://#MODE                           the environment's own path, secret/myapp/<selected environment>
+PROD_DB=vault://./db#password?env=prod       always prod
+DB_PASSWORD=vault://secret/myapp/dev/db#password   a full path still means exactly that secret
+```
+
+`./` (or nothing before `#`) means "in the bound project and the selected environment", so `ENVBRIDGE_ENVIRONMENT` and
+*Run with environment…* switch these references too, and *Copy Reference* writes them for the bound project. *New Environment…*
+writes nothing to Vault: the environment shows until you add its first secret, which creates its path. Renames and moves update
+full references by their path and short ones like other references that follow the selected environment.
+
 **Writing**: *New Secret…*, *Edit Secret…*, *Move…* and *Delete…* change one field of a secret (the secret path is the folder; at
 least one path segment below the mount). Each write reads the secret, changes the field and writes the whole secret back, so the
 other fields keep their values and types. Moves work between secrets, mounts (also between KV versions) and namespaces; a field
 is written to its new place before it is removed from the old one, and a name already taken there stops the move before anything
-is written. The token's policy decides what is allowed. Namespaces themselves are not created from the IDE.
+is written. The token's policy decides what is allowed. Namespaces themselves are not created from the IDE (environments of an
+environment layout are, see above).
 
 - **KV v2**: the write is a new version with check-and-set, so a change someone made meanwhile is refused instead of
   overwritten. Removing a secret's last field deletes its latest version, which Vault can restore.

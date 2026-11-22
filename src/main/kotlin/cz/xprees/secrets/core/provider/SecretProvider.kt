@@ -2,6 +2,7 @@ package cz.xprees.secrets.core.provider
 
 import cz.xprees.secrets.core.reference.PathGrammar
 import cz.xprees.secrets.core.reference.ReferenceGrammar
+import cz.xprees.secrets.core.reference.SecretReference
 import com.intellij.openapi.extensions.ExtensionPointName
 import cz.xprees.secrets.core.model.ProviderEnvironment
 import cz.xprees.secrets.core.model.ProviderProject
@@ -41,6 +42,43 @@ interface SecretProvider {
      * account structure (a Vault namespace, 1Password's single one).
      */
     val switchesEnvironments: Boolean get() = true
+
+    /**
+     * [switchesEnvironments] for one connection, where it depends on the connection's settings (Vault: only with an
+     * environment layout). By default [switchesEnvironments].
+     */
+    fun switchesEnvironments(connection: SecretConnection): Boolean = switchesEnvironments
+
+    /**
+     * Whether [reference] (on [connection]) follows the selected environment: it reads another environment when the selection
+     * changes. By default: the connection [switchesEnvironments] and the reference names no environment. A provider whose
+     * references may name a fixed place in another way (a Vault path) says so.
+     */
+    fun followsSelection(connection: SecretConnection, reference: SecretReference): Boolean =
+        switchesEnvironments(connection) && reference.environment == null
+
+    /**
+     * The defaults [reference] reads with on [connection], given the binding's [defaults]: by default [defaults]. A provider whose
+     * references don't all take the selected environment (Vault with an environment layout: a full path reads in the
+     * connection's namespace, not in an environment) adjusts them. Must not do I/O.
+     */
+    fun referenceDefaults(connection: SecretConnection, reference: SecretReference, defaults: SecretReference.Defaults): SecretReference.Defaults =
+        defaults
+
+    /**
+     * The same folder as [scope], as references written in another form name it (Vault with an environment layout: the mount, the
+     * connection's namespace and the full path), or null when there is no other form. Lets moves and renames update both kinds of
+     * references. Must not do I/O.
+     */
+    fun equivalentScope(connection: SecretConnection, scope: SecretScope): SecretScope? = null
+
+    /**
+     * The project [reference] reads on [connection], as listings identify projects, or null when it names none (it reads the
+     * bound one): by default [SecretReference.projectId]. A provider whose references may name a project in another form (Vault
+     * with an environment layout: a full path into a layout project) maps it, so *Only use the bound project* accepts it. Must
+     * not do I/O.
+     */
+    fun referencedProject(connection: SecretConnection, reference: SecretReference): String? = reference.projectId
 
     /** Environment used when neither the binding nor a project file names one. */
     fun defaultEnvironment(connection: SecretConnection): String = "dev"

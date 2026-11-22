@@ -46,11 +46,13 @@ class LaunchSecretResolver(private val project: Project) {
         checkBoundProject(plan, bindings, ::providerOf)
         fun defaultsOf(reference: SecretReference): SecretReference.Defaults {
             val binding = bindingOf(reference)
-            return if (reference.projectId != null) {
+            val defaults = if (reference.projectId != null) {
                 SecretReference.Defaults(reference.projectId, binding.environment, binding.path)
             } else {
                 binding.defaults()
             }
+            // Not every reference takes the selected environment (Vault's full paths under an environment layout)
+            return providerOf(reference).referenceDefaults(binding.connection, reference, defaults)
         }
         // Providers that read several secrets per request (AWS BatchGetSecretValue) get every scope of the launch up front
         plan.allReferences
@@ -101,7 +103,9 @@ class LaunchSecretResolver(private val project: Project) {
         for (reference in plan.allReferences) {
             val bound = bindings.bindingOrNull(providerOf(reference)) ?: continue
             val boundProject = bound.projectId ?: continue
-            if (reference.projectId != null && !namesProject(reference.projectId, boundProject, bound.connection)) {
+            // The project as listings name it (a Vault full path may lie in the bound layout project)
+            val written = providerOf(reference).referencedProject(bound.connection, reference)
+            if (written != null && !namesProject(written, boundProject, bound.connection)) {
                 problems += SecretsBundle.message("restrict.other.project", reference.format(), boundProject)
             }
             val connection = reference.connectionId

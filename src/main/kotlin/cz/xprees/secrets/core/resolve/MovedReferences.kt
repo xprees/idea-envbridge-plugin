@@ -28,6 +28,12 @@ class MovedReferences(
      */
     private val followsSelection: (SecretReference) -> Boolean = { false },
     private val includeFollowing: Boolean = true,
+    /**
+     * The same source and destination folders as references written in another form name them (Vault with an environment
+     * layout: by mount and full path, see [cz.xprees.secrets.core.provider.SecretProvider.equivalentScope]): a reference to
+     * one of these sources is rewritten to its destination.
+     */
+    private val alsoNamed: List<Pair<SecretScope, SecretScope>> = emptyList(),
 ) {
     /** References to a moved secret left as they were because they follow the selected environment (see [followsSelection]). */
     var followingSkipped: Int = 0
@@ -39,14 +45,19 @@ class MovedReferences(
         val key = reference.key ?: return null // a scope import names a folder, not the moved secrets
         if (key !in keys || !isMovedConnection(reference.connectionId)) return null
         val scope = reference.scope(defaults)
-        val sameProject = scope.projectId == source.projectId || projectAliases.any { it.equals(scope.projectId, ignoreCase = true) }
-        if (!sameProject || scope.environment != source.environment || scope.path != source.path) return null
+        val (source, destination) = (listOf(source to destination) + alsoNamed).firstOrNull { (from, _) ->
+            val sameProject = scope.projectId == from.projectId || projectAliases.any { it.equals(scope.projectId, ignoreCase = true) }
+            sameProject && scope.environment == from.environment && scope.path == from.path
+        } ?: return null
         if (!includeFollowing && followsSelection(reference)) {
             followingSkipped++
             return null
         }
         val grammar = SecretReference.grammarFor(reference.scheme)
         var moved = grammar.build(reference.scheme, destination.copy(recursive = false), renames[key] ?: key, defaults).copy(connectionId = reference.connectionId)
+        // A grammar that names the destination in another form than its scope (Vault: another layout project by its full path)
+        // wrote it completely; the rules below assume the scope's terms
+        if (moved.projectId != null && moved.projectId != destination.projectId) return moved
         // Keep the reference's own form where the move doesn't change it (the grammar leaves out what the defaults say):
         // an explicit environment stays explicit, one left out stays out (it follows the selection or the configuration),
         // and a project named (perhaps by name, not ID) stays named as written

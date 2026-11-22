@@ -109,7 +109,9 @@ class ReferenceUpdater(private val project: Project) {
             resolved.getOrPut(override to reference.connectionId) { runCatching { bindings.binding(provider, override, reference.connectionId) }.getOrNull() }
         fun defaultsFor(override: String?): (SecretReference) -> SecretReference.Defaults? = { reference ->
             bindingOf(reference, override)?.takeIf { it.connection.id == connection.id }?.let { binding ->
-                (reference.projectId ?: binding.projectId)?.let { SecretReference.Defaults(it, binding.environment, binding.path) }
+                (reference.projectId ?: binding.projectId)?.let {
+                    provider.referenceDefaults(binding.connection, reference, SecretReference.Defaults(it, binding.environment, binding.path))
+                }
             }
         }
 
@@ -119,8 +121,12 @@ class ReferenceUpdater(private val project: Project) {
             isMovedConnection = { true }, // checked per reference by defaultsFor
             renames = renames,
             projectAliases = projectAliases,
-            followsSelection = { reference -> provider.switchesEnvironments && reference.environment == null && overrideInEffect == null },
+            followsSelection = { reference -> provider.followsSelection(connection, reference) && overrideInEffect == null },
             includeFollowing = includeFollowing,
+            // References written in another form (Vault's full paths under an environment layout) name the same folders
+            alsoNamed = listOfNotNull(
+                provider.equivalentScope(connection, source)?.let { from -> provider.equivalentScope(connection, destination)?.let { from to it } },
+            ),
         )
         val defaults = defaultsFor(null)
 

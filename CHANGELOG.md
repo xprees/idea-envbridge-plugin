@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Vault/OpenBao: environments in paths.** A connection's new *Environment layout* says where the environment is in your
+  paths, with `{project}` and `{env}`: `{project}/{env}` for `secret/myapp/dev/db`, `{env}/{project}`, `{env}` for a mount per
+  application. Projects then are `secret/myapp` with the environments found in Vault, so the environment switcher, the
+  production guard, *Compare environments* and *Run with environment…* work without namespaces. The short reference
+  `vault://./db#password` (or `vault://#KEY` for the environment's own path) reads the selected environment, `?env=prod` fixes
+  one; full references such as `vault://secret/myapp/dev/db#password` keep meaning exactly that secret. *New Environment…*
+  writes nothing until the first secret is added. Empty (the default) keeps namespaces as environments, so existing
+  connections and references are unchanged
 - **Infisical: tags, secret rotations and reminders.** The tool window shows each secret's tags, a *rotated* badge on secrets a
   secret rotation manages (hover for its name, whether it runs automatically, and its last and next rotation) and the secret's
   reminder. *Edit Secret…* and *New Secret…* pick tags from the project's tags. *Rotate Now…* on a rotated secret runs its secret

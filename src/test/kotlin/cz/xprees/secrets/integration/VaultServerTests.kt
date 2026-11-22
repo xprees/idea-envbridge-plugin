@@ -422,4 +422,58 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
         assertThatThrownBy { resolver.resolve(resolver.plan(mapOf("X" to "vault://secret/envbridge/app/db#missing"))) }
             .isInstanceOf(SecretProviderException::class.java)
     }
+
+    fun `test an environment layout lists, reads, writes and launches by environment`() {
+        val connection = appRole(
+            options = mapOf(VaultAuthMethods.OPTION_ENVIRONMENT_LAYOUT to "{project}/{env}", VaultAuthMethods.OPTION_MOUNTS to "secret, legacy"),
+        )
+        val client = client(connection)
+        val projects = client.listProjects().associateBy { it.id }
+        assertThat(projects.getValue("secret/envbridge-layout/{env}").environments.map { it.slug }).containsExactly("dev", "prod")
+        assertThat(projects.getValue("legacy/envbridge-layout/{env}").environments.map { it.slug }).containsExactly("dev", "prod")
+        assertThat(projects.getValue("secret/envbridge-layout/{env}").name).isEqualTo("secret/envbridge-layout")
+        // forbidden/ may not be listed: left out, not an error
+        assertThat(projects.keys).doesNotContain("secret/forbidden/{env}", "legacy/forbidden/{env}")
+
+        val dev = SecretScope("secret/envbridge-layout/{env}", "dev", "/")
+        assertThat(client.listSecrets(dev).single().value.reveal()).isEqualTo("development-$server")
+        assertThat(client.listFolders(dev).map { it.path }).containsExactly("/db")
+        assertThat(client.listSecrets(dev.copy(environment = "prod", path = "/db")).associate { it.key to it.value.reveal() })
+            .containsEntry("password", "layout-prod-$server")
+        assertThat(client.listSecrets(SecretScope("legacy/envbridge-layout/{env}", "prod", "/db")).single().value.reveal()).isEqualTo("layout-v1-prod-$server")
+
+        // a new environment writes nothing until its first secret, which creates its path
+        val service = SecretsService.getInstance()
+        val rw = "secret/envbridge-layout-rw/{env}"
+        val env = "it${System.nanoTime()}"
+        service.createEnvironment(connection, rw, env, env)
+        val scope = SecretScope(rw, env, "/db")
+        service.createSecret(connection, scope, "password", SecretValue("w1"))
+        service.updateSecret(connection, scope, "password", SecretValue("w2"))
+        assertThat(client.listSecrets(SecretScope("secret", "root", "/envbridge-layout-rw/$env/db")).single().value.reveal()).isEqualTo("w2")
+        assertThat(service.projects(connection, fresh = true).first { it.id == rw }.environments.map { it.slug }).contains(env)
+        service.deleteSecrets(connection, scope, listOf("password"))
+        assertThat(client.listSecrets(scope)).isEmpty()
+
+        // launches: short references read the selected environment, a full path the secret it names
+        ProjectSecretsSettings.getInstance(project).update {
+            connectionId = connection.id
+            projectId = "secret/envbridge-layout/{env}"
+            environment = "dev"
+            path = null
+            useProjectFile = false
+        }
+        val resolver = LaunchSecretResolver.getInstance(project)
+        val values = linkedMapOf(
+            "DB" to "vault://./db#password",
+            "MODE" to "vault://#MODE",
+            "PROD" to "vault://secret/envbridge-layout/prod/db#password",
+        )
+        assertThat(resolver.resolve(resolver.plan(values)).environment)
+            .containsEntry("DB", "layout-dev-$server").containsEntry("MODE", "development-$server").containsEntry("PROD", "layout-prod-$server")
+        assertThat(resolver.resolve(resolver.plan(mapOf("DB" to "vault://./db#password")), environment = "prod").environment)
+            .containsEntry("DB", "layout-prod-$server")
+        ProjectSecretsSettings.getInstance(project).update { projectId = "legacy/envbridge-layout/{env}"; environment = "prod" }
+        assertThat(resolver.resolve(resolver.plan(mapOf("DB" to "vault://./db#password"))).environment).containsEntry("DB", "layout-v1-prod-$server")
+    }
 }
