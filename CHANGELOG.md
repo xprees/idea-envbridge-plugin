@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Infisical: tags, secret rotations and reminders.** The tool window shows each secret's tags, a *rotated* badge on secrets a
+  secret rotation manages (hover for its name, whether it runs automatically, and its last and next rotation) and the secret's
+  reminder. *Edit Secret…* and *New Secret…* pick tags from the project's tags. *Rotate Now…* on a rotated secret runs its secret
+  rotation (with confirmation and the production guard; not while *Read-only* is on; a missing *Rotate Secrets* permission is
+  explained). The value and key of a rotated secret aren't changed from the IDE, since Infisical refuses that; its comment and
+  tags can be
+- **Vault/OpenBao: description and metadata of KV v2 secrets.** Hovering over a secret path or field shows its `custom_metadata`
+  (the `description` key as the description, the rest as tags), read only then, never while listing. *Edit Secret…* edits it;
+  when the token's policy doesn't allow writing metadata, the value is still saved and you are told why the metadata wasn't
+- **1Password: item tags and *Only items tagged*.** Item tags are shown on items and their fields. The new connection option
+  *Only items tagged* limits the tool window, whole-vault imports and completion to items with one of the given tags
 - **AWS Secrets Manager: name layouts.** A connection's *Name layout* describes how its secrets are named, with `{project}` and
   `{env}`: `{env}/{project}` for `prod/myapp`, `acme/{env}/{project}`, `{project}-{env}`; the default `{project}/{env}` is the
   naming used so far, so existing connections and references are unchanged. Names that don't follow the layout aren't shown (the

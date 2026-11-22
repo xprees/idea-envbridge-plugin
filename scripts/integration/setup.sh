@@ -56,6 +56,8 @@ seed_vault() { # addr, token, prefix of the env variables, namespaces supported 
   vapi POST secret/data/envbridge/app/api '{"data":{"key":"api-key-'"$prefix"'","limits":{"rps":10}}}' >/dev/null
   vapi POST secret/data/envbridge/app '{"data":{"name":"the app"}}' >/dev/null
   vapi POST secret/data/forbidden/x '{"data":{"hidden":"no"}}' >/dev/null
+  # custom_metadata of a secret (shown as its description and tags)
+  vapi POST secret/metadata/envbridge/app/db '{"custom_metadata":{"description":"Main database","owner":"team-a"}}' >/dev/null
   # A second KV v2 mount
   vapi POST sys/mounts/team-kv '{"type":"kv","options":{"version":"2"}}' >/dev/null || true
   vapi POST team-kv/data/svc '{"data":{"token":"team-kv-token"}}' >/dev/null
@@ -76,6 +78,8 @@ path "team-a/secret/data/*" { capabilities = ["read"] }
 path "team-a/secret/metadata/*" { capabilities = ["list"] }
 path "secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
 path "secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
+path "secret/data/envbridge-meta/*" { capabilities = ["create", "read", "update", "delete"] }
+path "secret/metadata/envbridge-meta/*" { capabilities = ["create", "read", "update", "list"] }
 path "team-a/secret/data/envbridge-rw/*" { capabilities = ["create", "read", "update", "delete"] }
 path "team-a/secret/metadata/envbridge-rw/*" { capabilities = ["list", "read"] }
 path "secret/envbridge-probe" { capabilities = ["read"] }
@@ -144,6 +148,9 @@ if [[ -n $INFISICAL_URL_IT ]]; then
   secret dev / API_KEY dev-api-key
   secret dev /backend BACKEND_ONLY backend-value
   secret prod / DB_PASSWORD prod-db-pass
+  # Tags the tests pick from (secret tags are per project)
+  iapi POST "/api/v1/projects/$project/tags" '{"slug":"backend","color":"#2563eb"}' >/dev/null
+  iapi POST "/api/v1/projects/$project/tags" '{"slug":"critical","color":"#dc2626"}' >/dev/null
 
   # Universal Auth for the bootstrap identity: what the plugin's "Machine identity" method signs in with
   iapi POST "/api/v1/auth/universal-auth/identities/$identity" '{}' >/dev/null

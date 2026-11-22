@@ -85,7 +85,21 @@ generic on purpose):
   per request; `LaunchSecretResolver` calls it (through `SecretsService.prefetch`) before resolving. Never fails.
 - `SecretsClient.rotateSecret(scope)` and `SecretsService.rotateSecret`: start the provider's rotation (guarded like a write).
 - `ProviderEnvironment.metadata: SecretMetadata?` (`description`, `tags`, `rotation: RotationInfo(enabled, lastRotated,
-  nextRotation)`): non-secret facts the tool window shows as a tooltip; *Rotate Now…* is offered where `rotation.enabled`.
+  nextRotation, managed, name)`, `reminder: SecretReminder(repeatDays, note)`): non-secret facts the tool window shows as a
+  tooltip; *Rotate Now…* is offered where `rotation.enabled`.
+- `SecretEntry.metadata` and `SecretFolder.metadata` (the same `SecretMetadata`): what a **listing** already says about one secret
+  or folder at no extra cost (Infisical tags, rotation and reminder; 1Password item tags). Shown as a badge after the name and in
+  the tooltip. See [Secret metadata](#secret-metadata-tags-rotation-reminders-custom-metadata).
+- `SecretProvider.hasSecretDetails(connection, entry)` and `SecretsClient.secretDetails(scope, key)`: details a listing leaves
+  out because they cost a request per secret (Vault `custom_metadata`, an Infisical rotation's schedule), read **on demand only**
+  (hovering in the tool window, the Edit dialog), never while listing or indexing.
+- `SecretsClient.metadataEditor(scope, key)` → `MetadataEditor(current, tagChoices, freeForm, note)`, `updateMetadata(scope, key,
+  metadata)` and `createSecret(scope, key, value, comment, metadata)`: what the Edit / New Secret dialogs may change (tags picked
+  from a list, or a description and `key=value` tags typed in) and the write. `createSecret` with metadata defaults to create +
+  `updateMetadata`; Infisical overrides it to send both in one request. `SecretsService` wraps them (read-only and cache rules
+  as for every write; `metadataEditor` returns null while *Read-only* is on).
+- `SecretsClient.rotateSecret(scope, key)`: rotate what manages one secret (Infisical's secret rotation); defaults to
+  `rotateSecret(scope)`, so AWS is unchanged.
 - `SecretProvider.forget(connectionId)`: called whenever `SecretsService.invalidate` runs, so provider-side memory (AWS's values
   read ahead) is dropped with the shared cache. `SecretProvider.listingNote(connection)`: a line the tool window shows under a
   connection's projects (AWS: how many names didn't fit the name layout).
@@ -233,6 +247,93 @@ edit, so the values are the current ones.
   *Copy reference* gives `infisical://…`, *Copy as KEY=…*, and *Open in dashboard*.
 - *Run configuration preview* (dry run): pick a run configuration and see the final variables it would receive and where each
   comes from (explicit, reference, scope), values masked.
+
+## Secret metadata: tags, rotation, reminders, custom metadata
+
+Generic model (see the SPI list): `SecretMetadata` on environments (AWS: one AWS secret is one environment), on secrets
+(`SecretEntry.metadata`) and on folders (`SecretFolder.metadata`). **Where tags live:** a tag belongs to whatever the provider
+attaches it to, so the same type is used at each level rather than a new field per provider: Infisical tags are per secret
+(`SecretEntry`), a 1Password tag is per item, which is a folder in EnvBridge (`SecretFolder`, and repeated on the item's fields so
+a field shows them too), an AWS tag is per AWS secret, i.e. per environment (`ProviderEnvironment`, unchanged), and Vault's
+`custom_metadata` is per secret path, which is a folder whose fields are the keys (read on demand for the folder or any of its
+fields). Values are never part of it; tags and descriptions aren't logged.
+
+**Cost rule**: listings only carry what the listing response already contains. Anything that needs a request per secret is a
+*detail* (`secretDetails`), read once when the user hovers over the node (the tooltip shows "Loading details…" until then; the
+result is kept with the node until the folder is read again) or when the Edit dialog opens (`metadataEditor`).
+
+| Provider | Shown (from the listing) | On demand | Edited (Edit / New Secret) | Rotate Now |
+|---|---|---|---|---|
+| Infisical | `tags[].slug`, `isRotatedSecret` (badge *rotated*), `secretReminderRepeatDays` / `secretReminderNote` | the managing rotation's name, auto-rotation on/off, last and next rotation | tags picked from the project's tags (`tagIds`), on create and edit | the secret rotation managing the secret (Secret Rotations v2) |
+| 1Password | item `tags` on items and their fields | — | — (read-only) | — |
+| Vault / OpenBao KV v2 | — | `custom_metadata` (`description` key = description, other keys = tags) | description and `key=value` lines → `custom_metadata` | — |
+| Vault / OpenBao KV v1 | — | — (KV v1 has no metadata) | — | — |
+| AWS Secrets Manager | description, tags, rotation per environment (unchanged) | — | description as the comment (unchanged) | `RotateSecret` (unchanged) |
+| Doppler | — (no tags, no public rotation API) | — | — | — |
+
+### Infisical
+
+| Purpose | Call (verified in the API reference at infisical.com/docs and in the backend source) |
+|---|---|
+| Tags, rotation flag, reminder of each secret | `GET /api/v4/secrets` (already used): `secrets[].tags[] {id, slug, name, color}`, `isRotatedSecret`, `rotationId`, `secretReminderRepeatDays`, `secretReminderNote` |
+| One secret's description, without its value | `GET /api/v4/secrets?…&viewSecretValue=false&includeImports=false&recursive=false`, picking the shared secret by key |
+| The project's tags | `GET /api/v1/projects/{projectId}/tags` → `tags[] {id, slug, …}`; on 404 (older instances) the deprecated `GET /api/v1/workspace/{projectId}/tags` → `workspaceTags[]`. Both exist in the pinned v0.167.13 |
+| Set tags | `PATCH /api/v4/secrets/{name}` with `tagIds` (and nothing else when only tags change); `POST /api/v4/secrets/{name}` with `tagIds` for a new secret. The backend **replaces** the secret's tags with `tagIds` (it deletes the secret's tag links, then inserts the given ones; `secret-v2-bridge-fns.ts`), so an empty list removes all |
+| The project's rotations | `GET /api/v2/secret-rotations?projectId=` → `secretRotations[] {id, name, type, isAutoRotationEnabled, lastRotatedAt, nextRotationAt, …}` (every rotation type) |
+| Rotate now | `POST /api/v2/secret-rotations/{type}/{rotationId}/rotate-secrets` (the route is per rotation type: `postgres-credentials`, `aws-iam-user-secret`, …; the type comes from the listing) |
+
+- Tags are shown and stored by **slug** (`SecretMetadata.tags` = slug → ""); writes map slugs to IDs with the project's tag list
+  and refuse an unknown slug before writing. Moving or copying (`/api/v4/secrets/duplicate` with `attributesToCopy.tags`) keeps
+  tags, as before.
+- **Rotated secrets**: Infisical refuses changing a rotated secret's value or name (`Cannot update rotated secret name or value`)
+  but accepts its comment and tags. EnvBridge's Edit dialog therefore keeps value and key read-only for such a secret, with an
+  explanation, and `InfisicalClient.updateSecret` refuses a changed value or a rename before sending anything; comment and
+  tags still work. *Rotate Now…* on such a secret rotates its secret rotation (every secret it maps changes), with the same
+  confirmation, production guard and *Read-only* check as AWS.
+- **Permissions**: listing tags needs the project role's Tags *Read* permission; listing rotations Secret Rotation *Read*; rotating
+  Secret Rotation *Rotate Secrets* (`ProjectPermissionSecretRotationActions.RotateSecrets`). Each 403 becomes a FORBIDDEN error
+  naming the permission. 404 on the rotations list (an instance without Secret Rotations v2) says so. A failed tag listing in a
+  dialog only hides the tags (the value can still be saved).
+- The v4 response's `secretMetadata[]` (key/value pairs) isn't shown or edited (not part of this change).
+
+### Vault / OpenBao (KV v2)
+
+`GET <mount>/metadata/<path>` → `data.custom_metadata` (string map, or null) and `POST <mount>/metadata/<path>` with only
+`{"custom_metadata": {…}}` (other metadata settings such as `max_versions` are left as they are; the map is replaced as a whole).
+Read only for a hover or the Edit dialog, never while listing, so a recursive listing still costs one LIST per folder and one
+GET per secret. The key `description` is shown as the description, the others as tags; metadata belongs to the secret path, so
+the dialog says it applies to every field of it. Policies need `read` / `update` on `<mount>/metadata/<path>`; a 403 names the
+missing capability, and the value edit (on `<mount>/data/<path>`) is separate: it is saved first and still works when the
+metadata write is refused (the notification reports the metadata failure). When only the metadata changed, no new version of
+the secret is written. KV v1 mounts have no metadata: nothing is read, the dialog shows no metadata fields, and
+`updateMetadata` is refused.
+
+### 1Password
+
+Item `tags` come with `op item list --format json` (`Item.tags?: string[]` in 1Password's `op-js` type definitions, the type its
+`item list` returns) and with Connect's item listing (`tags: string[]` in Connect's OpenAPI spec, `docs/openapi/spec.yaml`), so
+showing them costs nothing. Tags are read-only. The connection option **Only items tagged** (`onlyTagged`, comma-separated)
+narrows the vault's item listing, and with it the tool window, whole-vault imports (`op://vault/**`) and the keys index, to
+items with one of these tags (a tag also matches its nested tags: `env` matches `env/dev`). It is applied by EnvBridge to the
+full listing rather than with `op item list --tags` (which `op-js` shows exists, with any-of semantics according to user
+reports): item path segments are titles only when unique in the vault, and working them out from a filtered list could
+address an item by a title an untagged item shares. Connect's `filter` query parameter is documented for `title eq` only, so
+Connect is filtered the same way. A reference that names an item (`op://vault/Item/field`) is resolved whatever its tags.
+
+### Tests
+
+`SecretMetadataPlatformTest`: Infisical listings with tags, rotation flag and reminder (other listings unchanged), tag choices and
+`tagIds` writes (replace, clear, unknown slug refused before writing), a new secret's tags in its create request, the older
+tags route, 403 on tags, *Read-only*; rotation details read without values, *Rotate Now* by rotation type, 403 on listing and on
+rotating, a rotated secret's value and name refused while comment and tags go through (`MockInfisical`). Vault: no metadata
+request while listing (also recursive), details on demand, editing, KV v1 without metadata, 403 on reading and writing
+metadata with the value edit still working (`MockVault`). 1Password: tags on items and fields, *Only items tagged* on folders
+and the recursive listing (nested tags), an item named explicitly still read, through Connect and `FakeOp`. Tooltip lines,
+badges and the `key=value` parser. Integration: `VaultIntegrationTest` / `OpenBaoIntegrationTest` read seeded
+`custom_metadata`, write, replace and clear it (an empty map clears it on both servers), get 403 where the policy allows only
+reading metadata (the value write still works) and none at all; `InfisicalIntegrationTest` lists the seeded tags, creates a
+secret with a tag, changes and clears tags, and copies a secret with its tags (v0.167.13). Secret rotations need a database
+or cloud connection to rotate, so they are tested against the mock only.
 
 ## Editor integration (M3, done)
 

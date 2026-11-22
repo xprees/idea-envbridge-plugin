@@ -17,6 +17,9 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
+import cz.xprees.secrets.core.model.RotationInfo
+import cz.xprees.secrets.core.provider.MetadataEditor
 import cz.xprees.secrets.core.model.SecretOrigin
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.provider.AuthMethod
@@ -65,6 +68,9 @@ class InfisicalProvider : SecretProvider {
         return "${connection.baseUrl}/organizations/${enc(organizationId)}/projects/secret-management/${enc(scope.projectId)}/secrets/${enc(scope.environment)}" +
             if (query.isEmpty()) "" else query.joinToString("&", prefix = "?")
     }
+
+    /** A secret a secret rotation writes: the hover shows the rotation's name and schedule (read on demand). */
+    override fun hasSecretDetails(connection: SecretConnection, entry: SecretEntry?): Boolean = entry?.metadata?.rotation?.managed == true
 
     companion object {
         const val ID = "infisical"
@@ -151,6 +157,73 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         return auth.withToken { api.createSecret(it, scope, key, value, comment) }
     }
 
+    /** Created with its tags in the same request (`tagIds`), so a change request covers both. */
+    override fun createSecret(scope: SecretScope, key: String, value: SecretValue, comment: String, metadata: SecretMetadata?): WriteOutcome {
+        checkWritable("secrets")
+        return auth.withToken { token ->
+            val tagIds = metadata?.tags?.keys?.takeIf { it.isNotEmpty() }?.let { tagIds(token, scope.projectId, it) }
+            api.createSecret(token, scope, key, value, comment, tagIds)
+        }
+    }
+
+    /** Tags are picked from the project's tags (their slugs); the current ones are read again. */
+    override fun metadataEditor(scope: SecretScope, key: String?): MetadataEditor = auth.withToken { token ->
+        val choices = api.listTags(token, scope.projectId).map { it.slug }
+        val current = key?.let { api.describeSecret(token, scope, it) }?.let(InfisicalApi::parseMetadata) ?: SecretMetadata()
+        MetadataEditor(current = SecretMetadata(tags = current.tags), tagChoices = choices)
+    }
+
+    /** Replaces the secret's tags with [metadata]'s (`PATCH` with `tagIds` only; Infisical allows that on rotated secrets too). */
+    override fun updateMetadata(scope: SecretScope, key: String, metadata: SecretMetadata): WriteOutcome {
+        checkWritable("secrets")
+        return auth.withToken { token ->
+            val ids = tagIds(token, scope.projectId, metadata.tags.keys)
+            api.updateSecret(token, scope, key, value = null, comment = null, tagIds = ids)
+        }
+    }
+
+    /** The IDs of the project's tags with these slugs; CONFIGURATION, before anything is written, for a slug it doesn't have. */
+    private fun tagIds(token: String, projectId: String, slugs: Collection<String>): List<String> {
+        if (slugs.isEmpty()) return emptyList()
+        val tags = api.listTags(token, projectId).associate { it.slug to it.id }
+        val unknown = slugs.filter { it !in tags }
+        if (unknown.isNotEmpty()) {
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "The project has no tag ${unknown.joinToString()}; create it in Infisical first")
+        }
+        return slugs.map { tags.getValue(it) }
+    }
+
+    /** The secret rotation writing [key] in the folder of [scope]; CONFIGURATION when no rotation writes it. */
+    private fun rotationOf(token: String, scope: SecretScope, key: String): InfisicalApi.Rotation {
+        val secret = api.describeSecret(token, scope, key)
+            ?: throw SecretProviderException(SecretProviderException.Kind.NOT_FOUND, "${scope.environment}:${scope.path} has no secret $key any more; refresh")
+        val id = InfisicalApi.rotationId(secret)
+        if (InfisicalApi.parseMetadata(secret)?.rotation?.managed != true || id == null) {
+            throw SecretProviderException(SecretProviderException.Kind.CONFIGURATION, "$key isn't managed by a secret rotation")
+        }
+        return api.listRotations(token, scope.projectId).firstOrNull { it.id == id }
+            ?: throw SecretProviderException(SecretProviderException.Kind.NOT_FOUND, "The secret rotation managing $key wasn't found (or you may not see it)")
+    }
+
+    /** The rotation writing the secret: its name, whether it runs automatically, when it last ran and runs next. */
+    override fun secretDetails(scope: SecretScope, key: String?): SecretMetadata? {
+        if (key == null) return null
+        return auth.withToken { token ->
+            val secret = api.describeSecret(token, scope, key) ?: return@withToken null
+            val metadata = InfisicalApi.parseMetadata(secret) ?: return@withToken null
+            if (metadata.rotation?.managed != true) return@withToken metadata
+            val id = InfisicalApi.rotationId(secret) ?: return@withToken metadata
+            val rotation = api.listRotations(token, scope.projectId).firstOrNull { it.id == id } ?: return@withToken metadata
+            metadata.copy(rotation = RotationInfo(rotation.autoRotation, rotation.lastRotated, rotation.nextRotation, managed = true, name = rotation.name))
+        }
+    }
+
+    /** Rotates the secret rotation writing [key] now (Secret Rotations v2 `rotate-secrets`): every secret it writes changes. */
+    override fun rotateSecret(scope: SecretScope, key: String) {
+        checkWritable("secrets")
+        auth.withToken { token -> api.rotate(token, rotationOf(token, scope, key)) }
+    }
+
     override fun updateSecret(scope: SecretScope, key: String, value: SecretValue, comment: String?, newKey: String?): WriteOutcome {
         checkWritable("secrets")
         val rename = renameTarget(key, newKey)
@@ -166,6 +239,13 @@ class InfisicalClient(private val connection: SecretConnection) : SecretsClient 
         // Listings show values with references expanded: a value left as it was isn't sent, so `${…}` references are kept
         val current = folder.firstOrNull { it.key == key && it.origin == SecretOrigin.LOCAL }
         val changed = value.takeIf { current == null || current.value != it }
+        // A secret rotation writes the value and name of its secrets; Infisical refuses changing them (the comment is fine)
+        if (current?.metadata?.rotation?.managed == true && (changed != null || rename != null)) {
+            throw SecretProviderException(
+                SecretProviderException.Kind.CONFIGURATION,
+                "$key is managed by a secret rotation: its value and name change only when it rotates (use Rotate Now)",
+            )
+        }
         return auth.withToken { api.updateSecret(it, scope, key, changed, comment, rename) }
     }
 

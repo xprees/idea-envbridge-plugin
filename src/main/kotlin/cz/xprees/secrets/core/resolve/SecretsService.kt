@@ -15,6 +15,8 @@ import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretConnection
 import cz.xprees.secrets.core.model.SecretEntry
 import cz.xprees.secrets.core.model.SecretFolder
+import cz.xprees.secrets.core.model.SecretMetadata
+import cz.xprees.secrets.core.provider.MetadataEditor
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.provider.SecretProvider
 import cz.xprees.secrets.core.provider.SecretProviderException
@@ -79,11 +81,19 @@ class SecretsService {
     }
 
     /** Creates a secret (see [SecretsClient.createSecret]) and forgets the connection's cached values so it shows up. Off the EDT. */
-    fun createSecret(connection: SecretConnection, scope: SecretScope, key: String, value: SecretValue, comment: String = ""): WriteOutcome {
+    fun createSecret(
+        connection: SecretConnection,
+        scope: SecretScope,
+        key: String,
+        value: SecretValue,
+        comment: String = "",
+        metadata: SecretMetadata? = null,
+    ): WriteOutcome {
         checkWritesAllowed(connection)
         // Forgotten even after a failure: a write can be half done (the value saved, a note not)
         try {
-            return client(connection).createSecret(scope, key, value, comment)
+            val client = client(connection)
+            return if (metadata == null) client.createSecret(scope, key, value, comment) else client.createSecret(scope, key, value, comment, metadata)
         } finally {
             invalidate(connection.id)
         }
@@ -163,15 +173,39 @@ class SecretsService {
         }
     }
 
-    /** Starts the rotation of the secret behind [scope] (see [SecretsClient.rotateSecret]); forgets cached values. Off the EDT. */
-    fun rotateSecret(connection: SecretConnection, scope: SecretScope) {
+    /**
+     * Starts the rotation of the secret behind [scope], or of the rotation managing its secret [key] when given (see
+     * [SecretsClient.rotateSecret]); forgets cached values. Off the EDT.
+     */
+    fun rotateSecret(connection: SecretConnection, scope: SecretScope, key: String? = null) {
         checkWritesAllowed(connection)
         try {
-            client(connection).rotateSecret(scope)
+            if (key == null) client(connection).rotateSecret(scope) else client(connection).rotateSecret(scope, key)
         } finally {
             invalidate(connection.id)
         }
     }
+
+    /** Changes a secret's metadata (see [SecretsClient.updateMetadata]) and forgets the connection's cached values. Off the EDT. */
+    fun updateMetadata(connection: SecretConnection, scope: SecretScope, key: String, metadata: SecretMetadata): WriteOutcome {
+        checkWritesAllowed(connection)
+        try {
+            return client(connection).updateMetadata(scope, key, metadata)
+        } finally {
+            invalidate(connection.id)
+        }
+    }
+
+    /** On-demand details of a secret or folder (see [SecretsClient.secretDetails]); not cached. Off the EDT. */
+    fun secretDetails(connection: SecretConnection, scope: SecretScope, key: String?): SecretMetadata? =
+        client(connection).secretDetails(scope, key)
+
+    /**
+     * What the secret dialogs can change of a secret's metadata (see [SecretsClient.metadataEditor]); null while *Read-only*
+     * is on (nothing can be changed then). Off the EDT.
+     */
+    fun metadataEditor(connection: SecretConnection, scope: SecretScope, key: String?): MetadataEditor? =
+        if (writesAllowed(connection)) client(connection).metadataEditor(scope, key) else null
 
     /** Creates an environment (see [SecretsClient.createEnvironment]) and forgets the connection's cached projects. Off the EDT. */
     fun createEnvironment(connection: SecretConnection, projectId: String, name: String, slug: String): ProviderEnvironment {

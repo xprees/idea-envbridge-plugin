@@ -69,6 +69,13 @@ class MockVault : AutoCloseable {
     /** Secrets written ("namespace:mount/path"), in order. */
     val writes = CopyOnWriteArrayList<String>()
 
+    /** KV v2 `custom_metadata` per "namespace:mount/path" (secrets without an entry have none). */
+    val customMetadata = ConcurrentHashMap<String, Map<String, String>>()
+
+    /** Mounts whose metadata (`<mount>/metadata/<path>`) the token may not read, or not write (403). */
+    val metadataUnreadable: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    val metadataReadOnly: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     /** Mounts the token may read but not write. */
     val readOnlyMounts: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -212,7 +219,27 @@ class MockVault : AutoCloseable {
 
             path.contains("/metadata/") || path.endsWith("/metadata") -> {
                 requireToken() ?: return
-                if (query["list"] != "true") return respond(exchange, 405, """{"errors":[]}""")
+                if (query["list"] != "true") {
+                    val mount = path.removePrefix("/v1/").substringBefore("/metadata")
+                    val id = "$mount/${path.substringAfter("/metadata/").trim('/')}"
+                    return when (exchange.requestMethod) {
+                        "GET" -> when {
+                            mount in metadataUnreadable -> respond(exchange, 403, """{"errors":["1 error occurred:\n\t* permission denied\n\n"]}""")
+                            !secrets[ns].orEmpty().containsKey(id) -> respond(exchange, 404, """{"errors":[]}""")
+                            else -> respond(
+                                exchange, 200,
+                                """{"data":{"current_version":1,"max_versions":0,"custom_metadata":${customMetadata["$ns:$id"]?.let { com.google.gson.Gson().toJson(it) } ?: "null"}}}""",
+                            )
+                        }
+                        "POST" -> {
+                            if (mount in metadataReadOnly) return respond(exchange, 403, """{"errors":["1 error occurred:\n\t* permission denied\n\n"]}""")
+                            val custom = json.getAsJsonObject("custom_metadata")?.entrySet()?.associate { (k, v) -> k to v.asString }.orEmpty()
+                            customMetadata["$ns:$id"] = custom
+                            respond(exchange, 204, null)
+                        }
+                        else -> respond(exchange, 405, """{"errors":[]}""")
+                    }
+                }
                 val mount = path.removePrefix("/v1/").substringBefore("/metadata")
                 val prefix = path.substringAfter("/metadata").trim('/').let { if (it.isEmpty()) "$mount/" else "$mount/$it/" }
                 val keys = secrets[ns].orEmpty().keys.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }

@@ -3,6 +3,7 @@ package cz.xprees.secrets.integration
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.model.SecretConnection
+import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.model.SecretScope
 import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.SecretProviderException
@@ -141,6 +142,35 @@ class InfisicalIntegrationTest : BasePlatformTestCase() {
         } finally {
             runCatching { service.deleteSecrets(connection, root, listOf(key, "${key}_NEW")) }
         }
+    }
+
+    fun `test tags are listed, picked, written and kept when copying`() {
+        val service = SecretsService.getInstance()
+        val key = "IT_TAGS_${System.currentTimeMillis()}"
+        val root = SecretScope(projectId, "dev", "/")
+        // Tags seeded by setup.sh
+        val editor = service.metadataEditor(connection, root, null)!!
+        assertThat(editor.tagChoices).containsExactly("backend", "critical")
+
+        service.createSecret(connection, root, key, SecretValue("v"), "", SecretMetadata(tags = mapOf("backend" to "")))
+        assertThat(service.secrets(connection, root, fresh = true).single { it.key == key }.metadata?.tags).isEqualTo(mapOf("backend" to ""))
+
+        service.updateMetadata(connection, root, key, SecretMetadata(tags = mapOf("critical" to "")))
+        val updated = service.secrets(connection, root, fresh = true).single { it.key == key }
+        assertThat(updated.metadata?.tags).isEqualTo(mapOf("critical" to ""))
+        assertThat(updated.value.reveal()).isEqualTo("v")
+        assertThat(service.metadataEditor(connection, root, key)!!.current.tags).isEqualTo(mapOf("critical" to ""))
+
+        // Copying keeps the tags
+        val backend = SecretScope(projectId, "dev", "/backend")
+        assertThat(service.copySecrets(connection, root, listOf(updated), backend).copied).containsExactly(key)
+        assertThat(service.secrets(connection, backend, fresh = true).single { it.key == key }.metadata?.tags).isEqualTo(mapOf("critical" to ""))
+
+        // No tags removes them
+        service.updateMetadata(connection, root, key, SecretMetadata())
+        assertThat(service.secrets(connection, root, fresh = true).single { it.key == key }.metadata).isNull()
+        service.deleteSecrets(connection, root, listOf(key))
+        service.deleteSecrets(connection, backend, listOf(key))
     }
 
     fun `test a duplicate secret is refused`() {

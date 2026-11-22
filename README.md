@@ -55,12 +55,14 @@ handed to the process in memory. Nothing is written to disk.</p>
   <li><b>HashiCorp Vault and OpenBao</b> (KV version 1 and 2, namespaces): <code>DB_PASSWORD=vault://secret/app/db#password</code>, or
       <code>vault://secret/app/db#*</code> for every field of a secret. Sign in with <b>OIDC in the system browser</b> (like
       <code>vault login -method=oidc</code>), a token (or the Vault CLI's <code>~/.vault-token</code>), AppRole, userpass or LDAP.
-      Create, edit, move and delete fields too</li>
+      Create, edit, move and delete fields too; a secret's KV v2 <code>custom_metadata</code> is shown on hover and edited as its
+      description and tags</li>
   <li><b>1Password</b>: your existing <code>op://vault/item/field</code> secret references work as they are, plus
       <code>op://vault/item/*</code> for every field of an item. Access through the <b>1Password app</b> (the 1Password CLI asks
       the app to approve, with Touch ID, Windows Hello or your system password: nothing to paste), a <b>service account</b>
       token or a <b>1Password Connect</b> server. New, edited, moved and deleted secrets are fields of items (a new secret at a
-      vault's root is a new password item); values reach the CLI only on its standard input, never its command line</li>
+      vault's root is a new password item); values reach the CLI only on its standard input, never its command line. Item tags
+      are shown, and <i>Only items tagged</i> narrows a connection to the items you work with</li>
   <li><b>Doppler</b>: <code>DB_PASSWORD=doppler://DB_PASSWORD</code> from the bound config, <code>doppler://prd:DB_PASSWORD</code>
       from another, or <code>doppler://*</code> for every secret of a config. Sign in <b>through the system browser</b> (like
       <code>doppler login</code>) or with a personal, service account or service token; reads the CLI's <code>doppler.yaml</code>.
@@ -157,6 +159,7 @@ stops and says to write `infisical://prod:KEY`.
 | `.env` intentions | *Bind to Secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract Value to Secret Manager…* (creates the secret from the value, then binds the line and clears it) |
 | Editing secrets | *Edit Secret…* in the tool window: change the value (filled in masked, *Show* reveals it), the comment and the key of a secret defined in that folder. Changing the key renames the secret (refused when that name is taken in the folder; the value is kept unless you change it), and *Update references in this project* (on by default) rewrites run configurations, `.env` files and the terminal's references to the new name, undoable with Edit › Undo. References that name no environment follow the selected one, so they are left as they are (the rename applies to one environment); the notification offers *Update Those Too*. Same permissions, prod guard and change requests as creating |
 | Moving secrets | *Move…*, Cut / Paste (the IDE's shortcuts) and drag and drop onto a folder or environment in the tool window, always through a confirmation where destination folder (with completion), environment and overwriting can be changed. Value, comment, tags and metadata are copied first; the originals are removed only after that worked |
+| Tags, rotation and metadata | Shown after a secret's name and in its tooltip. **Infisical**: tags, a *rotated* badge on secrets a secret rotation manages (hover for the rotation's name and schedule), reminders; *Edit Secret…* and *New Secret…* pick tags from the project's tags; *Rotate Now…* on a rotated secret runs its secret rotation (confirmation, prod guard, not while *Read-only*; needs the Secret Rotation *Rotate Secrets* permission). A rotated secret's value and key aren't edited from the IDE (Infisical refuses it), its comment and tags are. **Vault/OpenBao** (KV v2): the secret path's `custom_metadata`, read only when you hover or open *Edit Secret…*, edited there as a description and `key=value` lines. **1Password**: item tags. **AWS**: an environment's description, tags and rotation |
 | Deleting secrets | *Delete…* (or the Delete key): type the key to confirm (*Copy Name* copies it), or the number of secrets for several |
 | Read-only | *Settings › Tools › EnvBridge › Read-only*: this IDE never creates or changes secrets and environments; the write actions are turned off and every write is refused before it is sent. Reading and injecting are unaffected |
 | Creating environments | *New Environment…* in the tool window (with a project selected): name and slug. Same permissions as creating secrets |
@@ -220,6 +223,13 @@ is written. The token's policy decides what is allowed. Namespaces themselves ar
   its write (a fraction of a second) is overwritten, and can't be detected.** Removing a secret's last field deletes the secret
   for good (KV v1 keeps no history).
 
+**Description and metadata** (KV v2): hovering over a secret path or one of its fields in the tool window reads its
+`custom_metadata` (one request, only then; never while listing) and shows the key `description` as its description and the
+other keys as tags. *Edit Secret…* edits them (they apply to the whole path, shared by its fields): saved with
+`POST <mount>/metadata/<path>`, which the token's policy must allow (`update` on `<mount>/metadata/<path>`, `read` to show it).
+If it doesn't, the value is still saved and you are told the metadata wasn't. Changing only the metadata writes no new version
+of the secret. KV v1 has no metadata.
+
 **Editor features** (completion, hints, tooltips, the missing-secret inspection) know the fields of the **bound folder**
 (*Settings › Tools › EnvBridge › This Project › Folder*, e.g. `/app/db`) and of the secrets below it, read in the background with
 a couple of requests. Fields of other secrets aren't suggested and aren't reported as missing; references to them still resolve
@@ -253,6 +263,11 @@ WORK_DB=op://Private/Database/password?connection=Work
 | **1Password app (through the CLI)** (default) | Install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/) and turn on *Settings › Developer › Integrate with 1Password CLI* in the 1Password app. **Sign In** makes the app ask you to approve; no password or token is entered in the IDE. Optional: the account (shorthand, sign-in address or ID, when you have several) and the path to `op` if it isn't found on `PATH` or in the usual install locations. Sign-out stops EnvBridge from running `op` in the background |
 | **Service account (through the CLI)** | A [service account](https://developer.1password.com/docs/service-accounts/) token, kept in the IDE's password storage and given to `op` only in the environment variable `OP_SERVICE_ACCOUNT_TOKEN`, never on its command line. Sign-out forgets the token |
 | **1Password Connect server** | The server's address (`http://localhost:8080` for one on your machine) and an access token, kept in the password storage. Sign-out forgets the token |
+
+**Tags**: an item's tags are shown on the item and its fields (read-only). The connection option **Only items tagged**
+(comma-separated, e.g. `dev, payments`; a tag includes its nested tags, so `env` matches `env/dev`) shows only items with one of
+these tags in the tool window, whole-vault imports (`op://Dev/**`) and completion; references naming an item still work
+whatever its tags.
 
 `op` takes about half a second per call: a whole-item import is one call, a whole-vault import one call per item, and later
 whole-vault imports only one call per item that changed since (1Password counts every change in the item's version). Values are

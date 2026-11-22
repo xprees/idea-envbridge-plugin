@@ -4,7 +4,9 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import cz.xprees.secrets.core.auth.CredentialVault
 import cz.xprees.secrets.core.auth.TokenSet
 import cz.xprees.secrets.core.model.SecretConnection
+import cz.xprees.secrets.core.model.SecretMetadata
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.model.SecretValue
 import cz.xprees.secrets.core.provider.SecretProviderException
 import cz.xprees.secrets.core.provider.SecretProviderException.Kind
 import cz.xprees.secrets.core.provider.SignInInteraction
@@ -352,6 +354,45 @@ abstract class VaultServerTests(private val server: String) : BasePlatformTestCa
         val resolver = LaunchSecretResolver.getInstance(project)
         val result = resolver.resolve(resolver.plan(linkedMapOf("DB" to "vault://legacy/envbridge/app/db#password", "API" to "vault://legacy/envbridge/app/api#*")))
         assertThat(result.environment).containsEntry("DB", "v1-db-pass-$server").containsEntry("key", "v1-api-key-$server").doesNotContainKey("API")
+    }
+
+    fun `test custom_metadata is read on demand, edited, and refused where the policy doesn't allow it`() {
+        val connection = appRole()
+        val service = SecretsService.getInstance()
+        // Seeded by setup.sh; the policy allows reading metadata there
+        assertThat(service.secretDetails(connection, SecretScope("secret", "root", "/envbridge/app/db"), "password"))
+            .isEqualTo(SecretMetadata(description = "Main database", tags = mapOf("owner" to "team-a")))
+        assertThat(service.secretDetails(connection, SecretScope("secret", "root", "/envbridge/app/api"), null)).isEqualTo(SecretMetadata())
+        // KV v1 has no metadata
+        assertThat(service.secretDetails(connection, SecretScope("legacy", "root", "/envbridge/app/db"), "password")).isNull()
+        assertThat(service.metadataEditor(connection, SecretScope("legacy", "root", "/envbridge/app/db"), "password")).isNull()
+
+        // Where the policy allows writing metadata
+        val path = SecretScope("secret", "root", "/envbridge-meta/m${System.nanoTime()}")
+        service.createSecret(connection, path, "token", SecretValue("t1"))
+        assertThat(service.metadataEditor(connection, path, "token")!!.current).isEqualTo(SecretMetadata())
+        service.updateMetadata(connection, path, "token", SecretMetadata(description = "Deploy token", tags = mapOf("owner" to "ops", "tier" to "1")))
+        assertThat(service.secretDetails(connection, path, "token"))
+            .isEqualTo(SecretMetadata(description = "Deploy token", tags = mapOf("owner" to "ops", "tier" to "1")))
+        // Replaced as a whole: a key left out is gone, an empty map clears it
+        service.updateMetadata(connection, path, "token", SecretMetadata(tags = mapOf("owner" to "dev")))
+        assertThat(service.secretDetails(connection, path, "token")).isEqualTo(SecretMetadata(tags = mapOf("owner" to "dev")))
+        service.updateMetadata(connection, path, "token", SecretMetadata())
+        assertThat(service.secretDetails(connection, path, "token")).isEqualTo(SecretMetadata())
+        // The value is untouched by metadata writes
+        assertThat(service.secrets(connection, path, fresh = true).single().value.reveal()).isEqualTo("t1")
+
+        // envbridge-rw: the policy may read but not write metadata; the value edit still works
+        val rw = SecretScope("secret", "root", "/envbridge-rw/m${System.nanoTime()}")
+        service.createSecret(connection, rw, "token", SecretValue("v1"))
+        val refused = runCatching { service.updateMetadata(connection, rw, "token", SecretMetadata(description = "x")) }.exceptionOrNull() as SecretProviderException
+        assertThat(refused.kind).isEqualTo(Kind.FORBIDDEN)
+        assertThat(refused.message).contains("policy needs update on secret/metadata${rw.path}")
+        service.updateSecret(connection, rw, "token", SecretValue("v2"))
+        assertThat(service.secrets(connection, rw, fresh = true).single().value.reveal()).isEqualTo("v2")
+        // No read permission on metadata at all (forbidden/ isn't in the policy)
+        val unreadable = runCatching { service.secretDetails(connection, SecretScope("secret", "root", "/forbidden/x"), null) }.exceptionOrNull() as SecretProviderException
+        assertThat(unreadable.kind).isEqualTo(Kind.FORBIDDEN)
     }
 
     fun `test launches resolve vault references`() {
