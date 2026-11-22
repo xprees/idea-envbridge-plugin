@@ -1,5 +1,7 @@
 package cz.xprees.secrets.core.resolve
 
+import cz.xprees.secrets.core.reference.ReferenceCompletion
+import cz.xprees.secrets.core.reference.ReferenceGrammar
 import cz.xprees.secrets.core.reference.SecretReference
 
 /**
@@ -68,12 +70,43 @@ object EnvReferences {
         }
         PLACEHOLDER.findAll(text).forEach { m -> m.groups[1]?.let { g -> result += Found(g.value, g.range.first, g.range.last + 1, Kind.PLACEHOLDER) } }
         for (scheme in schemes) {
-            Regex("""(?i)\b${Regex.escape(scheme)}://[^\s"'`<>,;)\]}]+""").findAll(text).forEach { m ->
+            val escaped = Regex.escape(scheme)
+            // References with spaces in their names (1Password labels: op://Private/Stripe/api key), where the extent is clear: the
+            // whole of a quoted string, or the whole value of a KEY= line up to a ` # comment`. Elsewhere a space ends a reference.
+            val spaced = mutableListOf<IntRange>()
+            val extents = Regex("""(?i)"($escaped://[^"\r\n]*)"|'($escaped://[^'\r\n]*)'|`($escaped://[^`\r\n]*)`""").findAll(text)
+                .mapNotNull { m -> (1..3).firstNotNullOfOrNull { m.groups[it] } } +
+                Regex("""(?im)^[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_.\-]*[ \t]*=[ \t]*($escaped://[^"'`\r\n]*?)(?:[ \t]+#[^\r\n]*)?[ \t]*$""")
+                    .findAll(text).mapNotNull { it.groups[1] }
+            for (group in extents) {
+                // Blanks at the edge are a typo, not part of a name (as the grammars say): the plain match below takes it to the blank
+                if (group.value.none(Char::isWhitespace) || group.value != group.value.trim() || spaced.any { group.range.first in it }) continue
+                val reference = runCatching { SecretReference.parse(group.value, listOf(scheme)) }.getOrNull() ?: continue
+                spaced += group.range
+                if (reference.key != null) result += Found(reference.key, group.range.first, group.range.last + 1, Kind.REFERENCE, reference)
+            }
+            Regex("""(?i)\b$escaped://[^\s"'`<>,;)\]}]+""").findAll(text).forEach { m ->
+                if (spaced.any { m.range.first in it }) return@forEach
                 val reference = runCatching { SecretReference.parse(m.value, listOf(scheme)) }.getOrNull()
                 if (reference?.key != null) result += Found(reference.key, m.range.first, m.range.last + 1, Kind.REFERENCE, reference)
             }
         }
         return result.distinctBy { it.start to it.end }.sortedBy { it.start }
+    }
+
+    /**
+     * When [linePrefix] (the line up to the caret) ends inside a reference whose grammar completes names itself
+     * ([ReferenceGrammar.completionContext]: `op://vault/item/field`, `vault://mount/path#key`), its scheme and what is typed.
+     */
+    fun referenceCompletion(linePrefix: String, schemes: Collection<String>): Pair<String, ReferenceCompletion>? {
+        for (scheme in schemes) {
+            val start = Regex("""(?i)\b${Regex.escape(scheme)}://""").findAll(linePrefix).lastOrNull() ?: continue
+            val body = linePrefix.substring(start.range.last + 1)
+            val grammar = SecretReference.grammarFor(scheme)
+            if (body.any { it in "\"'`<>" } || (!grammar.allowsSpaces && body.any(Char::isWhitespace))) continue
+            grammar.completionContext(body)?.let { return scheme to it }
+        }
+        return null
     }
 
     /** The partially typed variable name when [linePrefix] (the line up to the caret) is a place to complete one. */

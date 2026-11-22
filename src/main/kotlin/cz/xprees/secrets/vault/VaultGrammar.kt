@@ -1,6 +1,8 @@
 package cz.xprees.secrets.vault
 
+import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.reference.ReferenceCompletion
 import cz.xprees.secrets.core.reference.ReferenceGrammar
 import cz.xprees.secrets.core.reference.ReferenceSyntax
 import cz.xprees.secrets.core.reference.SecretReference
@@ -94,6 +96,48 @@ object VaultGrammar : ReferenceGrammar {
             connectionId = query["connection"]?.ifBlank { null },
         )
     }
+
+    /**
+     * `vault://` completes the mount, `vault://<mount>/…/` and `vault://./…/` path segments, and after `#` the fields of that
+     * secret: `vault://<mount>/<path>#`, `vault://./<folder>#` and `vault://#` (the bound project's own path).
+     */
+    override fun completionContext(body: String): ReferenceCompletion? = runCatching { completionContextOrThrow(body) }.getOrNull()
+
+    private fun completionContextOrThrow(body: String): ReferenceCompletion? {
+        val hash = body.indexOf('#')
+        if (hash >= 0) {
+            val pathPart = body.substring(0, hash)
+            val prefix = body.substring(hash + 1)
+            if ('?' in pathPart || '?' in prefix || '/' in prefix || '#' in prefix) return null
+            val raw = pathPart.split('/')
+            val segments = raw.filter { it.isNotEmpty() }.map(ReferenceSyntax::decodeSegment)
+            return when {
+                pathPart.isEmpty() -> ReferenceCompletion.Key(prefix, null, null)
+                raw.first() == "." -> ReferenceCompletion.Key(prefix, null, segments.drop(1).takeIf { it.isNotEmpty() }?.joinToString("/", prefix = "/"))
+                segments.size >= 2 -> ReferenceCompletion.Key(prefix, segments.first(), segments.drop(1).joinToString("/", prefix = "/"))
+                else -> null
+            }
+        } else {
+            if ('?' in body) return null
+            val raw = body.split('/')
+            val prefix = raw.last()
+            val typed = raw.dropLast(1)
+            return when {
+                typed.isEmpty() -> ReferenceCompletion.Project(prefix).takeIf { prefix != "." }
+                typed.drop(1).any { it.isEmpty() } -> null
+                typed.first() == "." -> ReferenceCompletion.Folder(prefix, null, typed.drop(1).map(ReferenceSyntax::decodeSegment).joinToString("/", prefix = "/"))
+                typed.first().isEmpty() -> null
+                else -> ReferenceCompletion.Folder(
+                    prefix,
+                    ReferenceSyntax.decodeSegment(typed.first()),
+                    typed.drop(1).map(ReferenceSyntax::decodeSegment).joinToString("/", prefix = "/"),
+                )
+            }
+        }
+    }
+
+    /** A mount (for a layout project, its mount). */
+    override fun projectName(project: ProviderProject): String = VaultLayoutProject.parse(project.id)?.mount ?: project.id
 
     /** Whether [reference] is in the short form (no project, or a layout project) rather than a mount and a path. */
     fun isShort(reference: SecretReference): Boolean = reference.projectId == null || VaultLayoutProject.isLayoutId(reference.projectId)

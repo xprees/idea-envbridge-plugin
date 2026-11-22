@@ -140,6 +140,14 @@
 
 - Secrets tool window: the tooltip of a secret or folder whose details are read on demand stayed on "Loading details…" until
   the mouse moved; it now shows the details as soon as they arrive while the mouse is still over that row
+- Completion inside `op://` and `vault://` references never offered anything: `op://` now completes the vault, then the item,
+  then its fields (also those in sections); `vault://` the mount, path segments and, after `#`, the secret's fields, also in the
+  short forms `vault://#KEY` and `vault://./db#KEY` of an environment layout. Names and keys only, never values
+- Hover, inlay hints and the missing-secret inspection ignored `op://` references that name the vault by its name (only the
+  vault ID that *Copy reference* writes matched): the vault now matches by ID or name (a name in other letter case too, when no
+  other vault has it), the item and section in any letter case, and a field written without its section is found in the item
+- 1Password field labels with spaces (`op://Private/Stripe/api key`) were cut at the space in the editor: they are now recognized
+  when the reference is quoted or is the whole value of a `KEY=` line (a trailing ` # comment` is left out)
 - The background keys index (completion, hints, tooltips) re-read everything whenever it reloaded, because it reloads every
   10 minutes while cached listings expire after 5: a reload after a binding or settings change, or soon after the tool window
   read the same folder, now reuses what was read. It never refreshes more often than the cache time you set, and *Refresh* in the

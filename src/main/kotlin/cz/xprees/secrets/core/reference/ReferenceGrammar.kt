@@ -1,5 +1,6 @@
 package cz.xprees.secrets.core.reference
 
+import cz.xprees.secrets.core.model.ProviderProject
 import cz.xprees.secrets.core.model.SecretScope
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -21,6 +22,37 @@ interface ReferenceGrammar {
 
     /** A reference to [key] (or every secret, when null) of [scope], leaving out what [defaults] (the binding) says. */
     fun build(scheme: String, scope: SecretScope, key: String?, defaults: SecretReference.Defaults?): SecretReference
+
+    /**
+     * What is being typed at the end of [body] (the text after `scheme://` up to the caret), for completion: a project, a folder
+     * segment or a key. Null leaves completion to the default (keys, with `[env:][folder/…/]` before them, as [PathGrammar]
+     * writes them), also when [body] is no place to complete.
+     */
+    fun completionContext(body: String): ReferenceCompletion? = null
+
+    /** Whether a reference's names may contain raw spaces (1Password writes them as they are). */
+    val allowsSpaces: Boolean get() = false
+
+    /** How [project] is written in a reference, for completing it; null when references don't name projects this way. */
+    fun projectName(project: ProviderProject): String? = null
+
+    /** [name] (a project, folder or key) as written in a reference segment. */
+    fun formatSegment(name: String): String = ReferenceSyntax.encodeSegment(name)
+}
+
+/** What completion is asked for inside a partially typed reference ([ReferenceGrammar.completionContext]); never values. */
+sealed class ReferenceCompletion {
+    /** The part of the name typed so far (as written, not decoded). */
+    abstract val prefix: String
+
+    /** A project as references write it (a 1Password vault, a Vault mount). */
+    data class Project(override val prefix: String) : ReferenceCompletion()
+
+    /** A folder segment directly below [parent] of [project] (null: the bound project). */
+    data class Folder(override val prefix: String, val project: String?, val parent: String) : ReferenceCompletion()
+
+    /** A key of [folder] of [project] (null: the bound project); a null [folder] is what a reference without a folder reads. */
+    data class Key(override val prefix: String, val project: String?, val folder: String?) : ReferenceCompletion()
 }
 
 /** Shared pieces of reference syntax: query parameters and percent-encoded segments. */

@@ -361,6 +361,25 @@ Kotlin, JavaScript/TypeScript, Python, Go, YAML, Properties, XML, Shell, `.env`,
 - Completion of secret keys in `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `os.environ[…]` / `os.getenv`, `os.Getenv`,
   `Environment.GetEnvironmentVariable`, `${VAR}` in Compose / YAML / properties / `.env.example`, and in the environment variables
   table of run configurations. *Go to declaration* selects the secret in the tool window.
+- Completion inside references whose grammar says what is typed (`ReferenceGrammar.completionContext` → `ReferenceCompletion`
+  project / folder / key): `op://` the vault (every listed vault, by name), `op://<vault>/` the items, `op://<vault>/<item>/` the
+  item's fields (also those in sections, which a reference without its section finds) and `op://<vault>/<item>/<section>/`
+  that section's; `vault://` the mount, `vault://<mount>/…/` path segments, `vault://<mount>/<path>#` the secret's fields, and the
+  short forms `vault://#`, `vault://./…/` and `vault://./<folder>#` of an environment layout. Names come from the keys index
+  (projects from the project listing it already reads), so only the bound project's indexed folders are offered; another vault or
+  mount gets nothing. Inserted names are written as the grammar writes them (1Password names raw with spaces, others
+  percent-encoded); matching is a plain case-insensitive prefix, so names with spaces complete. `/` and `#` open the popup.
+  Other schemes (`infisical://`, …) complete keys with `[env:][folder/]` as before.
+- Matching references against the index: the project by its ID or by its listed name / slug when no other project shares it
+  (`KeysIndex.Snapshot.namesProject`); with `SecretProvider.namesIgnoreCase` (1Password, as `OnePasswordConnect.pick` resolves
+  names: exactly, then ignoring case when unique) the vault name and the item / section folder in any letter case; with
+  `SecretProvider.keysInSubfolders` (1Password) a field referenced without its section is found in the item's sections, top-level
+  fields first. Keys (field labels) always match exactly. An item named by its ID while the index names it by its title is not
+  matched (the index doesn't keep item IDs): it is "unknown" (no hint, no warning), not missing.
+- References with spaces (1Password labels such as `op://Private/Stripe/api key`) are found where their extent is unambiguous:
+  the whole of a quoted string (`"…"`, `'…'`, `` `…` ``), or the whole value of a `KEY=` line (also `export KEY=`) up to a
+  ` # comment`. Elsewhere, unquoted, a space still ends a reference, so following text is never swallowed. Such a match is used
+  only when it parses; otherwise the plain match (up to the first space) is kept.
 - Masked inlay hints (`Infisical · dev · ••••`) and hover with comment, environments that define the key, *Reveal* and *Copy*.
 - Inspection: referenced variable missing from the bound environment (quick fixes: switch environment, open dashboard).
 - Console masking: injected values are replaced by `••••` in the Run and Debug consoles.
@@ -935,7 +954,9 @@ always left open (the binding's, `default`). Decisions:
   (which matches them itself) or, for Connect, matched exactly first and then ignoring case when that is unique.
 - **Bound project**: a reference names the vault by name (`op://Dev/…`) while the binding stores its ID. *Only use the bound
   project* therefore accepts a reference that names the bound project by its slug or name (`LaunchSecretResolver.namesProject`,
-  a generic core change; only when the IDs differ is the project list consulted).
+  a generic core change; only when the IDs differ is the project list consulted). The editor (hover, inlay hints, the
+  missing-secret inspection, completion) matches the vault the same way, by ID or by name, the name also in another letter case
+  when no other vault has it (`KeysIndex.Snapshot.namesProject`, from the vault list the index already reads).
 
 ### Access methods
 
@@ -1113,6 +1134,7 @@ belongs to no signed-in account, and its address is not 1Password's web app).
   connection: one `op item get` for the bound item, or, bound to a vault's root, `op item list` plus one `op item get` per
   changed item. When the app's authorization of the CLI has expired, the app may ask to approve at that moment. Signing out stops it.
 - The keys index reads only the bound item: completion and hover don't know other items' fields (they still resolve at launch).
+  An item referenced by its ID while the index lists it by its title isn't matched in the editor (unknown, not missing).
 - That `op item list --format json` reports `version` and `updated_at` per item is taken from 1Password's `op-js` type
   definitions (`Item`, `version?: number`, `updated_at: string`, the type it gives `item list`), and Connect's `version` /
   `updatedAt` from `connect-sdk-go` (`onepassword.Item`, which its `GetItems` decodes the list into); not verified against a live

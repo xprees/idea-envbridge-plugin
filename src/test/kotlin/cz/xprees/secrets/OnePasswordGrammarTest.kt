@@ -1,7 +1,9 @@
 package cz.xprees.secrets
 
 import cz.xprees.secrets.core.model.SecretScope
+import cz.xprees.secrets.core.reference.ReferenceCompletion
 import cz.xprees.secrets.core.reference.SecretReference
+import cz.xprees.secrets.core.resolve.EnvReferences
 import cz.xprees.secrets.onepassword.OnePasswordGrammar
 import cz.xprees.secrets.vault.VaultGrammar
 import org.assertj.core.api.Assertions.assertThat
@@ -132,5 +134,59 @@ class OnePasswordGrammarTest {
         val reference = parse("op://Dev/%F0%9F%94%91%20API/password")
         assertThat(reference.format()).isEqualTo("op://Dev/%F0%9F%94%91 API/password")
         assertThat(parse(reference.format())).isEqualTo(reference)
+    }
+
+    @Test
+    fun `completion contexts - vault, item, then field`() {
+        fun context(body: String) = OnePasswordGrammar.completionContext(body)
+        assertThat(context("")).isEqualTo(ReferenceCompletion.Project(""))
+        assertThat(context("Pri")).isEqualTo(ReferenceCompletion.Project("Pri"))
+        assertThat(context("Private/")).isEqualTo(ReferenceCompletion.Folder("", "Private", "/"))
+        assertThat(context("Private/AWS K")).isEqualTo(ReferenceCompletion.Folder("AWS K", "Private", "/"))
+        // the vault is not part of the folder (the old pattern took it for one)
+        assertThat(context("Private/Stripe/")).isEqualTo(ReferenceCompletion.Key("", "Private", "/Stripe"))
+        assertThat(context("Private/Stripe/api k")).isEqualTo(ReferenceCompletion.Key("api k", "Private", "/Stripe"))
+        assertThat(context("My Vault/AWS Keys/prod creds/sec")).isEqualTo(ReferenceCompletion.Key("sec", "My Vault", "/AWS Keys/prod creds"))
+        assertThat(context("Dev/%F0%9F%94%91%20API/")).isEqualTo(ReferenceCompletion.Key("", "Dev", "/🔑 API"))
+        assertThat(context("Private/Stripe/password?attribute=")).isNull()
+        assertThat(context("Private//")).isNull()
+        assertThat(context("a/b/c/d/")).isNull()
+        assertThat(OnePasswordGrammar.formatSegment("a/b")).isEqualTo("a%2Fb")
+        assertThat(OnePasswordGrammar.formatSegment("api key")).isEqualTo("api key")
+    }
+
+    @Test
+    fun `completion inside an op reference in a line`() {
+        val schemes = listOf("infisical", "vault", "op")
+        assertThat(EnvReferences.referenceCompletion("API_KEY=op://Private/Stripe/api k", schemes))
+            .isEqualTo("op" to ReferenceCompletion.Key("api k", "Private", "/Stripe"))
+        assertThat(EnvReferences.referenceCompletion("""key: "op://""", schemes)).isEqualTo("op" to ReferenceCompletion.Project(""))
+        // the reference ended at a quote: no longer inside it
+        assertThat(EnvReferences.referenceCompletion("""key: "op://Private/Stripe/x" + "a""", schemes)).isNull()
+    }
+
+    @Test
+    fun `labels with spaces are found when quoted or the whole value of a KEY= line`() {
+        val schemes = listOf("infisical", "vault", "op")
+        fun found(text: String) = EnvReferences.find(text, schemes).map { text.substring(it.start, it.end) to it.name }
+
+        assertThat(found("API_KEY=op://Private/Stripe/api key\n")).containsExactly("op://Private/Stripe/api key" to "api key")
+        assertThat(found("export API_KEY = op://Private/Stripe/api key  \n")).containsExactly("op://Private/Stripe/api key" to "api key")
+        assertThat(found("API_KEY=\"op://Private/Stripe/api key\"\n")).containsExactly("op://Private/Stripe/api key" to "api key")
+        assertThat(found("key: 'op://Private/AWS Keys/prod creds/secret access key'"))
+            .containsExactly("op://Private/AWS Keys/prod creds/secret access key" to "secret access key")
+        assertThat(found("val k = `op://Private/Stripe/api key`;")).containsExactly("op://Private/Stripe/api key" to "api key")
+        // a trailing comment isn't part of the value
+        assertThat(found("API_KEY=op://Private/Stripe/api key # the live key\n")).containsExactly("op://Private/Stripe/api key" to "api key")
+        assertThat(found("API_KEY=op://Private/Stripe/password # rotated\nB=1")).containsExactly("op://Private/Stripe/password" to "password")
+        // several lines, each its own value
+        assertThat(found("A=op://Dev/Database/api key\nB=op://Dev/Stripe/secret key\n").map { it.second }).containsExactly("api key", "secret key")
+        // unquoted elsewhere a space still ends the reference, so following text isn't swallowed
+        assertThat(found("see op://Private/Stripe/password for details")).containsExactly("op://Private/Stripe/password" to "password")
+        assertThat(found("""println(x, op://Private/Stripe/password and more)""")).containsExactly("op://Private/Stripe/password" to "password")
+        // two references in one quoted string aren't one reference; each is found as before
+        assertThat(found("\"op://a/b/c op://a/b/d\"").map { it.second }).containsExactly("c", "d")
+        // whitespace at the edge of a quoted name is a typo: as before, up to the space
+        assertThat(found("X=\"op://Private/Stripe/password \"")).containsExactly("op://Private/Stripe/password" to "password")
     }
 }

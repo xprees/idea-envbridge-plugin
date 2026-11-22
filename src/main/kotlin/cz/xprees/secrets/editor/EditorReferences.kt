@@ -48,21 +48,23 @@ object EditorReferences {
         snapshot ?: return null
         val reference = found.reference
         if (reference != null && !reference.scheme.equals(snapshot.scheme, ignoreCase = true)) return null
+        // The bound project by its ID, or by its name (1Password references usually name the vault)
+        val boundProject = reference?.projectId == null || snapshot.namesProject(reference.projectId)
         // A folder of the bound environment (`?path=`): known from the folder index
         if (reference?.path != null && (reference.environment == null || reference.environment == snapshot.boundEnvironment) &&
-            (reference.projectId == null || reference.projectId == snapshot.projectId) && reference.connectionId == null
+            boundProject && reference.connectionId == null
         ) {
-            val path = SecretScope.normalizePath(reference.path)
+            val path = snapshot.canonicalFolder(reference.path)
             // Outside the folder the provider indexes (Vault, 1Password: the bound one): unknown, not missing
             if (!snapshot.isIndexed(path)) return Resolved(found, snapshot, null, emptyList(), false)
             if (path != snapshot.path && snapshot.folders.isNotEmpty()) {
-                val info = snapshot.folders[path]?.get(found.name)
+                val info = snapshot.keysOf(path)[found.name]
                 return Resolved(found, snapshot, info, if (info != null) listOf(snapshot.boundEnvironment) else emptyList(), true)
             }
         }
         val indexed = reference == null ||
             ((reference.environment == null || reference.environment in snapshot.environments) && reference.path == null &&
-                (reference.projectId == null || reference.projectId == snapshot.projectId) && reference.connectionId == null)
+                boundProject && reference.connectionId == null)
         if (!indexed) return Resolved(found, snapshot, null, emptyList(), false)
         val environment = reference?.environment ?: snapshot.boundEnvironment
         return Resolved(found, snapshot, snapshot.environments[environment]?.get(found.name), snapshot.coverage(found.name), true)

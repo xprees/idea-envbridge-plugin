@@ -203,7 +203,7 @@ functions that read it (`infisical("OLD")` → `infisical("NEW")`).
 | Feature | Where |
 |---|---|
 | Folders | References name their folder: `infisical://workers/KEY` (a bare `infisical://KEY` is the root). After `infisical://`, completion lists the keys of every folder, each with its folder, and inserts `workers/KEY` for other folders; after `infisical://workers/` it lists that folder; masked hints show the folder (`dev:/workers ••••••`); a launch that misses a key names the folders that have it |
-| Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out |
+| Completion of secret keys | Inside `System.getenv("…")`, `process.env.…`, `Bun.env.…`, `import.meta.env.…`, `os.environ["…"]`, `os.getenv("…")`, `os.Getenv("…")`, `Environment.GetEnvironmentVariable("…")`, `ENV["…"]`, `env("…")`, `${…}` and after `infisical://`, in any file. Keys that exist only in other environments are shown struck out. Inside `op://` references: the vault, then the item, then its fields (`op://Dev/Database/`); inside `vault://` references: the mount, path segments and, after `#`, the secret's fields (`vault://secret/myapp/db#`), also in the short forms `vault://#` and `vault://./db#`. Names and keys of what the editor knows (see *Keeping up to date*), never values |
 | Key icon in the gutter | Click to reveal the value briefly; menu: copy (the clipboard is cleared again), override locally, show in the tool window (selects the secret) |
 | Masked hint (`dev ••••••`) | After code that reads a secret and on references in `.env` files; click it to open the secret in the Secrets tool window |
 | `.env` intentions | *Bind to Secret…* (choose from every folder of the bound environment, root included, same and similar names first; a key from another folder is written as `infisical://folder/KEY`; clear the value or keep it as a local fallback) and *Extract Value to Secret Manager…* (creates the secret from the value, then binds the line and clears it) |
@@ -350,7 +350,10 @@ WORK_DB=op://Private/Database/password?connection=Work
   matched by label (case-sensitive); empty fields are skipped.
 - `?attribute=` other than `value` (`otp`, `type`, …) and `?ssh-format=` are not supported and say so.
 - Items that share a title, or whose title contains `/`, are shown and addressed by their IDs.
-- With *Only use the bound project*, a reference may name the bound vault by its name or its ID.
+- With *Only use the bound project*, a reference may name the bound vault by its name or its ID. Hints, tooltips and the
+  missing-secret inspection accept both too (a name also in other letter case, when no other vault has it).
+- Field labels with spaces are recognized in the editor when the reference is quoted (`"op://Private/Stripe/api key"`) or is
+  the whole value of a `KEY=` line (`API_KEY=op://Private/Stripe/api key # comment`); elsewhere a space ends the reference.
 
 | Method | Setup |
 |---|---|

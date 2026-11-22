@@ -107,6 +107,19 @@ interface SecretProvider {
         folders = SecretScope(bound.projectId, bound.environment, "/", recursive = true),
     )
 
+    /**
+     * Whether references name projects and folders as the provider resolves them, ignoring letter case when that names only one
+     * (1Password: a vault or item by its name in any case, as Connect and `op` find it). The editor's keys index then matches
+     * them that way; keys always match exactly.
+     */
+    val namesIgnoreCase: Boolean get() = false
+
+    /**
+     * Whether a key referenced in a folder may be one of its subfolders' (1Password: `op://vault/item/field` finds a field in
+     * any section of the item, top-level fields first).
+     */
+    val keysInSubfolders: Boolean get() = false
+
     /** Instances offered when a connection is created (name -> base URL); a custom URL is always possible. */
     val instancePresets: List<Pair<String, String>>
 
